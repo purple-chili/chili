@@ -1378,7 +1378,10 @@ impl EngineState {
             for (id, job) in active_jobs.iter_mut() {
                 let obj = self.eval(
                     &mut Stack::new(None, 0, 0, ""),
-                    &SpicyObj::String(format!("{}[]", job.fn_name)),
+                    &SpicyObj::String(format!(
+                        "{}{}{}",
+                        job.fn_name, FN_CALL_LEFT_BRACE, FN_CALL_RIGHT_BRACE
+                    )),
                 );
                 if obj.is_err() {
                     error!(
