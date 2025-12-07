@@ -1,0 +1,325 @@
+DoubleQuoteChar = _{
+    "\\" ~ EscapeSequence
+  | LineContinuation
+  | !"\"" ~ CharLiteral
+}
+
+EscapeSequence         = _{
+    CharEscapeSequence
+  | NulEscapeSequence
+  | "x" ~ HexEscapeSequence
+  | "u" ~ UnicodeEscapeSequence
+}
+SingleEscapeChar       = _{ "'" | "\"" | "\\" | "b" | "f" | "n" | "r" | "t" | "v" }
+NonEscapeChar          = _{ !SingleEscapeChar ~ ANY }
+CharEscapeSequence     = @{ SingleEscapeChar | NonEscapeChar }
+NulEscapeSequence      = @{ "0" }
+HexEscapeSequence      = @{ ASCII_HEX_DIGIT{2} }
+LineContinuation       = @{ "\\" ~ LineTerminatorSequence }
+LineTerminator         = _{ "\u{000A}" | "\u{000D}" | "\u{2028}" | "\u{2029}" }
+LineTerminatorSequence = _{ "\u{000D}" ~ "\u{000A}" | LineTerminator }
+CharLiteral            = @{ !("\\" | "\"" | LineTerminatorSequence) ~ ANY }
+UnicodeEscapeSequence  = @{ ASCII_HEX_DIGIT{4} }
+
+String = @{ "\"" ~ DoubleQuoteChar* ~ "\"" }
+
+Sym  = @{ "`" ~ (ASCII_ALPHANUMERIC | "." | ":" | "/" | "_" | "-")* }
+Syms = @{ Sym{2, } }
+
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+
+blockComment = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") }
+lineComment  = _{ "//" ~ (!"\n" ~ ANY)* }
+COMMENT      = _{ blockComment | lineComment }
+
+Exp = {
+    Query
+  | IfElseExp
+  | AssignmentExp
+  | BinaryExp
+  | UnaryExp
+  | FnCall
+  | Fn
+  | BracketExp
+  | Term
+}
+
+ControlKeywords = _{ "if" }
+
+IfExp = { "if" ~ "[" ~ statements ~ "]" }
+
+WhileExp = { "while" ~ "[" ~ statements ~ "]" }
+
+IfElseExp = { "$" ~ "[" ~ statementsWithoutCtrl ~ "]" }
+
+TryStatements   = { statements }
+CatchStatements = { statements }
+TryExp          = { "try" ~ "[" ~ TryStatements ~ "]" ~ "catch" ~ "[" ~ CatchStatements ~ "]" }
+
+BracketExp = { "(" ~ (Exp | BinaryKeyword) ~ ")" }
+
+ListItem = _{ Exp | BinaryOp | BinaryKeyword }
+ListExp  =  { "(" ~ (ListItem) ~ (";" ~ ListItem)+ ~ ")" }
+
+ReturnExp = { ":" ~ Exp }
+RaiseExp  = { "'" ~ Exp }
+
+UnaryOperand = _{
+    Table
+  | Matrix
+  | Dict
+  | Series
+  | ListExp
+  | Fn
+  | FnCall
+  | GlobalId
+  | Id
+  | BracketExp
+  | Sym
+}
+
+UnaryExp = { UnaryOperand ~ (Query | AssignmentExp | UnaryExp | BinaryExp | FnCall | BracketExp | Term) }
+
+BinaryExp = { (FnCall | Fn | Term | BracketExp) ~ Binary ~ Exp }
+
+Tuple = { "(" ~ (Id ~ ";")* ~ Id ~ ")" }
+
+AssignmentExp = { (FnCall | GlobalId | Id | Tuple) ~ ":" ~ Exp }
+
+Series = _{
+    Syms
+  | Timestamps
+  | Datetimes
+  | Durations
+  | Dates
+  | Times
+  | U8s
+  | Booleans
+  | Floats
+  | Integers
+}
+
+Term = _{
+    Table
+  | Matrix
+  | Dict
+  | ListExp
+  | EmptyList
+  | String
+  | Syms
+  | Sym
+  | Timestamps
+  | Timestamp
+  | Datetimes
+  | Datetime
+  | Durations
+  | Duration
+  | Dates
+  | Date
+  | Times
+  | Time
+  | U8s
+  | U8
+  | Booleans
+  | Boolean
+  | Floats
+  | F32
+  | F64
+  | Integers
+  | Null
+  | I16
+  | I32
+  | I64
+  | GlobalId
+  | Id
+}
+
+// functions with 2 parameters
+BinaryOp = {
+    "!="
+  | "<="
+  | ">="
+  | ">"
+  | "<"
+  | "="
+  | "~"
+  | "@"
+  | ("." ~ !(ASCII_ALPHANUMERIC))
+  | "$"
+  | "?"
+  | "!"
+  | "++"
+  | "+"
+  | "-"
+  | "*"
+  | "%"
+  | "|"
+  | "&"
+  | "#"
+  | "^"
+  | "_"
+}
+
+Binary = _{
+    (BinaryOp | BinaryKeyword)
+}
+
+BinaryKeywords = _{
+    "within"
+  | "as"
+  | "bottom"
+  | "corr"
+  | "cov0"
+  | "cov1"
+  | "cross"
+  | "differ"
+  | "div"
+  | "emean"
+  | "estd"
+  | "evar"
+  | "intersect"
+  | "in"
+  | "like"
+  | "log"
+  | "matches"
+  | "mod"
+  | "join" // mod
+
+  | "mmax"
+  | "mmean"
+  | "mmedian"
+  | "mskew"
+  | "mmin"
+  | "mstd0"
+  | "mstd1"
+  | "msum"
+  | "mvar0"
+  | "mvar1"
+  | "pad"
+  | "pow"
+  | "fby"
+  | "quantile"
+  | "reshape"
+  | "rotate"
+  | "round"
+  | "shift" // | "slice"
+
+  | "split"
+  | "ssr"
+  | "ss"
+  | "top"
+  | "wmean"
+  | "wsum"
+  | "union" // query binary
+
+  | "extend"
+  | "gather"
+  | "hstack"
+  | "parallel"
+  | "set"
+  | "vstack"
+  | "xasc"
+  | "xbar"
+  | "xdesc"
+  | "xreorder"
+  | "xrename"
+  | "equal"
+  | "sub"
+  | "upsert"
+  | "each"
+  | "explode"
+}
+
+BinaryKeyword = @{
+    BinaryKeywords ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+// BinaryProj = ${ (BinaryKeyword | GlobalId | Id | FnCall | Fn) ~ Iterator? }
+
+QueryKeywords = _{
+    "select"
+  | "update"
+  | "delete"
+  | "by"
+  | "from"
+  | "where"
+}
+
+// <-- Query
+QueryExp = _{
+    UnaryQueryExp
+  | BinaryQueryExp
+  | FnCall
+  | BracketExp
+  | Term
+}
+
+UnaryQueryExp  =  { (GlobalId | Id) ~ (BinaryQueryExp | UnaryQueryExp | FnCall | Term) }
+BinaryQueryExp =  { (FnCall | UnaryExp | Term | BracketExp) ~ (BinaryOp | BinaryKeyword) ~ QueryExp }
+ColName        = @{ Id }
+ColNames       =  { ColName ~ ("," ~ ColName)* }
+RenameColExp   =  { ColName ~ ":" ~ QueryExp }
+ColExp         =  { RenameColExp | QueryExp }
+SelectExp      =  { ColExp ~ ("," ~ ColExp)* }
+ByExp          =  { "by" ~ ColExp ~ ("," ~ ColExp)* }
+FromExp        =  { "from" ~ (Table | FnCall | Id | GlobalId | BracketExp) }
+WhereExp       =  { "where" ~ QueryExp ~ ("," ~ QueryExp)* }
+LimitedExp     =  { "limit" ~ (GlobalId | Id | I64 | BracketExp) }
+SelectOp       =  { "select" | "update" }
+DeleteOp       =  { "delete" }
+Query          =  { (SelectOp ~ SelectExp? ~ ByExp? ~ FromExp ~ WhereExp? ~ LimitedExp?) | (DeleteOp ~ FromExp ~ WhereExp) | (DeleteOp ~ ColNames* ~ FromExp) }
+// --> Query
+
+Table = { "(" ~ "[" ~ "]" ~ ColExp ~ (";" ~ ColExp)* ~ ")" }
+
+Matrix = { "[[" ~ Exp ~ (";" ~ Exp)* ~ "]]" }
+
+KeyValueExp = { Id ~ ":" ~ Exp }
+Dict        = { "{" ~ (KeyValueExp ~ ";")* ~ KeyValueExp? ~ "}" }
+
+Params  = { "[" ~ (Id ~ ";")* ~ Id? ~ "]" }
+NullExp = { "" }
+Fn      = { "{" ~ Params ~ (statement)* ~ (RaiseExp | ReturnExp | IfExp | TryExp | Exp | NullExp) ~ "}" }
+
+DelayedArg = { "" }
+Arg        = { Exp | DelayedArg }
+FnCall     = { (GlobalId | Fn | BinaryKeyword | Id | Table | ListExp | BracketExp) ~ "[" ~ (Arg ~ ";")* ~ Arg ~ "]" }
+
+OneSpace = _{ (" " | "\t")+ }
+
+Date       = @{ ASCII_DIGIT{4} ~ "." ~ ASCII_DIGIT{2} ~ "." ~ ASCII_DIGIT{2} }
+Dates      = @{ Date ~ (OneSpace ~ Date)+ }
+Time       = @{ ASCII_DIGIT{2} ~ ":" ~ ASCII_DIGIT{2} ~ ":" ~ ASCII_DIGIT{2} ~ ("." ~ ASCII_DIGIT{,9})? }
+Times      = @{ Time ~ (OneSpace ~ Time)+ }
+Datetime   = @{ Date ~ "T" ~ Time? }
+Datetimes  = @{ Datetime ~ (OneSpace ~ Datetime)+ }
+Timestamp  = @{ Date ~ "D" ~ Time? }
+Timestamps = @{ Timestamp ~ (OneSpace ~ Timestamp)+ }
+Duration   = @{ Integer ~ "D" ~ Time? }
+Durations  = @{ Duration ~ (OneSpace ~ Duration)+ }
+Inf        = @{ "-"? ~ "0w" }
+F64        = @{ Inf | Decimal }
+F32        = @{ (Inf | Decimal | Integer) ~ ("e" | "f32") }
+Floats     = @{ (Null | Inf | Decimal | Integer) ~ (OneSpace ~ (Null | Inf | Decimal | Integer))+ ~ ("f64" | "f32" | "f" | "e") }
+Decimal    = @{ "-"? ~ ASCII_DIGIT+ ~ (("E" ~ Integer) | "." ~ ASCII_DIGIT* ~ ("E" ~ Integer)?) }
+I16        = @{ Integer ~ ("h" | "i16") }
+I32        = @{ Integer ~ ("i" | "i32") }
+I64        = @{ Integer }
+Integer    = @{ "-"? ~ ASCII_DIGIT+ }
+Integers   = @{ (Null | Integer) ~ (OneSpace ~ (Null | Integer))+ ~ ("h" | "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "i128" | "i")? }
+U8         = @{ "0x" ~ ASCII_HEX_DIGIT{2} }
+U8s        = @{ "0x" ~ (ASCII_HEX_DIGIT{2}){2, } }
+Boolean    = @{ ("0" | "1") ~ "b" }
+Booleans   = @{ ("0" | "1"){2, } ~ "b" }
+Null       = @{ "0n" }
+EmptyList  =  { "(" ~ ")" }
+
+Identifier =  { ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+Keyword    =  { QueryKeywords | BinaryKeywords | ControlKeywords }
+Id         = @{ (Identifier ~ ("." ~ Identifier)+) | (!Keyword ~ Identifier) | (Keyword ~ (ASCII_ALPHANUMERIC | "_")+) }
+GlobalId   = @{ "." ~ Identifier ~ ("." ~ Identifier)* }
+
+statementsWithoutCtrl = _{ ((RaiseExp | ReturnExp | Exp) ~ ";")* ~ (RaiseExp | ReturnExp | Exp)? }
+statements            = _{ (statement)* ~ (RaiseExp | ReturnExp | IfExp | TryExp | WhileExp | Exp)? }
+statement             = _{ ((RaiseExp | ReturnExp | IfExp | TryExp | WhileExp | Exp) ~ ";") }
+Program               = _{ SOI ~ statements ~ EOI }

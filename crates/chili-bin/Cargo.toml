@@ -1,0 +1,30 @@
+[package]
+name = "chili-bin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+home = "0.5.12"
+chili-op = { path = "../chili-op" }
+chili-core = { path = "../chili-core" }
+clap = { version = "4.5", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11.8"
+reedline = { version = "0.44", features = ["external_printer"] }
+nu-ansi-term = "0.50.3"
+chrono = "0.4.42"
+
+[features]
+vintage = ['chili-core/vintage', 'chili-op/vintage']
+
+[[bin]]
+name = "chili"
+path = "src/main.rs"
+
+[[bin]]
+name = "pepper"
+path = "src/main.rs"

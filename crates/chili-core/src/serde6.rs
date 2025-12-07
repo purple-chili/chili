@@ -1,0 +1,2692 @@
+use crate::constant::UNIX_EPOCH_DAY;
+use crate::obj::SpicyObj;
+use chrono::{Datelike, NaiveDate};
+use indexmap::IndexMap;
+use polars::chunked_array::ops::ChunkFillNullValue;
+use polars::datatypes::{DataType as PolarsDataType, TimeUnit as PolarTimeUnit};
+use polars::prelude::{Categories, Column, DataFrame};
+use polars::series::{IntoSeries, Series};
+use polars_arrow::array::{
+    Array, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, ListArray, PrimitiveArray, UInt8Array,
+    Utf8ViewArray,
+};
+use polars_arrow::bitmap::Bitmap;
+use polars_arrow::buffer::Buffer;
+use polars_arrow::datatypes::{ArrowDataType, Field, TimeUnit};
+use polars_arrow::legacy::kernels::set::set_at_nulls;
+use polars_arrow::types::NativeType;
+use polars_arrow::{array::Utf8Array, offset::OffsetsBuffer};
+use rayon::iter::IntoParallelIterator;
+use rayon::prelude::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use std::cmp::min;
+use std::io::Write;
+
+// time difference between chrono and q types
+pub const NS_DIFF: i64 = 946684800000000000;
+pub const MS_DIFF: i64 = 946684800000;
+const NS_PER_DAY: i64 = 86400000000000;
+const MS_PER_DAY: f64 = 86400000.0;
+pub const MS_IN_DAY: i64 = 86_400_000;
+pub const IPC_COMPRESS_THRESHOLD: usize = 1048576;
+
+// 10957 is the difference between 2000-01-01 and 1970-01-01
+pub const DAY_DIFF: i32 = 10957;
+const K_TYPE_NAME: [&str; 20] = [
+    "",
+    "boolean",
+    "guid",
+    "",
+    "byte",
+    "short",
+    "int",
+    "long",
+    "real",
+    "float",
+    "char",
+    "symbol",
+    "timestamp",
+    "",
+    "date",
+    "datetime",
+    "timespan",
+    "minute",
+    "second",
+    "time",
+];
+
+use crate::errors::SpicyError;
+use crate::obj::get_series_len;
+
+pub const K_TYPE_SIZE: [usize; 20] = [0, 1, 16, 0, 1, 2, 4, 8, 4, 8, 1, 0, 8, 4, 4, 8, 8, 4, 4, 4];
+
+pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<SpicyObj, SpicyError> {
+    let k_type = vec[*pos];
+    *pos += 1;
+    let start_pos = *pos;
+    match k_type {
+        237..=255 => match k_type {
+            255 => {
+                *pos += 1;
+                Ok(SpicyObj::Boolean(vec[start_pos] == 1))
+            }
+            252 => {
+                *pos += 1;
+                Ok(SpicyObj::U8(vec[start_pos]))
+            }
+            251 => {
+                *pos += 2;
+                Ok(SpicyObj::I16(i16::from_le_bytes(
+                    vec[start_pos..start_pos + 2].try_into().unwrap(),
+                )))
+            }
+            250 => {
+                *pos += 4;
+                Ok(SpicyObj::I32(i32::from_le_bytes(
+                    vec[start_pos..start_pos + 4].try_into().unwrap(),
+                )))
+            }
+            249 => {
+                *pos += 8;
+                Ok(SpicyObj::I64(i64::from_le_bytes(
+                    vec[start_pos..start_pos + 8].try_into().unwrap(),
+                )))
+            }
+            248 => {
+                *pos += 4;
+                Ok(SpicyObj::F32(f32::from_le_bytes(
+                    vec[start_pos..start_pos + 4].try_into().unwrap(),
+                )))
+            }
+            247 => {
+                *pos += 8;
+                Ok(SpicyObj::F64(f64::from_le_bytes(
+                    vec[start_pos..start_pos + 8].try_into().unwrap(),
+                )))
+            }
+            246 => {
+                *pos += 1;
+                Ok(SpicyObj::String(vec[start_pos].to_string()))
+            }
+            245 => {
+                let mut eod_pos = *pos;
+                while eod_pos <= vec.len() && vec[eod_pos] != 0 {
+                    eod_pos += 1;
+                }
+                *pos = eod_pos + 1;
+                Ok(SpicyObj::Symbol(
+                    String::from_utf8(vec[start_pos..eod_pos].to_vec()).unwrap(),
+                ))
+            }
+            // timestamp
+            244 => {
+                let ns = i64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap())
+                    .saturating_add(NS_DIFF);
+                *pos += 8;
+                Ok(SpicyObj::Timestamp(ns))
+            }
+            // month
+            243 => {
+                let unit = i32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap());
+                let year;
+                let month;
+                if unit >= 0 {
+                    year = 2000 + unit / 12;
+                    month = 1 + unit % 12;
+                } else {
+                    year = 2000 + (unit - 11) / 12;
+                    month = 12 + (unit - 11) % 12
+                }
+                *pos += 4;
+                Ok(SpicyObj::Date(
+                    NaiveDate::from_ymd_opt(year, month as u32, 1)
+                        .unwrap()
+                        .num_days_from_ce()
+                        + UNIX_EPOCH_DAY,
+                ))
+            }
+            // date
+            242 => {
+                let days = i32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap())
+                    .saturating_add(DAY_DIFF);
+                *pos += 4;
+                Ok(SpicyObj::Date(days))
+            }
+            // datetime
+            241 => {
+                let unit = f64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap());
+                let ms = MS_DIFF + (unit * MS_IN_DAY as f64) as i64;
+                *pos += 8;
+                Ok(SpicyObj::Datetime(ms))
+            }
+            // timespan
+            240 => {
+                let ns = i64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap());
+                *pos += 8;
+                Ok(SpicyObj::Duration(ns))
+            }
+            // time, second, minute
+            237..=239 => {
+                let unit = i32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap());
+                let mut nanos: i64 = 0;
+                // ms
+                if k_type == 237 {
+                    nanos = unit as i64 * 1000000;
+                // second
+                } else if k_type == 238 {
+                    nanos = unit as i64 * 1000000000;
+                } else if k_type == 239 {
+                    nanos = unit as i64 * 60000000000;
+                }
+                *pos += 4;
+                Ok(SpicyObj::Time(nanos))
+            }
+            _ => Err(SpicyError::NotSupportedKTypeErr(k_type)),
+        },
+        // string, list(i16, i32, i64, f32, f64)
+        0..=19 => {
+            let end_pos = match calculate_array_end_index(vec, *pos, k_type) {
+                Ok(end_pos) => end_pos,
+                Err(e) => {
+                    if !is_column && k_type == 0 {
+                        *pos += 1;
+                        let length =
+                            u32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap()) as usize;
+                        *pos += 4;
+                        let mut res = Vec::with_capacity(length);
+                        for _ in 0..length {
+                            res.push(deserialize(vec, pos, false)?);
+                        }
+                        return Ok(SpicyObj::MixedList(res));
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
+            let start_pos = *pos;
+            *pos = end_pos;
+            if k_type == 10 {
+                deserialize_series(&vec[start_pos..end_pos], k_type, false)
+            } else {
+                deserialize_series(&vec[start_pos..end_pos], k_type, true)
+            }
+        }
+        99 => {
+            if vec[*pos] == 98 {
+                let mut key_df: DataFrame = deserialize(vec, pos, true)?.try_into()?;
+                let value_df: DataFrame = deserialize(vec, pos, true)?.try_into()?;
+                unsafe { key_df.hstack_mut_unchecked(value_df.get_columns()) };
+                Ok(SpicyObj::DataFrame(key_df))
+            } else if vec[*pos] == 11 {
+                *pos += 1;
+                let end_pos = calculate_array_end_index(vec, *pos, 11)?;
+                let keys = deserialize_series(&vec[*pos..end_pos], 11, true)?;
+                *pos = end_pos;
+                if vec[end_pos] > 19 {
+                    return Err(SpicyError::Err(format!(
+                        "Not support k type {:?} values in dictionary",
+                        vec[end_pos]
+                    )));
+                }
+                let values = deserialize(vec, pos, is_column)?;
+                let keys = Series::try_from(keys).unwrap();
+                match values {
+                    SpicyObj::Series(s) => {
+                        let mut dict = IndexMap::with_capacity(keys.len());
+                        for (k, v) in keys.cat32().unwrap().iter_str().zip(s.iter()) {
+                            dict.insert(k.unwrap().to_string(), SpicyObj::from_any_value(v));
+                        }
+                        Ok(SpicyObj::Dict(dict))
+                    }
+                    SpicyObj::MixedList(l) => {
+                        let mut dict = IndexMap::with_capacity(keys.len());
+                        for (k, v) in keys.cat32().unwrap().iter_str().zip(l.into_iter()) {
+                            dict.insert(k.unwrap().to_string(), v);
+                        }
+                        Ok(SpicyObj::Dict(dict))
+                    }
+                    _ => unreachable!(),
+                }
+            } else {
+                Err(SpicyError::Err(format!(
+                    "Only support symbol keys dictionary or keyed table, got k type {:?}",
+                    vec[*pos]
+                )))
+            }
+        }
+        98 => {
+            *pos += 3;
+            let end_pos = calculate_array_end_index(vec, *pos, 11)?;
+            let k = deserialize_series(&vec[*pos..end_pos], 11, false)?;
+            *pos = end_pos;
+            let symbols = if let SpicyObj::Series(series) = k {
+                series
+            } else {
+                return Err(SpicyError::DeserializationErr(format!(
+                    "Expecting array, but got {:?}",
+                    k
+                )));
+            };
+            let symbols = symbols.str().unwrap();
+            *pos += 6;
+            let mut k_types = vec![0u8; symbols.len()];
+            let mut vectors: Vec<&[u8]> = Vec::with_capacity(symbols.len());
+            for k_type in k_types.iter_mut().take(symbols.len()) {
+                *k_type = vec[*pos];
+                *pos += 1;
+                let end_pos = calculate_array_end_index(vec, *pos, *k_type)?;
+                vectors.push(&vec[*pos..end_pos]);
+                *pos = end_pos;
+            }
+
+            let mut columns: Vec<Column> = vectors
+                .par_iter()
+                .zip(k_types.clone())
+                .map(|(v, t)| deserialize_series(v, t, true).unwrap().try_into().unwrap())
+                .collect();
+
+            columns.iter_mut().zip(symbols).for_each(|(c, n)| {
+                c.rename(n.unwrap_or("").into());
+            });
+            Ok(SpicyObj::DataFrame(DataFrame::new(columns).unwrap()))
+        }
+        101 => {
+            *pos += 1;
+            if vec[start_pos] == 0 {
+                Ok(SpicyObj::Null)
+            } else {
+                Err(SpicyError::NotSupportedKOperatorErr(vec[*pos]))
+            }
+        }
+        // q error
+        128 => {
+            let mut eod_pos = *pos;
+            while eod_pos <= vec.len() && vec[eod_pos] != 0 {
+                eod_pos += 1;
+            }
+            *pos = eod_pos;
+            Err(SpicyError::ServerErr(
+                String::from_utf8(vec[start_pos..eod_pos].to_vec()).unwrap(),
+            ))
+        }
+        _ => Err(SpicyError::NotSupportedKTypeErr(k_type)),
+    }
+}
+
+fn create_field(k_type: u8, name: &str) -> Result<Field, SpicyError> {
+    let name = name.into();
+    match k_type {
+        1 => Ok(Field::new(name, ArrowDataType::Boolean, false)),
+        2 => Ok(Field::new(name, ArrowDataType::Binary, false)),
+        4 => Ok(Field::new(name, ArrowDataType::UInt8, false)),
+        5 => Ok(Field::new(name, ArrowDataType::Int16, true)),
+        6 => Ok(Field::new(name, ArrowDataType::Int32, true)),
+        7 => Ok(Field::new(name, ArrowDataType::Int64, true)),
+        8 => Ok(Field::new(name, ArrowDataType::Float32, false)),
+        9 => Ok(Field::new(name, ArrowDataType::Float64, false)),
+        10 => Ok(Field::new(name, ArrowDataType::LargeUtf8, false)),
+        11 => Ok(Field::new(name, ArrowDataType::LargeUtf8, false)),
+        12 => Ok(Field::new(
+            name,
+            ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        )),
+        14 => Ok(Field::new(name, ArrowDataType::Date32, true)),
+        15 => Ok(Field::new(
+            name,
+            ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        )),
+        16 => Ok(Field::new(
+            name,
+            ArrowDataType::Time64(TimeUnit::Nanosecond),
+            true,
+        )),
+        17 => Ok(Field::new(
+            name,
+            ArrowDataType::Time32(TimeUnit::Millisecond),
+            true,
+        )),
+        18 => Ok(Field::new(
+            name,
+            ArrowDataType::Time32(TimeUnit::Millisecond),
+            true,
+        )),
+        19 => Ok(Field::new(
+            name,
+            ArrowDataType::Time32(TimeUnit::Millisecond),
+            true,
+        )),
+        _ => Err(SpicyError::NotSupportedKListErr(k_type)),
+    }
+}
+
+fn calculate_array_end_index(
+    vec: &[u8],
+    start_pos: usize,
+    k_type: u8,
+) -> Result<usize, SpicyError> {
+    let mut pos = start_pos;
+    match k_type {
+        0 => {
+            pos += 1;
+            let length = u32::from_le_bytes(vec[pos..pos + 4].try_into().unwrap()) as usize;
+            pos += 4;
+            if length == 0 {
+                return Ok(pos);
+            }
+            let sub_k_type = vec[pos];
+            if sub_k_type > 19 {
+                return Err(SpicyError::NotSupportedKNestedListErr(sub_k_type));
+            }
+            let k_size = K_TYPE_SIZE[sub_k_type as usize];
+            if let 1 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 12 = sub_k_type {
+                for _ in 0..length {
+                    let current_k_type = vec[pos];
+                    if sub_k_type != current_k_type && current_k_type != 0 {
+                        return Err(SpicyError::NotSupportedKMixedListErr(sub_k_type, vec[pos]));
+                    }
+                    pos += 2;
+                    let sub_length = i32::from_le_bytes(vec[pos..pos + 4].try_into().unwrap());
+                    if current_k_type == 0 && sub_length > 0 {
+                        return Err(SpicyError::NotSupportedKMixedListErr(sub_k_type, vec[pos]));
+                    }
+                    pos += 4;
+                    pos += k_size * sub_length as usize;
+                }
+                Ok(pos)
+            } else {
+                Err(SpicyError::NotSupportedKNestedListErr(sub_k_type))
+            }
+        }
+        // symbol list
+        11 => {
+            pos += 1;
+            let length = u32::from_le_bytes(vec[pos..pos + 4].try_into().unwrap()) as usize;
+            pos += 4;
+            let mut i = 0;
+            while i < length {
+                if vec[pos] == 0 {
+                    i += 1;
+                }
+                pos += 1;
+            }
+            Ok(pos)
+        }
+        _ => {
+            if k_type > 20 {
+                Err(SpicyError::NotSupportedKListErr(k_type))
+            } else if K_TYPE_SIZE[k_type as usize] > 0 {
+                pos += 1;
+                let length = u32::from_le_bytes(vec[pos..pos + 4].try_into().unwrap()) as usize;
+                let k_size = K_TYPE_SIZE[k_type as usize];
+                Ok(pos + 4 + k_size * length)
+            } else {
+                Err(SpicyError::NotSupportedKListErr(k_type))
+            }
+        }
+    }
+}
+
+fn deserialize_series(vec: &[u8], k_type: u8, as_column: bool) -> Result<SpicyObj, SpicyError> {
+    let mut pos = 1;
+    let length = u32::from_le_bytes(vec[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+    if length == 0 {
+        return new_empty_series(k_type);
+    }
+    let mut series: Series;
+    let array_box: Box<dyn Array>;
+    let k_size = K_TYPE_SIZE[k_type as usize];
+    let array_vec = &vec[pos..];
+    let name = K_TYPE_NAME[k_type as usize].into();
+    match k_type {
+        0 => deserialize_nested_array(vec),
+        1 => {
+            array_box =
+                BooleanArray::from_slice(array_vec.iter().map(|u| *u == 1).collect::<Vec<_>>())
+                    .boxed();
+            series = Series::from_arrow(name, array_box).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        2 => {
+            array_box = FixedSizeBinaryArray::new(
+                ArrowDataType::FixedSizeBinary(16),
+                Buffer::from(array_vec.to_vec()),
+                None,
+            )
+            .boxed();
+            series = Series::from_arrow(name, array_box).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        4 => {
+            array_box = UInt8Array::from_vec(array_vec.to_vec()).boxed();
+            series = Series::from_arrow(name, array_box).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        5 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const i16 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let bitmap =
+                Bitmap::from_iter(slice.iter().map(|s| *s > i16::MIN + 1 && *s < i16::MAX));
+            let mut array = Int16Array::from_slice(slice);
+            array.set_validity(Some(bitmap));
+            series = Series::from_arrow(name, array.boxed()).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        6 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const i32 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let bitmap =
+                Bitmap::from_iter(slice.iter().map(|s| *s > i32::MIN + 1 && *s < i32::MAX));
+            let mut array = Int32Array::from_slice(slice);
+            array.set_validity(Some(bitmap));
+            series = Series::from_arrow(name, array.boxed()).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        7 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const i64 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let bitmap =
+                Bitmap::from_iter(slice.iter().map(|s| *s > i64::MIN + 1 && *s < i64::MAX));
+            let mut array = Int64Array::from_slice(slice);
+            array.set_validity(Some(bitmap));
+            series = Series::from_arrow(name, array.boxed()).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        8 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const f32 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let bitmap = Bitmap::from_iter(slice.iter().map(|s| !f32::is_nan(*s)));
+            let mut array = Float32Array::from_slice(slice);
+            array.set_validity(Some(bitmap));
+            series = Series::from_arrow(name, array.boxed()).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        9 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const f64 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let bitmap = Bitmap::from_iter(slice.iter().map(|s| !f64::is_nan(*s)));
+            let mut array = Float64Array::from_slice(slice);
+            array.set_validity(Some(bitmap));
+            series = Series::from_arrow(name, array.boxed()).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        10 => {
+            if as_column {
+                let offsets: Vec<i64> = (0..=length as i64).collect();
+                array_box = Utf8Array::<i64>::new(
+                    ArrowDataType::LargeUtf8,
+                    OffsetsBuffer::try_from(offsets).unwrap(),
+                    Buffer::from(array_vec.to_vec()),
+                    None,
+                )
+                .boxed();
+                series = Series::from_arrow(name, array_box).unwrap();
+                Ok(SpicyObj::Series(series))
+            } else {
+                Ok(SpicyObj::String(
+                    String::from_utf8_lossy(array_vec).to_string(),
+                ))
+            }
+        }
+        11 => {
+            let mut v8: Vec<u8> = Vec::with_capacity(vec.len() - length);
+            let mut offsets: Vec<i64> = vec![0i64; length + 1];
+            let mut i = 0;
+            let mut start_pos = pos;
+            while i < length {
+                if vec[pos] == 0 {
+                    v8.write_all(&vec[start_pos..pos]).unwrap();
+                    offsets[i + 1] = offsets[i] + (pos - start_pos) as i64;
+                    start_pos = pos + 1;
+                    i += 1;
+                }
+                pos += 1;
+            }
+            array_box = Utf8Array::<i64>::new(
+                ArrowDataType::LargeUtf8,
+                OffsetsBuffer::try_from(offsets).unwrap(),
+                Buffer::from(v8),
+                None,
+            )
+            .boxed();
+            series = Series::from_arrow(name, array_box).unwrap();
+            if as_column {
+                series = series
+                    .cast(&PolarsDataType::Categorical(
+                        Categories::global(),
+                        Categories::global().mapping(),
+                    ))
+                    .unwrap();
+            }
+            Ok(SpicyObj::Series(series))
+        }
+        12 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const i64 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let slice = slice
+                .iter()
+                .map(|ns| match *ns {
+                    i64::MIN => *ns,
+                    _ => ns.saturating_add(NS_DIFF),
+                })
+                .collect::<Vec<_>>();
+            let bitmap = Bitmap::from_iter(slice.iter().map(|s| *s != i64::MIN));
+            let array = PrimitiveArray::new(
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                slice.into(),
+                Some(bitmap),
+            );
+            array_box = array.boxed();
+            series = Series::from_arrow(name, array_box).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        14 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const i32 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let bitmap = Bitmap::from_iter(slice.iter().map(|s| *s != i32::MIN));
+            let slice = slice
+                .iter()
+                .map(|day| {
+                    let day = day.saturating_add(DAY_DIFF);
+                    day.clamp(-96465658, 95026601)
+                })
+                .collect::<Vec<_>>();
+            let array = PrimitiveArray::new(ArrowDataType::Date32, slice.into(), Some(bitmap));
+            array_box = array.boxed();
+            series = Series::from_arrow(name, array_box).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        15 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const f64 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let slice = slice
+                .iter()
+                .map(|t| {
+                    if t.is_nan() {
+                        i64::MIN
+                    } else if t.is_finite() {
+                        (*t * MS_PER_DAY).round() as i64 * 1000000 + NS_DIFF
+                    } else if t.is_sign_positive() {
+                        i64::MAX
+                    } else {
+                        i64::MIN + 1
+                    }
+                })
+                .collect::<Vec<_>>();
+            let bitmap = Bitmap::from_iter(slice.iter().map(|s| *s != i64::MIN));
+            let array = PrimitiveArray::new(
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                slice.into(),
+                Some(bitmap),
+            );
+            array_box = array.boxed();
+            series = Series::from_arrow(name, array_box).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        // timespan
+        16 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const i64 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let bitmap = Bitmap::from_iter(slice.iter().map(|s| *s != i64::MIN));
+            let array = PrimitiveArray::new(
+                ArrowDataType::Duration(TimeUnit::Nanosecond),
+                slice.to_vec().into(),
+                Some(bitmap),
+            );
+            array_box = array.boxed();
+            series = Series::from_arrow(name, array_box).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        // minutes, seconds, time
+        17..=19 => {
+            let array_vec = array_vec.to_vec();
+            let new_ptr: *const i32 = array_vec.as_ptr().cast();
+            let slice = unsafe { core::slice::from_raw_parts(new_ptr, array_vec.len() / k_size) };
+            let bitmap = Bitmap::from_iter(slice.iter().map(|s| *s != i32::MIN));
+            let multiplier = if k_type == 17 {
+                60_000_000_000
+            } else if k_type == 18 {
+                1_000_000_000
+            } else {
+                1_000_000
+            };
+
+            let slice = slice
+                .iter()
+                .map(|t| {
+                    let ns = (*t as i64).saturating_mul(multiplier);
+                    ns.clamp(0, NS_PER_DAY - 1)
+                })
+                .collect::<Vec<_>>();
+
+            let array = PrimitiveArray::new(
+                ArrowDataType::Time64(TimeUnit::Nanosecond),
+                slice.into(),
+                Some(bitmap),
+            );
+            array_box = array.boxed();
+            series = Series::from_arrow(name, array_box).unwrap();
+            Ok(SpicyObj::Series(series))
+        }
+        _ => Err(SpicyError::NotSupportedKListErr(k_type)),
+    }
+}
+
+fn new_empty_series(k_type: u8) -> Result<SpicyObj, SpicyError> {
+    let name = K_TYPE_NAME[k_type as usize].into();
+    let series = match k_type {
+        0 => Series::new_empty(name, &PolarsDataType::Null),
+        1 => Series::new_empty(name, &PolarsDataType::Boolean),
+        2 => Series::new_empty(name, &PolarsDataType::Binary),
+        4 | 10 => Series::new_empty(name, &PolarsDataType::String),
+        5 => Series::new_empty(name, &PolarsDataType::Int16),
+        6 => Series::new_empty(name, &PolarsDataType::Int32),
+        7 => Series::new_empty(name, &PolarsDataType::Int64),
+        8 => Series::new_empty(name, &PolarsDataType::Float32),
+        9 => Series::new_empty(name, &PolarsDataType::Float64),
+        11 => Series::new_empty(
+            name,
+            &PolarsDataType::Categorical(Categories::global(), Categories::global().mapping()),
+        ),
+        12 | 15 => Series::new_empty(
+            name,
+            &PolarsDataType::Datetime(PolarTimeUnit::Nanoseconds, None),
+        ),
+        14 => Series::new_empty(name, &PolarsDataType::Date),
+        16 => Series::new_empty(name, &PolarsDataType::Duration(PolarTimeUnit::Nanoseconds)),
+        17..=19 => Series::new_empty(name, &PolarsDataType::Time),
+        _ => return Err(SpicyError::NotSupportedKListErr(k_type)),
+    };
+    Ok(SpicyObj::Series(series))
+}
+
+fn deserialize_nested_array(vec: &[u8]) -> Result<SpicyObj, SpicyError> {
+    let mut pos: usize = 1;
+    let length = u32::from_le_bytes(vec[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+    let k_type = vec[pos];
+    let k_size = K_TYPE_SIZE[k_type as usize];
+    let mut offsets: Vec<i64> = vec![0i64; length + 1];
+    let mut v8 = Vec::with_capacity(length * k_size);
+    // bool, byte, short, int, long, real, float, string
+    if let 1 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 12 = k_type {
+        for i in 0..length {
+            pos += 2;
+            let sub_length = i32::from_le_bytes(vec[pos..pos + 4].try_into().unwrap());
+            offsets[i + 1] = sub_length as i64 + offsets[i];
+            pos += 4;
+            v8.write_all(&vec[pos..pos + k_size * sub_length as usize])
+                .unwrap();
+            pos += k_size * sub_length as usize;
+        }
+    } else {
+        return Err(SpicyError::NotSupportedKNestedListErr(k_type));
+    }
+    let offsets_buf = OffsetsBuffer::<i64>::try_from(offsets).unwrap();
+    let name = K_TYPE_NAME[k_type as usize];
+    match k_type {
+        1 | 4 | 5 | 6 | 7 | 8 | 9 | 12 => {
+            let field: Field;
+            let list_array: ListArray<i32>;
+            let array_box: Box<dyn Array>;
+            let k_size = K_TYPE_SIZE[k_type as usize];
+            if k_type == 1 {
+                array_box =
+                    BooleanArray::from_slice(v8.into_iter().map(|u| u == 1).collect::<Vec<_>>())
+                        .boxed();
+                field = create_field(k_type, "boolean").unwrap();
+            } else if k_type == 4 {
+                let bytes: Buffer<u8> = v8.to_vec().into();
+                array_box = UInt8Array::from_slice(bytes.as_slice()).boxed();
+                field = create_field(k_type, "byte").unwrap();
+            } else if k_type == 5 {
+                let new_ptr: *const i16 = v8.as_ptr().cast();
+                let slice = unsafe { core::slice::from_raw_parts(new_ptr, v8.len() / k_size) };
+                let bitmap = Bitmap::from_iter(slice.iter().map(|s| *s != i16::MIN));
+                let mut array = Int16Array::from_slice(slice);
+                array.set_validity(Some(bitmap));
+                array_box = array.boxed();
+                field = create_field(k_type, "short").unwrap();
+            } else if k_type == 6 {
+                let new_ptr: *const i32 = v8.as_ptr().cast();
+                let slice = unsafe { core::slice::from_raw_parts(new_ptr, v8.len() / k_size) };
+                let bitmap = Bitmap::from_iter(slice.iter().map(|s| *s != i32::MIN));
+                let mut array = Int32Array::from_slice(slice);
+                array.set_validity(Some(bitmap));
+                array_box = array.boxed();
+                field = create_field(k_type, "int").unwrap();
+            } else if k_type == 7 {
+                let new_ptr: *const i64 = v8.as_ptr().cast();
+                let slice = unsafe { core::slice::from_raw_parts(new_ptr, v8.len() / k_size) };
+                let bitmap = Bitmap::from_iter(slice.iter().map(|s| *s != i64::MIN));
+                let mut array = Int64Array::from_slice(slice);
+                array.set_validity(Some(bitmap));
+                array_box = array.boxed();
+                field = create_field(k_type, "long").unwrap();
+            } else if k_type == 8 {
+                let new_ptr: *const f32 = v8.as_ptr().cast();
+                let slice = unsafe { core::slice::from_raw_parts(new_ptr, v8.len() / k_size) };
+                let bitmap = Bitmap::from_iter(slice.iter().map(|s| !f32::is_nan(*s)));
+                let mut array = Float32Array::from_slice(slice);
+                array.set_validity(Some(bitmap));
+                array_box = array.boxed();
+                field = create_field(k_type, "real").unwrap();
+            } else if k_type == 9 {
+                let new_ptr: *const f64 = v8.as_ptr().cast();
+                let slice = unsafe { core::slice::from_raw_parts(new_ptr, v8.len() / k_size) };
+                let bitmap = Bitmap::from_iter(slice.iter().map(|s| !f64::is_nan(*s)));
+                let mut array = Float64Array::from_slice(slice);
+                array.set_validity(Some(bitmap));
+                array_box = array.boxed();
+                field = create_field(k_type, "float").unwrap();
+            } else if k_type == 12 {
+                let new_ptr: *mut i64 = v8.as_mut_ptr().cast();
+                let slice = unsafe { core::slice::from_raw_parts(new_ptr, v8.len() / k_size) };
+                let slice = slice
+                    .iter()
+                    .map(|ns| match *ns {
+                        i64::MIN => *ns,
+                        _ => ns.saturating_add(NS_DIFF),
+                    })
+                    .collect::<Vec<_>>();
+                let bitmap = Bitmap::from_iter(slice.iter().map(|s| *s != i64::MIN));
+                let array = PrimitiveArray::new(
+                    ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                    slice.into(),
+                    Some(bitmap),
+                );
+                array_box = array.boxed();
+                field = create_field(k_type, "timestamp").unwrap();
+            } else {
+                unreachable!()
+            }
+
+            list_array = ListArray::<i32>::new(
+                ArrowDataType::List(Box::new(field)),
+                OffsetsBuffer::<i32>::try_from(&offsets_buf).unwrap(),
+                array_box,
+                None,
+            );
+
+            Ok(SpicyObj::Series(
+                Series::from_arrow(name.into(), list_array.boxed()).unwrap(),
+            ))
+        }
+        10 => {
+            let array_box = Utf8Array::<i64>::new(
+                ArrowDataType::LargeUtf8,
+                offsets_buf,
+                Buffer::from(v8),
+                None,
+            )
+            .boxed();
+            Ok(SpicyObj::Series(
+                Series::from_arrow(name.into(), array_box).unwrap(),
+            ))
+        }
+        _ => unreachable!(),
+    }
+}
+
+pub fn decompress(vec: &[u8], de_vec: &mut [u8], start_pos: usize) {
+    let mut d_pos: usize = 0;
+    // skip decompressed msg length
+    let mut x_pos: usize = 4;
+    let mut c_pos: usize = start_pos;
+    let mut x = [0usize; 256];
+    let mut n: u8 = 0;
+
+    let mut i: u8 = 0;
+    while d_pos < de_vec.len() {
+        if i == 0 {
+            n = vec[c_pos];
+            c_pos += 1;
+            i = 1;
+        }
+        let mut r: usize = 0;
+        if n & i != 0 {
+            let s = x[vec[c_pos] as usize];
+            c_pos += 1;
+            r = vec[c_pos] as usize;
+            c_pos += 1;
+            for j in 0..r + 2 {
+                de_vec[d_pos + j] = de_vec[s + j]
+            }
+            d_pos += 2;
+        } else {
+            de_vec[d_pos] = vec[c_pos];
+            d_pos += 1;
+            c_pos += 1;
+        }
+
+        for i in x_pos..d_pos - 1 {
+            x[(de_vec[i] ^ de_vec[i + 1]) as usize] = i
+        }
+
+        x_pos = d_pos - 1;
+
+        if n & i != 0 {
+            d_pos += r;
+            x_pos = d_pos;
+        }
+        i <<= 1
+    }
+}
+
+pub fn compress_with_max_size(vec: Vec<u8>, max_size: usize) -> Vec<u8> {
+    if vec.len() < max_size {
+        vec
+    } else {
+        let mut c_vec = vec![0u8; vec.len() / 2];
+        // compressed bytes start position
+        let mut c_pos: usize;
+        if vec.len() > 4294967295 {
+            c_pos = 16;
+            c_vec[2] = 2;
+            c_vec[(3 + 8)..(8 + 8)].copy_from_slice(&vec[3..8]);
+        } else {
+            c_pos = 12;
+            c_vec[2] = 1;
+            // copy raw vec length
+            c_vec[(4 + 4)..(8 + 4)].copy_from_slice(&vec[4..8]);
+        }
+        let mut n_pos: usize = c_pos;
+        let mut o_pos: usize = 8;
+        let mut x = [0usize; 256];
+
+        let mut px: u8 = 0;
+        let mut n: u8 = 0;
+        let mut p_pos: usize = 0;
+
+        let mut i: u8 = 0;
+
+        while o_pos < vec.len() {
+            if i == 0 {
+                if c_pos > c_vec.len() - 17 {
+                    return vec;
+                }
+                i = 1;
+                c_vec[n_pos] = n;
+                n_pos = c_pos;
+                c_pos += 1;
+                n = 0;
+            }
+            let mut skip = vec.len() - o_pos < 3;
+            let mut x_pos: usize = 0;
+            let mut cx: u8 = 0;
+            if !skip {
+                cx = vec[o_pos] ^ vec[o_pos + 1];
+                x_pos = x[cx as usize];
+                skip = x_pos == 0 || vec[o_pos] != vec[x_pos];
+            }
+
+            if p_pos > 0 {
+                x[px as usize] = p_pos;
+                p_pos = 0;
+            }
+
+            if skip {
+                px = cx;
+                p_pos = o_pos;
+                c_vec[c_pos] = vec[o_pos];
+                c_pos += 1;
+                o_pos += 1;
+            } else {
+                x[cx as usize] = o_pos;
+                n |= i;
+                x_pos += 2;
+                o_pos += 2;
+                let s = o_pos;
+                let max_index = min(o_pos + 255, vec.len());
+                while o_pos < max_index && vec[x_pos] == vec[o_pos] {
+                    o_pos += 1;
+                    x_pos += 1;
+                }
+                c_vec[c_pos] = cx;
+                c_pos += 1;
+                c_vec[c_pos] = (o_pos - s) as u8;
+                c_pos += 1;
+            }
+
+            i <<= 1;
+        }
+        c_vec[n_pos] = n;
+        c_vec[0] = vec[0];
+        c_vec[1] = vec[1];
+        c_vec[4..8].copy_from_slice(&u32::to_le_bytes(c_pos as u32));
+        c_vec.resize(c_pos, 0u8);
+        c_vec
+    }
+}
+
+pub fn compress(vec: Vec<u8>) -> Vec<u8> {
+    compress_with_max_size(vec, IPC_COMPRESS_THRESHOLD)
+}
+
+pub fn serialize(args: &SpicyObj) -> Result<Vec<u8>, SpicyError> {
+    let k_length = args.q6_len()?;
+    let mut vec: Vec<u8>;
+    match args {
+        SpicyObj::Boolean(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[255, (*k as u8)]).unwrap();
+        }
+        SpicyObj::U8(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[252, *k]).unwrap();
+        }
+        SpicyObj::I16(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[251]).unwrap();
+            vec.write_all(&NativeType::to_le_bytes(k)).unwrap();
+        }
+        SpicyObj::I32(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[250]).unwrap();
+            vec.write_all(&NativeType::to_le_bytes(k)).unwrap();
+        }
+        SpicyObj::I64(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[249]).unwrap();
+            vec.write_all(&NativeType::to_le_bytes(k)).unwrap();
+        }
+        SpicyObj::F32(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[248]).unwrap();
+            vec.write_all(&NativeType::to_le_bytes(k)).unwrap();
+        }
+        SpicyObj::F64(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[247]).unwrap();
+            vec.write_all(&NativeType::to_le_bytes(k)).unwrap();
+        }
+        SpicyObj::Symbol(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[245]).unwrap();
+            vec.write_all(k.as_bytes()).unwrap();
+            vec.write_all(&[0]).unwrap();
+        }
+        SpicyObj::String(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[10, 0]).unwrap();
+            vec.write_all(&(k.len() as u32).to_le_bytes()).unwrap();
+            vec.write_all(k.as_bytes()).unwrap();
+        }
+        // to timestamp
+        SpicyObj::Timestamp(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[244]).unwrap();
+            let ns = k.saturating_sub(NS_DIFF);
+            vec.write_all(&ns.to_le_bytes()).unwrap();
+        }
+        SpicyObj::Datetime(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[241]).unwrap();
+            let ns = k.saturating_sub(MS_DIFF) as f64 / MS_PER_DAY;
+            vec.write_all(&ns.to_le_bytes()).unwrap();
+        }
+        // to date
+        SpicyObj::Date(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[242]).unwrap();
+            let days = k.saturating_sub(DAY_DIFF);
+            vec.write_all(&days.to_le_bytes()).unwrap();
+        }
+        // to time
+        SpicyObj::Time(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[237]).unwrap();
+            let milliseconds = k / 1000000;
+            vec.write_all(&(milliseconds as i32).to_le_bytes()).unwrap();
+        }
+        // to timespan
+        SpicyObj::Duration(k) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[240]).unwrap();
+            vec.write_all(&k.to_le_bytes()).unwrap();
+        }
+        SpicyObj::MixedList(l) => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[0, 0]).unwrap();
+            vec.write_all(&(l.len() as u32).to_le_bytes()).unwrap();
+            for atom in l.iter() {
+                vec.write_all(&serialize(atom)?).unwrap();
+            }
+        }
+        // to list
+        SpicyObj::Series(k) => {
+            vec = serialize_series(k, k_length)?;
+        }
+        // to table
+        SpicyObj::DataFrame(k) => {
+            vec = Vec::with_capacity(k_length);
+            let column_names = k.get_column_names();
+            let column_count = column_names.len() as i32;
+            vec.write_all(&[98, 0, 99, 11, 0]).unwrap();
+            vec.write_all(&column_count.to_le_bytes()).unwrap();
+            column_names.into_iter().for_each(|s| {
+                vec.write_all(s.as_bytes()).unwrap();
+                vec.write_all(&[0]).unwrap();
+            });
+            vec.write_all(&[0, 0]).unwrap();
+            let columns = k.get_columns();
+            vec.write_all(&column_count.to_le_bytes()).unwrap();
+            let vectors = columns
+                .into_par_iter()
+                .map(|s| {
+                    serialize_series(
+                        s.as_materialized_series(),
+                        get_series_len(s.as_materialized_series()).unwrap(),
+                    )
+                })
+                .collect::<Result<Vec<Vec<u8>>, SpicyError>>()?;
+            vectors.into_iter().for_each(|v| {
+                vec.write_all(&v).unwrap();
+            });
+        }
+        // to (::)
+        SpicyObj::Null => {
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[101, 0]).unwrap();
+        }
+        SpicyObj::Dict(dict) => {
+            let keys = dict.keys();
+            let length = keys.len() as i32;
+            if length == 0 {
+                return Err(SpicyError::Err(
+                    "Not supported empty dictionary".to_string(),
+                ));
+            };
+            vec = Vec::with_capacity(k_length);
+            vec.write_all(&[99, 11, 0]).unwrap();
+            vec.write_all(&length.to_le_bytes()).unwrap();
+            keys.into_iter().for_each(|k| {
+                vec.write_all(k.as_bytes()).unwrap();
+                vec.write_all(&[0]).unwrap();
+            });
+            vec.write_all(&[0, 0]).unwrap();
+            vec.write_all(&length.to_le_bytes()).unwrap();
+            dict.values().for_each(|v| {
+                vec.write_all(&serialize(v).unwrap()).unwrap();
+            });
+        }
+        SpicyObj::Err(e) => {
+            let error_msg = e.as_bytes();
+            let mut buffer = Vec::with_capacity(error_msg.len() + 2);
+            buffer.push(128);
+            buffer.extend_from_slice(error_msg);
+            buffer.push(0);
+            vec = buffer;
+        }
+        _ => return Err(SpicyError::NotAbleToSerializeErr(args.get_type_name())),
+    };
+    Ok(vec)
+}
+
+fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyError> {
+    let mut vec: Vec<u8> = Vec::with_capacity(k_length);
+    let k_length = series.len();
+    if k_length > i32::MAX as usize {
+        return Err(SpicyError::OverLengthErr());
+    }
+    let k_size: usize;
+    match series.dtype() {
+        PolarsDataType::Boolean => {
+            vec.write_all(&[1, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let ptr = series.to_physical_repr();
+            let chunks = &ptr.bool().unwrap().chunks();
+            chunks.iter().for_each(|array| {
+                let array = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                array.iter().for_each(|b| {
+                    if b {
+                        vec.write_all(&[1u8]).unwrap();
+                    } else {
+                        vec.write_all(&[0u8]).unwrap();
+                    }
+                });
+            })
+        }
+        PolarsDataType::UInt8 => {
+            k_size = 1;
+            vec.write_all(&[4, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let ptr = series.to_physical_repr();
+            let chunks = &ptr.u8().unwrap().chunks();
+            chunks.iter().for_each(|array| {
+                let array = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<u8>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let v8 = unsafe { core::slice::from_raw_parts(array.as_ptr(), k_length / k_size) };
+                vec.write_all(v8).unwrap();
+            })
+        }
+        PolarsDataType::Int16 => {
+            k_size = 2;
+            vec.write_all(&[5, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let chunks = series.i16().unwrap();
+            let chunks = if chunks.null_count() > 0 {
+                chunks.fill_null_with_values(i16::MIN).unwrap()
+            } else {
+                chunks.clone()
+            };
+            chunks.chunks().iter().for_each(|array| {
+                let array = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<i16>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let v8 = unsafe {
+                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                };
+                vec.write_all(v8).unwrap();
+            })
+        }
+        PolarsDataType::Int32 => {
+            k_size = 4;
+            vec.write_all(&[6, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let chunks = series.i32().unwrap();
+            let chunks = if chunks.null_count() > 0 {
+                chunks.fill_null_with_values(i32::MIN).unwrap()
+            } else {
+                chunks.clone()
+            };
+            chunks.chunks().iter().for_each(|array| {
+                let array = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<i32>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let v8 = unsafe {
+                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                };
+                vec.write_all(v8).unwrap();
+            })
+        }
+        PolarsDataType::Int64 | PolarsDataType::UInt32 => {
+            let series = if series.dtype().eq(&PolarsDataType::UInt32) {
+                series.cast(&PolarsDataType::Int64).unwrap()
+            } else {
+                series.clone()
+            };
+            k_size = 8;
+            vec.write_all(&[7, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let new_series: Series;
+            let ptr = if series.null_count() > 0 {
+                new_series = series
+                    .i64()
+                    .unwrap()
+                    .fill_null_with_values(i64::MIN)
+                    .unwrap()
+                    .into_series();
+                new_series.to_physical_repr()
+            } else {
+                series.to_physical_repr()
+            };
+            let chunks = &ptr.i64().unwrap().chunks();
+            chunks.iter().for_each(|array| {
+                let array = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<i64>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let v8 = unsafe {
+                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                };
+                vec.write_all(v8).unwrap();
+            })
+        }
+        PolarsDataType::Float32 => {
+            k_size = 4;
+            vec.write_all(&[8, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let new_series: Series;
+            let ptr = if series.null_count() > 0 {
+                new_series = series
+                    .f32()
+                    .unwrap()
+                    .fill_null_with_values(f32::NAN)
+                    .unwrap()
+                    .into_series();
+                new_series.to_physical_repr()
+            } else {
+                series.to_physical_repr()
+            };
+            let chunks = &ptr.f32().unwrap().chunks();
+            chunks.iter().for_each(|array| {
+                let array = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<f32>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let v8 = unsafe {
+                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                };
+                vec.write_all(v8).unwrap();
+            })
+        }
+        PolarsDataType::Float64 => {
+            k_size = 8;
+            vec.write_all(&[9, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let new_series: Series;
+            let ptr = if series.null_count() > 0 {
+                new_series = series
+                    .f64()
+                    .unwrap()
+                    .fill_null_with_values(f64::NAN)
+                    .unwrap()
+                    .into_series();
+                new_series.to_physical_repr()
+            } else {
+                series.to_physical_repr()
+            };
+            let chunks = &ptr.f64().unwrap().chunks();
+            chunks.iter().for_each(|array| {
+                let array = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<f64>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let v8 = unsafe {
+                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                };
+                vec.write_all(v8).unwrap();
+            })
+        }
+        PolarsDataType::String => {
+            vec.write_all(&[0, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let ptr = series.to_physical_repr();
+            let array = ptr.str().unwrap();
+            array.chunks().iter().for_each(|arr| {
+                let arr = &**arr;
+                let arr = unsafe { &*(arr as *const dyn Array as *const Utf8ViewArray) };
+                arr.into_iter().for_each(|s| {
+                    vec.write_all(&[10, 0]).unwrap();
+                    match s {
+                        Some(s) => {
+                            vec.write_all(&(s.len() as u32).to_le_bytes()).unwrap();
+                            let v8 =
+                                unsafe { core::slice::from_raw_parts(s.as_ptr().cast(), s.len()) };
+                            vec.write_all(v8).unwrap();
+                        }
+                        None => {
+                            vec.write_all(&[0, 0, 0, 0]).unwrap();
+                        }
+                    }
+                });
+            });
+        }
+        PolarsDataType::Date => {
+            // max date - 95026601
+            k_size = 4;
+            vec.write_all(&[14, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let chunks = series.cast(&PolarsDataType::Int32).unwrap();
+            let chunks = chunks.i32().unwrap();
+            let chunks = if chunks.null_count() > 0 {
+                chunks.fill_null_with_values(i32::MIN).unwrap()
+            } else {
+                chunks.clone()
+            };
+            chunks.chunks().iter().for_each(|array| {
+                let buffer = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<i32>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let array: Vec<i32> = buffer
+                    .as_slice()
+                    .iter()
+                    .map(|d| {
+                        if *d == i32::MIN {
+                            *d
+                        } else {
+                            d.saturating_sub(10957)
+                        }
+                    })
+                    .collect();
+                let v8 = unsafe {
+                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                };
+                vec.write_all(v8).unwrap();
+            })
+        }
+        PolarsDataType::Datetime(unit, _) => {
+            k_size = 8;
+            let new_series: Series;
+            let ptr = if series.null_count() > 0 {
+                new_series = series
+                    .to_physical_repr()
+                    .i64()
+                    .unwrap()
+                    .fill_null_with_values(i64::MIN)
+                    .unwrap()
+                    .into_series();
+                new_series.to_physical_repr()
+            } else {
+                series.to_physical_repr()
+            };
+            let chunks = &ptr.i64().unwrap().chunks();
+            chunks.iter().for_each(|array| {
+                let buffer = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<i64>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let multplier = match unit {
+                    PolarTimeUnit::Nanoseconds => 1,
+                    PolarTimeUnit::Microseconds => 1000,
+                    PolarTimeUnit::Milliseconds => 1000000,
+                };
+                if !unit.eq(&PolarTimeUnit::Milliseconds) {
+                    vec.write_all(&[12, 0]).unwrap();
+                    vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+                    let array: Vec<i64> = buffer
+                        .as_slice()
+                        .iter()
+                        .map(|d| {
+                            if *d == i64::MIN {
+                                *d
+                            } else {
+                                d.saturating_mul(multplier).saturating_sub(NS_DIFF)
+                            }
+                        })
+                        .collect();
+                    let v8 = unsafe {
+                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    };
+                    vec.write_all(v8).unwrap();
+                } else {
+                    vec.write_all(&[15, 0]).unwrap();
+                    vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+                    let array: Vec<f64> = buffer
+                        .as_slice()
+                        .iter()
+                        .map(|d| {
+                            if *d == i64::MIN {
+                                f64::NAN
+                            } else {
+                                (d.saturating_sub(MS_DIFF)) as f64 / MS_PER_DAY
+                            }
+                        })
+                        .collect();
+                    let v8 = unsafe {
+                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    };
+                    vec.write_all(v8).unwrap();
+                };
+            })
+        }
+        PolarsDataType::Duration(_) => {
+            k_size = 8;
+            vec.write_all(&[16, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let new_series: Series;
+            let ptr = if series.null_count() > 0 {
+                new_series = series
+                    .to_physical_repr()
+                    .i64()
+                    .unwrap()
+                    .fill_null_with_values(i64::MIN)
+                    .unwrap()
+                    .into_series();
+                new_series.to_physical_repr()
+            } else {
+                series.to_physical_repr()
+            };
+            let chunks = &ptr.i64().unwrap().chunks();
+            chunks.iter().for_each(|array| {
+                let array = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<i64>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let v8 = unsafe {
+                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                };
+                vec.write_all(v8).unwrap();
+            })
+        }
+        PolarsDataType::Time => {
+            k_size = 4;
+            vec.write_all(&[19, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let new_series: Series;
+            let ptr = if series.null_count() > 0 {
+                new_series = series
+                    .to_physical_repr()
+                    .i64()
+                    .unwrap()
+                    .fill_null_with_values(i64::MIN)
+                    .unwrap()
+                    .into_series();
+                new_series.to_physical_repr()
+            } else {
+                series.to_physical_repr()
+            };
+            let chunks = &ptr.i64().unwrap().chunks();
+            chunks.iter().for_each(|array| {
+                let buffer = unsafe {
+                    array
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<i64>>()
+                        .unwrap_unchecked()
+                        .values()
+                };
+                let array: Vec<i32> = buffer
+                    .as_slice()
+                    .iter()
+                    .map(|d| {
+                        if *d == i64::MIN {
+                            i32::MIN
+                        } else {
+                            (d / 1_000_000) as i32
+                        }
+                    })
+                    .collect();
+
+                let v8 = unsafe {
+                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                };
+                vec.write_all(v8).unwrap();
+            })
+        }
+        PolarsDataType::Array(data_type, size) => {
+            vec.write_all(&[0, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let array = unsafe {
+                series.array().unwrap().chunks()[0]
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .unwrap_unchecked()
+            };
+            match data_type.as_ref() {
+                PolarsDataType::Boolean => {
+                    let array = unsafe {
+                        array
+                            .values()
+                            .as_any()
+                            .downcast_ref::<BooleanArray>()
+                            .unwrap_unchecked()
+                            .values()
+                    };
+                    let len_vec = (*size as i32).to_le_bytes();
+                    for (i, b) in array.iter().enumerate() {
+                        if i % size == 0 {
+                            vec.write_all(&[1, 0]).unwrap();
+                            vec.write_all(&len_vec).unwrap();
+                        }
+                        if b {
+                            vec.write_all(&[1u8]).unwrap();
+                        } else {
+                            unsafe { vec.set_len(vec.len() + 1) }
+                        }
+                    }
+                }
+                // PolarsDataType::UInt8 => todo!(),
+                // PolarsDataType::Int16 => todo!(),
+                // PolarsDataType::Int32 => todo!(),
+                // PolarsDataType::Int64 => todo!(),
+                // PolarsDataType::Float32 => todo!(),
+                // PolarsDataType::Float64 => todo!(),
+                _ => {
+                    return Err(SpicyError::NotSupportedPolarsNestedListTypeErr(
+                        data_type.as_ref().clone(),
+                    ));
+                }
+            }
+        }
+        PolarsDataType::List(data_type) => {
+            vec.write_all(&[0, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let list = unsafe {
+                series.list().unwrap().chunks()[0]
+                    .as_any()
+                    .downcast_ref::<ListArray<i64>>()
+                    .unwrap_unchecked()
+            };
+            let offsets = list.offsets().as_ref();
+            match data_type.as_ref() {
+                PolarsDataType::Boolean => {
+                    let list = unsafe {
+                        list.values()
+                            .as_any()
+                            .downcast_ref::<BooleanArray>()
+                            .unwrap_unchecked()
+                            .values()
+                    };
+                    for i in 0..k_length {
+                        let start_offset = offsets[i] as usize;
+                        let end_offset = offsets[i + 1] as usize;
+                        vec.write_all(&[1, 0]).unwrap();
+                        vec.write_all(&((offsets[i + 1] - offsets[i]) as i32).to_le_bytes())
+                            .unwrap();
+                        for j in start_offset..end_offset {
+                            if list.get_bit(j) {
+                                vec.write_all(&[1u8]).unwrap();
+                            } else {
+                                unsafe { vec.set_len(vec.len() + 1) }
+                            }
+                        }
+                    }
+                }
+                PolarsDataType::UInt8 => {
+                    let list = unsafe {
+                        list.values()
+                            .as_any()
+                            .downcast_ref::<UInt8Array>()
+                            .unwrap_unchecked()
+                            .values()
+                            .as_ref()
+                    };
+                    for i in 0..k_length {
+                        let start_offset = offsets[i] as usize;
+                        let end_offset = offsets[i + 1] as usize;
+                        vec.write_all(&[4, 0]).unwrap();
+                        vec.write_all(&((offsets[i + 1] - offsets[i]) as i32).to_le_bytes())
+                            .unwrap();
+                        vec.write_all(&list[start_offset..end_offset]).unwrap();
+                    }
+                }
+                PolarsDataType::Int16 => {
+                    let k_type = 5u8;
+                    let k_size = K_TYPE_SIZE[k_type as usize];
+                    let array = unsafe {
+                        list.values()
+                            .as_any()
+                            .downcast_ref::<Int16Array>()
+                            .unwrap_unchecked()
+                    };
+                    let p_array: PrimitiveArray<i16>;
+                    let array = if array.null_count() > 0 {
+                        p_array = set_at_nulls(array, i16::MIN);
+                        p_array.values()
+                    } else {
+                        array.values()
+                    };
+                    let v8: &[u8] = unsafe {
+                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    };
+                    for i in 0..k_length {
+                        let start_offset = k_size * offsets[i] as usize;
+                        let end_offset = k_size * offsets[i + 1] as usize;
+                        vec.write_all(&[k_type, 0]).unwrap();
+                        vec.write_all(&((offsets[i + 1] - offsets[i]) as i32).to_le_bytes())
+                            .unwrap();
+                        vec.write_all(&v8[start_offset..end_offset]).unwrap();
+                    }
+                }
+                PolarsDataType::Int32 => {
+                    let k_type = 6u8;
+                    let k_size = K_TYPE_SIZE[k_type as usize];
+                    let array = unsafe {
+                        list.values()
+                            .as_any()
+                            .downcast_ref::<Int32Array>()
+                            .unwrap_unchecked()
+                    };
+                    let p_array: PrimitiveArray<i32>;
+                    let array = if array.null_count() > 0 {
+                        p_array = set_at_nulls(array, i32::MIN);
+                        p_array.values()
+                    } else {
+                        array.values()
+                    };
+                    let v8: &[u8] = unsafe {
+                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    };
+                    for i in 0..k_length {
+                        let start_offset = k_size * offsets[i] as usize;
+                        let end_offset = k_size * offsets[i + 1] as usize;
+                        vec.write_all(&[k_type, 0]).unwrap();
+                        vec.write_all(&((offsets[i + 1] - offsets[i]) as i32).to_le_bytes())
+                            .unwrap();
+                        vec.write_all(&v8[start_offset..end_offset]).unwrap();
+                    }
+                }
+                PolarsDataType::Int64 => {
+                    let k_type = 7u8;
+                    let k_size = K_TYPE_SIZE[k_type as usize];
+                    let array = unsafe {
+                        list.values()
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .unwrap_unchecked()
+                    };
+                    let p_array: PrimitiveArray<i64>;
+                    let array = if array.null_count() > 0 {
+                        p_array = set_at_nulls(array, i64::MIN);
+                        p_array.values()
+                    } else {
+                        array.values()
+                    };
+                    let v8: &[u8] = unsafe {
+                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    };
+                    for i in 0..k_length {
+                        let start_offset = k_size * offsets[i] as usize;
+                        let end_offset = k_size * offsets[i + 1] as usize;
+                        vec.write_all(&[k_type, 0]).unwrap();
+                        vec.write_all(&((offsets[i + 1] - offsets[i]) as i32).to_le_bytes())
+                            .unwrap();
+                        vec.write_all(&v8[start_offset..end_offset]).unwrap();
+                    }
+                }
+                PolarsDataType::Float32 => {
+                    let k_type = 8u8;
+                    let k_size = K_TYPE_SIZE[k_type as usize];
+                    let array = unsafe {
+                        list.values()
+                            .as_any()
+                            .downcast_ref::<Float32Array>()
+                            .unwrap_unchecked()
+                    };
+                    let p_array: PrimitiveArray<f32>;
+                    let array = if array.null_count() > 0 {
+                        p_array = set_at_nulls(array, f32::NAN);
+                        p_array.values()
+                    } else {
+                        array.values()
+                    };
+                    let v8: &[u8] = unsafe {
+                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    };
+                    for i in 0..k_length {
+                        let start_offset = k_size * offsets[i] as usize;
+                        let end_offset = k_size * offsets[i + 1] as usize;
+                        vec.write_all(&[k_type, 0]).unwrap();
+                        vec.write_all(&((offsets[i + 1] - offsets[i]) as i32).to_le_bytes())
+                            .unwrap();
+                        vec.write_all(&v8[start_offset..end_offset]).unwrap();
+                    }
+                }
+                PolarsDataType::Float64 => {
+                    let k_type = 9u8;
+                    let k_size = K_TYPE_SIZE[k_type as usize];
+                    let array = unsafe {
+                        list.values()
+                            .as_any()
+                            .downcast_ref::<Float64Array>()
+                            .unwrap_unchecked()
+                    };
+                    let p_array: PrimitiveArray<f64>;
+                    let array = if array.null_count() > 0 {
+                        p_array = set_at_nulls(array, f64::NAN);
+                        p_array.values()
+                    } else {
+                        array.values()
+                    };
+                    let v8: &[u8] = unsafe {
+                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    };
+                    for i in 0..k_length {
+                        let start_offset = k_size * offsets[i] as usize;
+                        let end_offset = k_size * offsets[i + 1] as usize;
+                        vec.write_all(&[k_type, 0]).unwrap();
+                        vec.write_all(&((offsets[i + 1] - offsets[i]) as i32).to_le_bytes())
+                            .unwrap();
+                        vec.write_all(&v8[start_offset..end_offset]).unwrap();
+                    }
+                }
+                _ => {
+                    return Err(SpicyError::NotSupportedPolarsNestedListTypeErr(
+                        data_type.as_ref().clone(),
+                    ));
+                }
+            }
+        }
+        PolarsDataType::Categorical(_, _) => {
+            vec.write_all(&[11, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            series
+                .cat32()
+                .unwrap()
+                .iter_str()
+                .map(|s| {
+                    if let Some(s) = s {
+                        [s.as_bytes(), &[0u8]].concat()
+                    } else {
+                        vec![0u8]
+                    }
+                })
+                .for_each(|v| {
+                    vec.write_all(&v).unwrap();
+                });
+        }
+        PolarsDataType::Binary => {
+            vec.write_all(&[2, 0]).unwrap();
+            vec.write_all(&(k_length as i32).to_le_bytes()).unwrap();
+            let array = series.binary().unwrap();
+            array.chunks().iter().for_each(|arr| {
+                let arr = &**arr;
+                let arr = unsafe { &*(arr as *const dyn Array as *const BinaryViewArray) };
+                arr.into_iter().for_each(|b| match b {
+                    Some(b) => {
+                        vec.write_all(b).unwrap();
+                    }
+                    None => {
+                        vec.write_all(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                            .unwrap();
+                    }
+                });
+            });
+        }
+        PolarsDataType::Null if k_length == 0 => {
+            vec.write_all(&[0, 0, 0, 0, 0, 0]).unwrap();
+        }
+        _ => {
+            return Err(SpicyError::NotSupportedSeriesTypeErr(
+                series.dtype().clone(),
+            ));
+        }
+    }
+    Ok(vec)
+}
+
+#[cfg(test)]
+mod tests {
+    use indexmap::IndexMap;
+    use polars::prelude::{Categories, CompatLevel, NamedFrom};
+    use polars_arrow::{
+        array::{BooleanArray, UInt8Array},
+        offset::OffsetsBuffer,
+    };
+
+    use crate::serde6::*;
+
+    #[test]
+    fn decompress_msg() {
+        let vec: Vec<u8> = [
+            222, 7, 0, 0, 0, 1, 0, 208, 7, 0, 0, 1, 1, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
+            0, 255, 0, 255, 0, 197,
+        ]
+        .to_vec();
+        let length = u32::from_le_bytes(vec[0..4].try_into().unwrap());
+        let mut de_vec = vec![0; (length - 8) as usize];
+        decompress(&vec, &mut de_vec, 4);
+        let mut expected_vec = [1u8; 2006].to_vec();
+        expected_vec[1] = 0;
+        expected_vec[2] = 208;
+        expected_vec[3] = 7;
+        expected_vec[4] = 0;
+        expected_vec[5] = 0;
+        assert_eq!(de_vec, expected_vec);
+    }
+
+    #[test]
+    fn compress_msg() {
+        let mut vec = [0u8; 2014].to_vec();
+        vec[0] = 1;
+        vec[1] = 1;
+        vec[4] = 222;
+        vec[5] = 7;
+        vec[8] = 1;
+        vec[10] = 208;
+        vec[11] = 7;
+        let c_vec = compress_with_max_size(vec, 2000);
+        let expected_vec: Vec<u8> = [
+            1, 1, 1, 0, 36, 0, 0, 0, 222, 7, 0, 0, 192, 1, 0, 208, 7, 0, 0, 0, 255, 0, 255, 63, 0,
+            255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 199,
+        ]
+        .to_vec();
+        assert_eq!(c_vec, expected_vec);
+    }
+
+    #[test]
+    fn deserialize_and_serialize_boolean_list() {
+        let vec = [1, 0, 2, 0, 0, 0, 1, 0].to_vec();
+        let args = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            BooleanArray::from([Some(true), Some(false)]).boxed(),
+        )
+        .unwrap();
+        let series: Series = args.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_guid_list() {
+        let vec = [
+            2, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 90, 231, 150, 45, 73,
+            242, 64, 77, 90, 236, 247, 200, 171, 186, 226, 136,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let binary_array = FixedSizeBinaryArray::new(
+            ArrowDataType::FixedSizeBinary(16),
+            Buffer::from(
+                [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 90, 231, 150, 45, 73, 242, 64,
+                    77, 90, 236, 247, 200, 171, 186, 226, 136,
+                ]
+                .to_vec(),
+            ),
+            None,
+        );
+        let expect = Series::from_arrow(name.into(), binary_array.boxed()).unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_byte_list() {
+        let vec = [4, 0, 2, 0, 0, 0, 0, 1].to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect =
+            Series::from_arrow(name.into(), UInt8Array::from([Some(0), Some(1)]).boxed()).unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_short_list() {
+        let vec = [5, 0, 4, 0, 0, 0, 0, 128, 1, 128, 0, 0, 255, 127].to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            Int16Array::from([None, None, Some(0), None]).boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        let vec = [5, 0, 4, 0, 0, 0, 0, 128, 0, 128, 0, 0, 0, 128].to_vec();
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_int_list() {
+        let vec = [
+            6, 0, 4, 0, 0, 0, 0, 0, 0, 128, 1, 0, 0, 128, 0, 0, 0, 0, 255, 255, 255, 127,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            Int32Array::from([None, None, Some(0), None]).boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        let vec = [
+            6, 0, 4, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 128,
+        ]
+        .to_vec();
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_long_list() {
+        let vec = [
+            7, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 1, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0,
+            0, 0, 255, 255, 255, 255, 255, 255, 255, 127,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            Int64Array::from([None, None, Some(0), None]).boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        let vec = [
+            7, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 128,
+        ]
+        .to_vec();
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_real_list() {
+        let vec = [
+            8, 0, 4, 0, 0, 0, 0, 0, 192, 127, 0, 0, 128, 255, 0, 0, 0, 0, 0, 0, 128, 127,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            Float32Array::from([
+                None,
+                Some(f32::NEG_INFINITY),
+                Some(0.0),
+                Some(f32::INFINITY),
+            ])
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_float_list() {
+        let vec = [
+            9, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 248, 127, 0, 0, 0, 0, 0, 0, 240, 255, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 240, 127,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            Float64Array::from([
+                None,
+                Some(f64::NEG_INFINITY),
+                Some(0.0),
+                Some(f64::INFINITY),
+            ])
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_symbol_list() {
+        let vec = [11, 0, 3, 0, 0, 0, 97, 0, 0, 97, 98, 99, 0].to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            Utf8Array::<i64>::from([Some("a"), Some(""), Some("abc")]).boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        let expect = expect
+            .cast(&PolarsDataType::Categorical(
+                Categories::global(),
+                Categories::global().mapping(),
+            ))
+            .unwrap();
+        assert_eq!(
+            series.to_arrow(0, CompatLevel::newest()),
+            expect.to_arrow(0, CompatLevel::newest())
+        );
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_string_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 10, 0, 1, 0, 0, 0, 97, 10, 0, 2, 0, 0, 0, 97, 98, 10, 0, 3, 0, 0, 0,
+            97, 98, 99,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[6] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            Utf8Array::<i64>::from([Some("a"), Some("ab"), Some("abc")]).boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_datetime_list() {
+        let vec = [
+            15, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 248, 255, 227, 191, 70,
+            168, 89, 124, 194, 64,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            PrimitiveArray::new(
+                ArrowDataType::Timestamp(TimeUnit::Millisecond, None),
+                vec![946684800000, i64::MIN, 1764434918697].into(),
+                Some(Bitmap::from([true, false, true])),
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        let vec = [
+            15, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 248, 127, 192, 180, 70,
+            168, 89, 124, 194, 64,
+        ]
+        .to_vec();
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_timestamp_list() {
+        let vec = [
+            12, 0, 3, 0, 0, 0, 21, 45, 32, 237, 183, 167, 114, 10, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0,
+            199, 153, 133, 126, 114, 10,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            PrimitiveArray::new(
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                vec![1699533296123456789i64, i64::MIN, 1699488000000000000].into(),
+                Some(Bitmap::from([true, false, true])),
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_date_list() {
+        let vec = [
+            14, 0, 3, 0, 0, 0, 9, 34, 0, 0, 0, 0, 0, 128, 220, 210, 169, 5,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            PrimitiveArray::new(
+                ArrowDataType::Date32,
+                vec![19670, -96465658, 95026601].into(),
+                Some(Bitmap::from([true, false, true])),
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_datetime_list() {
+        let vec = [
+            15, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 248, 255, 0, 0, 0, 0, 0, 0, 240, 255, 70, 5, 58,
+            27, 195, 4, 193, 64, 0, 0, 0, 0, 0, 0, 240, 127,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            PrimitiveArray::new(
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                vec![i64::MIN, i64::MIN + 1, 1699533296789000000i64, i64::MAX].into(),
+                Some(Bitmap::from([false, true, true, true])),
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect)
+    }
+
+    #[test]
+    fn deserialize_and_serialize_timespan_list() {
+        let vec = [
+            16, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 21, 45, 89, 83, 50, 41, 0, 0, 1, 0, 0, 0,
+            0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            PrimitiveArray::new(
+                ArrowDataType::Duration(TimeUnit::Nanosecond),
+                vec![i64::MIN, 45296123456789, i64::MIN + 1, i64::MAX].into(),
+                Some(Bitmap::from([false, true, true, true])),
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_minute_list() {
+        let vec = [
+            17, 0, 4, 0, 0, 0, 0, 0, 0, 128, 242, 2, 0, 0, 1, 0, 0, 128, 255, 255, 255, 127,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            PrimitiveArray::new(
+                ArrowDataType::Time64(TimeUnit::Nanosecond),
+                vec![i64::MIN, 45_240_000_000_000, 0i64, NS_PER_DAY - 1].into(),
+                Some(Bitmap::from([false, true, true, true])),
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect)
+    }
+
+    #[test]
+    fn deserialize_second_list() {
+        let vec = [
+            18, 0, 4, 0, 0, 0, 0, 0, 0, 128, 240, 176, 0, 0, 1, 0, 0, 128, 255, 255, 255, 127,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            PrimitiveArray::new(
+                ArrowDataType::Time64(TimeUnit::Nanosecond),
+                vec![i64::MIN, 45_296_000_000_000, 0i64, NS_PER_DAY - 1].into(),
+                Some(Bitmap::from([false, true, true, true])),
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect)
+    }
+
+    #[test]
+    fn deserialize_and_serialize_time_list() {
+        let vec = [
+            19, 0, 4, 0, 0, 0, 0, 0, 0, 128, 149, 44, 179, 2, 0, 0, 0, 0, 255, 91, 38, 5,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let name = K_TYPE_NAME[vec[0] as usize];
+        let expect = Series::from_arrow(
+            name.into(),
+            PrimitiveArray::new(
+                ArrowDataType::Time64(TimeUnit::Nanosecond),
+                vec![i64::MIN, 45_296_789_000_000, 0i64, 86_399_999_000_000].into(),
+                Some(Bitmap::from([false, true, true, true])),
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_bool_nested_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 2, 0, 0, 0, 1, 1, 1, 0, 3, 0, 0, 0, 1, 1,
+            1,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let k_type = vec[6];
+        let name = K_TYPE_NAME[k_type as usize];
+        let offsets = OffsetsBuffer::<i32>::try_from([0, 1, 3, 6].to_vec()).unwrap();
+        let array = BooleanArray::from([true; 6].map(Some));
+        let field = create_field(k_type, name).unwrap();
+        let expect = Series::from_arrow(
+            name.into(),
+            ListArray::new(
+                ArrowDataType::List(Box::new(field)),
+                offsets,
+                array.boxed(),
+                None,
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_bool_nested_array() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 1, 0, 2, 0, 0, 0, 1, 0, 1, 0, 2, 0, 0, 0, 1, 0, 1, 0, 2, 0, 0, 0, 1,
+            0,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let k_type = vec[6];
+        let name = K_TYPE_NAME[k_type as usize];
+        let array = BooleanArray::from([true, false, true, false, true, false].map(Some));
+        let field = create_field(k_type, name).unwrap();
+        let expect = Series::from_arrow(
+            name.into(),
+            FixedSizeListArray::new(
+                ArrowDataType::FixedSizeList(Box::new(field), 2),
+                array.len() / 2,
+                array.boxed(),
+                None,
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_byte_nested_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 4, 0, 0, 0, 0, 0, 4, 0, 1, 0, 0, 0, 1, 4, 0, 2, 0, 0, 0, 1, 2,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let k_type = vec[6];
+        let name = K_TYPE_NAME[k_type as usize];
+        let offsets = OffsetsBuffer::<i32>::try_from([0, 0, 1, 3].to_vec()).unwrap();
+        let array = UInt8Array::from_slice(vec![1, 1, 2]);
+        let field = create_field(k_type, name).unwrap();
+        let expect = Series::from_arrow(
+            name.into(),
+            ListArray::new(
+                ArrowDataType::List(Box::new(field)),
+                offsets,
+                array.boxed(),
+                None,
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_short_nested_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 5, 0, 0, 0, 0, 0, 5, 0, 1, 0, 0, 0, 0, 128, 5, 0, 2, 0, 0, 0, 1, 0,
+            2, 0,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let k_type = vec[6];
+        let name = K_TYPE_NAME[k_type as usize];
+        let offsets = OffsetsBuffer::<i32>::try_from([0, 0, 1, 3].to_vec()).unwrap();
+        let array = Int16Array::from([None, Some(1), Some(2)]);
+        let field = create_field(k_type, name).unwrap();
+        let expect = Series::from_arrow(
+            name.into(),
+            ListArray::new(
+                ArrowDataType::List(Box::new(field)),
+                offsets,
+                array.boxed(),
+                None,
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_int_nested_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 6, 0, 0, 0, 0, 0, 6, 0, 1, 0, 0, 0, 0, 0, 0, 128, 6, 0, 2, 0, 0, 0,
+            1, 0, 0, 0, 2, 0, 0, 0,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let k_type = vec[6];
+        let name = K_TYPE_NAME[k_type as usize];
+        let offsets = OffsetsBuffer::<i32>::try_from([0, 0, 1, 3].to_vec()).unwrap();
+        let array = Int32Array::from([None, Some(1), Some(2)]);
+        let field = create_field(k_type, name).unwrap();
+        let expect = Series::from_arrow(
+            name.into(),
+            ListArray::new(
+                ArrowDataType::List(Box::new(field)),
+                offsets,
+                array.boxed(),
+                None,
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_long_nested_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 7, 0, 0, 0, 0, 0, 7, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 7, 0,
+            2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let k_type = vec[6];
+        let name = K_TYPE_NAME[k_type as usize];
+        let offsets = OffsetsBuffer::<i32>::try_from([0, 0, 1, 3].to_vec()).unwrap();
+        let array = Int64Array::from([None, Some(1), Some(2)]);
+        let field = create_field(k_type, name).unwrap();
+        let expect = Series::from_arrow(
+            name.into(),
+            ListArray::new(
+                ArrowDataType::List(Box::new(field)),
+                offsets,
+                array.boxed(),
+                None,
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_real_nested_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 8, 0, 0, 0, 0, 0, 8, 0, 1, 0, 0, 0, 0, 0, 128, 127, 8, 0, 2, 0, 0, 0,
+            0, 0, 128, 63, 0, 0, 128, 255,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let k_type = vec[6];
+        let name = K_TYPE_NAME[k_type as usize];
+        let offsets = OffsetsBuffer::<i32>::try_from([0, 0, 1, 3].to_vec()).unwrap();
+        let array =
+            Float32Array::from([Some(f32::INFINITY), Some(1.0f32), Some(f32::NEG_INFINITY)]);
+        let field = create_field(k_type, name).unwrap();
+        let expect = Series::from_arrow(
+            name.into(),
+            ListArray::new(
+                ArrowDataType::List(Box::new(field)),
+                offsets,
+                array.boxed(),
+                None,
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_float_nested_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 9, 0, 0, 0, 0, 0, 9, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 240, 127, 9, 0,
+            2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 240, 63, 0, 0, 0, 0, 0, 0, 240, 255,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let k_type = vec[6];
+        let name = K_TYPE_NAME[k_type as usize];
+        let offsets = OffsetsBuffer::<i32>::try_from([0, 0, 1, 3].to_vec()).unwrap();
+        let array = Float64Array::from([Some(f64::INFINITY), Some(1.0), Some(f64::NEG_INFINITY)]);
+        let field = create_field(k_type, name).unwrap();
+        let expect = Series::from_arrow(
+            name.into(),
+            ListArray::new(
+                ArrowDataType::List(Box::new(field)),
+                offsets,
+                array.boxed(),
+                None,
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_timestamp_nested_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 7, 0, 0, 0, 0, 0, 7, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 7, 0,
+            2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let k_type = vec[6];
+        let name = K_TYPE_NAME[k_type as usize];
+        let offsets = OffsetsBuffer::<i32>::try_from([0, 0, 1, 3].to_vec()).unwrap();
+        let array = Int64Array::from([None, Some(1), Some(2)]);
+        let field = create_field(k_type, name).unwrap();
+        let expect = Series::from_arrow(
+            name.into(),
+            ListArray::new(
+                ArrowDataType::List(Box::new(field)),
+                offsets,
+                array.boxed(),
+                None,
+            )
+            .boxed(),
+        )
+        .unwrap();
+        let series: Series = k.try_into().unwrap();
+        assert_eq!(series, expect);
+        assert_eq!(vec, serialize(&SpicyObj::Series(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_mixed_list() {
+        let vec = [
+            0, 0, 3, 0, 0, 0, 245, 117, 112, 100, 0, 245, 116, 0, 98, 0, 99, 11, 0, 1, 0, 0, 0, 97,
+            0, 0, 0, 1, 0, 0, 0, 7, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let expect = SpicyObj::MixedList(vec![
+            SpicyObj::Symbol("upd".to_owned()),
+            SpicyObj::Symbol("t".to_owned()),
+            SpicyObj::DataFrame(
+                DataFrame::new(vec![Series::new("a".into(), [1i64].as_ref()).into()]).unwrap(),
+            ),
+        ]);
+        assert_eq!(k, expect);
+        assert_eq!(vec, serialize(&expect).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_table() {
+        let vec = [
+            98, 0, 99, 11, 0, 2, 0, 0, 0, 97, 0, 98, 0, 0, 0, 2, 0, 0, 0, 7, 0, 1, 0, 0, 0, 1, 0,
+            0, 0, 0, 0, 0, 0, 9, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 240, 63,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let df: DataFrame = k.try_into().unwrap();
+        let s0 = Series::new("a".into(), [1i64].as_ref());
+        let s1 = Series::new("b".into(), [1.0f64].as_ref());
+        let expect = DataFrame::new(vec![s0.into(), s1.into()]).unwrap();
+        assert_eq!(df, expect);
+        assert_eq!(vec, serialize(&SpicyObj::DataFrame(expect)).unwrap());
+    }
+
+    #[test]
+    fn deserialize_keyed_table() {
+        let vec = [
+            99, 98, 0, 99, 11, 0, 1, 0, 0, 0, 97, 0, 0, 0, 1, 0, 0, 0, 9, 0, 1, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 240, 63, 98, 0, 99, 11, 0, 1, 0, 0, 0, 98, 0, 0, 0, 1, 0, 0, 0, 9, 0, 1, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 240, 63,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let df: DataFrame = k.try_into().unwrap();
+        let s0 = Series::new("a".into(), [1i64].as_ref());
+        let s1 = Series::new("b".into(), [1.0f64].as_ref());
+        let expect = DataFrame::new(vec![s0.into(), s1.into()]).unwrap();
+        assert_eq!(df, expect);
+    }
+
+    #[test]
+    fn serialize_bool() {
+        let k = SpicyObj::Boolean(true);
+        assert_eq!(serialize(&k).unwrap(), [255, 1]);
+    }
+
+    #[test]
+    fn serialize_byte() {
+        let k = SpicyObj::U8(99);
+        assert_eq!(serialize(&k).unwrap(), [252, 99]);
+    }
+
+    #[test]
+    fn serialize_short() {
+        let k = SpicyObj::I16(99);
+        assert_eq!(serialize(&k).unwrap(), [251, 99, 0]);
+    }
+
+    #[test]
+    fn serialize_int() {
+        let k = SpicyObj::I32(99999999);
+        assert_eq!(serialize(&k).unwrap(), [250, 255, 224, 245, 5]);
+    }
+
+    #[test]
+    fn serialize_long() {
+        let k = SpicyObj::I64(9999_9999_9999_9999);
+        assert_eq!(
+            serialize(&k).unwrap(),
+            [249, 255, 255, 192, 111, 242, 134, 35, 0]
+        );
+    }
+
+    #[test]
+    fn serialize_real() {
+        let k = SpicyObj::F32(9.9e10);
+        assert_eq!(serialize(&k).unwrap(), [248, 225, 102, 184, 81]);
+    }
+
+    #[test]
+    fn serialize_float() {
+        let k = SpicyObj::F64(9.9e10);
+        assert_eq!(serialize(&k).unwrap(), [247, 0, 0, 0, 30, 220, 12, 55, 66]);
+    }
+
+    #[test]
+    fn serialize_symbol() {
+        let k = SpicyObj::Symbol("abc".to_string());
+        assert_eq!(serialize(&k).unwrap(), [245, 97, 98, 99, 0]);
+    }
+
+    #[test]
+    fn serialize_string() {
+        let k = SpicyObj::String("abc".to_string());
+        assert_eq!(serialize(&k).unwrap(), [10, 0, 3, 0, 0, 0, 97, 98, 99]);
+    }
+
+    #[test]
+    fn serialize_timestamp() {
+        let k = SpicyObj::Timestamp(123456789);
+        assert_eq!(
+            serialize(&k).unwrap(),
+            [244, 21, 205, 24, 181, 48, 179, 220, 242]
+        );
+    }
+
+    #[test]
+    fn serialize_date() {
+        let k = SpicyObj::Date(19676);
+        assert_eq!(serialize(&k).unwrap(), [242, 15, 34, 0, 0]);
+    }
+
+    #[test]
+    fn serialize_time() {
+        let k = SpicyObj::Time(1_055_070_000_000);
+        assert_eq!(serialize(&k).unwrap(), [237, 94, 25, 16, 0]);
+    }
+
+    #[test]
+    fn serialize_duration() {
+        let k = SpicyObj::Duration(822896123456789);
+        assert_eq!(
+            serialize(&k).unwrap(),
+            [240, 21, 45, 32, 111, 107, 236, 2, 0]
+        );
+    }
+
+    #[test]
+    fn serialize_none() {
+        let k = SpicyObj::Null;
+        assert_eq!(serialize(&k).unwrap(), [101, 0]);
+    }
+
+    #[test]
+    fn deserialize_and_serialize_dict() {
+        let vec = [
+            99, 11, 0, 2, 0, 0, 0, 97, 0, 98, 0, 0, 0, 2, 0, 0, 0, 249, 1, 0, 0, 0, 0, 0, 0, 0,
+            247, 0, 0, 0, 0, 0, 0, 240, 63,
+        ]
+        .to_vec();
+        let mut dict = IndexMap::with_capacity(2);
+        dict.insert("a".to_string(), SpicyObj::I64(1));
+        dict.insert("b".to_string(), SpicyObj::F64(1.0));
+        let k = SpicyObj::Dict(dict);
+        assert_eq!(deserialize(&vec, &mut 0, false).unwrap(), k);
+        assert_eq!(vec, serialize(&k).unwrap());
+    }
+}

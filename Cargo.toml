@@ -1,0 +1,35 @@
+[workspace.package]
+version = "0.6.0"
+edition = "2024"
+authors = ["The Chili Authors <purple-chili@hotmail.com>"]
+description = "chili"
+
+[workspace]
+resolver = "2"
+members = ["crates/chili-*"]
+
+[workspace.dependencies.polars-arrow]
+version = "0.52.0"
+
+[workspace.dependencies.polars]
+version = "0.52.0"
+
+[workspace.dependencies.polars-ops]
+version = "0.52.0"
+
+[workspace.dependencies.polars-compute]
+version = "0.52.0"
+
+[workspace.dependencies.polars-lazy]
+version = "0.52.0"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+# panic = "abort"
+
+[patch.crates-io.polars-core]
+git = "https://github.com/hinmeru/polars-core-patch.git"
+tag = "v0.52.0"

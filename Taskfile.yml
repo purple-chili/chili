@@ -1,0 +1,87 @@
+# https://taskfile.dev
+version: "3"
+
+vars:
+  VERSION:
+    sh: grep "version" Cargo.toml | head -1 | cut -d'"' -f 2
+
+tasks:
+  default:
+    cmds:
+      - cargo update --verbose
+    silent: true
+
+  test:
+    deps:
+      - test-vintage-grammar
+      - test-grammar
+
+  test-vintage-grammar:
+    dir: crates/chili-vintage-grammar
+    cmds:
+      - cargo test
+
+  test-grammar:
+    dir: crates/chili-grammar
+    cmds:
+      - cargo test
+
+  build:
+    cmds:
+      - cargo build --bin chili
+
+  build-vintage:
+    cmds:
+      - cargo build --bin pepper --features vintage
+
+  release:
+    cmds:
+      - cargo build --release --bin chili
+      - ls -lh ./target/x86_64-unknown-linux-gnu/release/chili
+
+  release-vintage:
+    cmds:
+      - cargo build --release --bin pepper --features vintage
+      - ls -lh ./target/x86_64-unknown-linux-gnu/release/chili
+
+  run:
+    deps:
+      - build
+    cmds:
+      - ./target/debug/chili
+
+  run-vintage:
+    deps:
+      - build-vintage
+    cmds:
+      - ./target/debug/pepper
+
+  dist:
+    deps:
+      - release
+      - release-vintage
+    cmds:
+      - rm -f ./dist/chili ./dist/chili_*
+      - mkdir -p ./dist
+      - cp ./target/x86_64-unknown-linux-gnu/release/chili ./dist/chili
+      - cp ./target/x86_64-unknown-linux-gnu/release/pepper ./dist/pepper
+      - cd ./dist && tar -czvf chili_x86_64_linux_gnu_{{.VERSION}}.tar.gz ./chili
+      - cd ./dist && tar -czvf pepper_x86_64_linux_gnu_{{.VERSION}}.tar.gz ./pepper
+
+  podman-dist:
+    cmds:
+      - podman run --cpus=8 -it --rm -v $PWD:/build:Z -v $HOME/.cargo:$HOME/.cargo:Z manylinux2014 /bin/bash -i -c "task dist"
+
+  install:
+    deps:
+      - podman-dist
+    cmds:
+      - cp ./dist/chili ~/bin
+
+  tag:
+    cmds:
+      - git tag {{.VERSION}} && git push origin tag {{.VERSION}}
+
+  clippy:
+    cmds:
+      - cargo clippy --fix --allow-dirty

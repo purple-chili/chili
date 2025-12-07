@@ -1,0 +1,77 @@
+[package]
+name = "chili-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+
+[dependencies]
+chili-grammar = { path = "../chili-grammar" }
+chili-vintage-grammar = { path = "../chili-vintage-grammar", optional = true }
+pest = { version = "2.8.3", features = ["pretty-print"] }
+polars = { workspace = true, default-features = true, features = [
+  "abs",
+  "concat_str",
+  "cov",
+  "cum_agg",
+  "cross_join",
+  "diff",
+  "dtype-array",
+  "dtype-categorical",
+  "dtype-decimal",
+  "dtype-i16",
+  "dtype-u16",
+  "dtype-struct",
+  "dtype-u8",
+  "dynamic_group_by",
+  "ewma",
+  "interpolate",
+  "is_between",
+  "is_in",
+  "ipc",
+  "ipc_streaming",
+  "lazy",
+  "list_sets",
+  "list_any_all",
+  "log",
+  "mode",
+  "moment",
+  "ndarray",
+  "offset_by",
+  "parquet",
+  "pct_change",
+  "polars-ops",
+  "polars-io",
+  "random",
+  "range",
+  "rank",
+  "regex",
+  "rolling_window",
+  "round_series",
+  "row_hash",
+  "timezones",
+  "search_sorted",
+  "serde",
+  "serde-lazy",
+  "sign",
+  "string_pad",
+  "strings",
+  "top_k",
+  "trigonometry",
+  "unique_counts",
+] }
+indexmap = "2.12.0"
+glob = "0.3"
+rayon = "1.11.0"
+polars-arrow = { workspace = true }
+ndarray = "0.16.1"
+chrono = "0.4"
+whoami = "1.6"
+log = "0.4"
+indicatif = "0.18"
+thiserror = "2.0"
+anyhow = "1.0"
+regex = "1.12"
+
+[features]
+vintage = ["chili-vintage-grammar"]

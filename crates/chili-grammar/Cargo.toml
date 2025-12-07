@@ -1,0 +1,10 @@
+[package]
+name = "chili-grammar"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+
+[dependencies]
+pest = { version = "2.8.3", features = ["pretty-print"] }
+pest_derive = "2.8.3"
