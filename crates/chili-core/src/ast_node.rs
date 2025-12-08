@@ -17,7 +17,6 @@ impl SourcePos {
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum AstNode {
-    Show(Box<AstNode>),
     SpicyObj(SpicyObj),
     UnaryExp {
         f: Box<AstNode>,
@@ -135,7 +134,6 @@ impl AstNode {
 impl Display for AstNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            AstNode::Show(_) => "show",
             AstNode::SpicyObj(obj) => return write!(f, "spicy obj - {}", obj),
             AstNode::UnaryExp { f: _, exp: _ } => "unary expression",
             AstNode::BinaryExp {

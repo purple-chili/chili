@@ -1443,7 +1443,7 @@ pub fn lt(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg1 = args[1];
     if arg0.is_expr() || arg1.is_expr() {
         return Ok(SpicyObj::Expr(
-            arg0.as_expr().unwrap().gt(arg1.as_expr().unwrap()),
+            arg0.as_expr().unwrap().lt(arg1.as_expr().unwrap()),
         ));
     }
     let c0 = arg0.get_type_code();
