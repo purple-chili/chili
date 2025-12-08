@@ -79,6 +79,7 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let files = glob::glob(path).map_err(|e| SpicyError::Err(e.to_string()))?;
     let mut paths = Vec::new();
     let mut names = Vec::new();
+    let mut sizes = Vec::new();
     let mut mod_times = Vec::new();
     for entry in files {
         match entry {
@@ -92,6 +93,7 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap();
                 mod_times.push(mod_time.as_nanos() as i64);
+                sizes.push(metadata.len() as i64);
             }
             Err(e) => return Err(SpicyError::Err(e.to_string())),
         }
@@ -100,6 +102,7 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         DataFrame::new(vec![
             Column::new("path".into(), paths),
             Column::new("name".into(), names),
+            Column::new("size".into(), sizes),
             Column::new("mod_time".into(), mod_times)
                 .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
                 .unwrap(),

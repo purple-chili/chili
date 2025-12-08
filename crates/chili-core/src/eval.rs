@@ -360,10 +360,6 @@ pub fn eval_by_node(
             let obj = eval_by_node(state, stack, node, src, columns)?;
             Err(SpicyError::RaiseErr(obj.to_string()))
         }
-        node => Err(SpicyError::EvalErr(format!(
-            "unexpected ast node: {:?}",
-            node
-        ))),
     }
 }
 

@@ -417,13 +417,16 @@ name = "chili-bin"
 version = "0.6.0"
 dependencies = [
  "chili-core",
+ "chili-grammar",
  "chili-op",
+ "chili-vintage-grammar",
  "chrono",
  "clap",
  "env_logger",
  "home",
  "log",
  "nu-ansi-term",
+ "pest",
  "reedline",
 ]
 

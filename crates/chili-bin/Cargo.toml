@@ -11,6 +11,9 @@ description.workspace = true
 home = "0.5.12"
 chili-op = { path = "../chili-op" }
 chili-core = { path = "../chili-core" }
+chili-grammar = { path = "../chili-grammar" }
+chili-vintage-grammar = { path = "../chili-vintage-grammar", optional = true }
+pest = { version = "2.8.3", features = ["pretty-print"] }
 clap = { version = "4.5", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11.8"
@@ -19,7 +22,7 @@ nu-ansi-term = "0.50.3"
 chrono = "0.4.42"
 
 [features]
-vintage = ['chili-core/vintage', 'chili-op/vintage']
+vintage = ['chili-core/vintage', 'chili-op/vintage', 'chili-vintage-grammar']
 
 [[bin]]
 name = "chili"

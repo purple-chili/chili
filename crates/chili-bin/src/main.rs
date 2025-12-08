@@ -1,9 +1,11 @@
 mod completer;
 mod logger;
 mod pipe;
+mod validator;
 
 use crate::logger::LOG_FN;
 use crate::pipe::Pipe;
+use crate::validator::ChiliValidator;
 use chili_core::{ConnType, EngineState, IpcType, utils};
 use chili_op::BUILT_IN_FN;
 use clap::Parser;
@@ -14,9 +16,9 @@ use log::{debug, error, info};
 use crate::completer::ChiliCompleter;
 use nu_ansi_term::{Color, Style};
 use reedline::{
-    ColumnarMenu, DefaultHinter, DefaultPrompt, DefaultPromptSegment, DefaultValidator, Emacs,
-    ExternalPrinter, FileBackedHistory, KeyCode, KeyModifiers, MenuBuilder, Reedline,
-    ReedlineEvent, ReedlineMenu, Signal, default_emacs_keybindings,
+    ColumnarMenu, DefaultHinter, DefaultPrompt, DefaultPromptSegment, Emacs, ExternalPrinter,
+    FileBackedHistory, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
+    Signal, default_emacs_keybindings,
 };
 use std::fs::File;
 use std::io::Write;
@@ -303,7 +305,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_completer(Box::new(completer))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
         .with_edit_mode(Box::new(edit_mode))
-        .with_validator(Box::new(DefaultValidator))
+        .with_validator(Box::new(ChiliValidator {}))
         .with_external_printer(printer)
         .use_bracketed_paste(true);
 

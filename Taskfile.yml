@@ -85,3 +85,8 @@ tasks:
   clippy:
     cmds:
       - cargo clippy --fix --allow-dirty
+
+  config-vim:
+    cmds:
+      - mkdir -p ~/.vim
+      - cp -r ./vim-config/* ~/.vim/
