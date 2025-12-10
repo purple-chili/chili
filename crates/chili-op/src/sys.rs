@@ -2,7 +2,7 @@ use crate::random::set_global_random_seed;
 use chili_core::{ArgType, SpicyError, SpicyObj, SpicyResult, validate_args};
 use polars::{
     frame::DataFrame,
-    prelude::{Column, DataType, TimeUnit},
+    prelude::{Categories, Column, DataType, TimeUnit},
 };
 
 use std::{env, process::Command, time::SystemTime};
@@ -80,6 +80,7 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let mut paths = Vec::new();
     let mut names = Vec::new();
     let mut sizes = Vec::new();
+    let mut types = Vec::new();
     let mut mod_times = Vec::new();
     for entry in files {
         match entry {
@@ -94,6 +95,16 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                     .unwrap();
                 mod_times.push(mod_time.as_nanos() as i64);
                 sizes.push(metadata.len() as i64);
+                let filepath = if metadata.is_file() {
+                    "file"
+                } else if metadata.is_dir() {
+                    "dir"
+                } else if metadata.is_symlink() {
+                    "symlink"
+                } else {
+                    "unknown"
+                };
+                types.push(filepath);
             }
             Err(e) => return Err(SpicyError::Err(e.to_string())),
         }
@@ -103,6 +114,12 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             Column::new("path".into(), paths),
             Column::new("name".into(), names),
             Column::new("size".into(), sizes),
+            Column::new("type".into(), types)
+                .cast(&DataType::Categorical(
+                    Categories::global(),
+                    Categories::global().mapping(),
+                ))
+                .unwrap(),
             Column::new("mod_time".into(), mod_times)
                 .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
                 .unwrap(),

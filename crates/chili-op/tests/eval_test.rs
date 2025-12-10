@@ -393,7 +393,7 @@ mod tests {
         let code = "
         try {
             a: 1 * `a;
-        } catch {
+        } catch(err) {
             err ~ \"type\";
         }
         ";

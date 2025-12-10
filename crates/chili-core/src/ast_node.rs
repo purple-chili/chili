@@ -18,6 +18,12 @@ impl SourcePos {
 #[derive(PartialEq, Debug, Clone)]
 pub enum AstNode {
     SpicyObj(SpicyObj),
+    // ||, &&, ??
+    ShortCircuit {
+        op: String,
+        left_cond: Box<AstNode>,
+        right_cond: Box<AstNode>,
+    },
     UnaryExp {
         f: Box<AstNode>,
         exp: Box<AstNode>,
@@ -48,6 +54,7 @@ pub enum AstNode {
     If {
         cond: Box<AstNode>,
         nodes: Vec<AstNode>,
+        else_nodes: Vec<AstNode>,
     },
     While {
         cond: Box<AstNode>,
@@ -135,6 +142,11 @@ impl Display for AstNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             AstNode::SpicyObj(obj) => return write!(f, "spicy obj - {}", obj),
+            AstNode::ShortCircuit {
+                op: _,
+                left_cond: _,
+                right_cond: _,
+            } => "short circuit expression",
             AstNode::UnaryExp { f: _, exp: _ } => "unary expression",
             AstNode::BinaryExp {
                 f2: _,
@@ -158,7 +170,7 @@ impl Display for AstNode {
             AstNode::Dict { keys: _, values: _ } => "dictionary expression",
             AstNode::List(_) => "list expression",
             AstNode::ColExp { name: _, exp: _ } => "column expression",
-            AstNode::If { cond: _, nodes: _ } => "if expression",
+            AstNode::If { .. } => "if expression",
             AstNode::While { cond: _, nodes: _ } => "while expression",
             AstNode::IfElse { nodes: _ } => "if else expression",
             AstNode::Try { .. } => "try expression",

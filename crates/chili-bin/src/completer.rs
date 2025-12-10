@@ -24,8 +24,8 @@ impl Completer for ChiliCompleter {
         self.suggestions
             .iter()
             .filter(|(s, _)| s.starts_with(last_word))
-            .map(|(s, d)| Suggestion {
-                value: s.to_string(),
+            .map(|(_, d)| Suggestion {
+                value: d.to_string(),
                 description: Some(d.to_string()),
                 span: Span::new(pos - last_word.len(), pos),
                 ..Default::default()

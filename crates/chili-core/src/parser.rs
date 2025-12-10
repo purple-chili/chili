@@ -60,11 +60,19 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
             let binary_exp = pair.next().unwrap();
             let rhs_pair = pair.next().unwrap();
             let rhs = parse_exp(rhs_pair, source_id)?;
-            Ok(AstNode::BinaryExp {
-                f2: Box::new(parse_binary_exp(binary_exp, source_id)?),
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            })
+            if ["||", "&&", "??"].contains(&binary_exp.as_str()) {
+                Ok(AstNode::ShortCircuit {
+                    op: binary_exp.as_str().to_owned(),
+                    left_cond: Box::new(lhs),
+                    right_cond: Box::new(rhs),
+                })
+            } else {
+                Ok(AstNode::BinaryExp {
+                    f2: Box::new(parse_binary_exp(binary_exp, source_id)?),
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            }
         }
         // left associative binary expressions
         #[cfg(not(feature = "vintage"))]
@@ -76,13 +84,22 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
 
             for _ in 0..(pair.len() / 2) {
                 let binary_exp = pair.next().unwrap();
+
                 let rhs_pair = pair.next().unwrap();
                 let rhs = parse_exp(rhs_pair, source_id)?;
-                prev_node = AstNode::BinaryExp {
-                    f2: Box::new(parse_binary_exp(binary_exp, source_id)?),
-                    lhs: Box::new(prev_node),
-                    rhs: Box::new(rhs),
-                };
+                if ["||", "&&", "??"].contains(&binary_exp.as_str()) {
+                    prev_node = AstNode::ShortCircuit {
+                        op: binary_exp.as_str().to_owned(),
+                        left_cond: Box::new(prev_node),
+                        right_cond: Box::new(rhs),
+                    };
+                } else {
+                    prev_node = AstNode::BinaryExp {
+                        f2: Box::new(parse_binary_exp(binary_exp, source_id)?),
+                        lhs: Box::new(prev_node),
+                        rhs: Box::new(rhs),
+                    };
+                }
             }
             Ok(prev_node)
         }
@@ -182,25 +199,54 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
         }
         Rule::IfExp => {
             let mut pairs = pair.into_inner();
-            let cond = parse_exp(pairs.next().unwrap(), source_id)?;
-            let mut nodes = Vec::new();
-            for pair in pairs {
-                let rule = pair.as_rule();
-                nodes.push(parse_exp(pair, source_id)?);
-                if rule == Rule::ReturnExp {
-                    break;
+            if pairs.len() == 1 {
+                let mut pairs = pairs.next().unwrap().into_inner();
+                let cond = parse_exp(pairs.next().unwrap(), source_id)?;
+                let mut nodes = Vec::new();
+                for pair in pairs {
+                    let rule = pair.as_rule();
+                    nodes.push(parse_exp(pair, source_id)?);
+                    if rule == Rule::ReturnExp {
+                        break;
+                    }
                 }
+                Ok(AstNode::If {
+                    cond: Box::new(cond),
+                    nodes,
+                    else_nodes: vec![],
+                })
+            } else {
+                let cond = parse_exp(pairs.next().unwrap(), source_id)?;
+                let mut nodes = Vec::new();
+                for pair in pairs.next().unwrap().into_inner() {
+                    let rule = pair.as_rule();
+                    nodes.push(parse_exp(pair, source_id)?);
+                    if rule == Rule::ReturnExp {
+                        break;
+                    }
+                }
+                let mut else_nodes = Vec::new();
+                if let Some(pair) = pairs.next() {
+                    for pair in pair.into_inner() {
+                        let rule = pair.as_rule();
+                        else_nodes.push(parse_exp(pair, source_id)?);
+                        if rule == Rule::ReturnExp {
+                            break;
+                        }
+                    }
+                }
+                Ok(AstNode::If {
+                    cond: Box::new(cond),
+                    nodes,
+                    else_nodes,
+                })
             }
-            Ok(AstNode::If {
-                cond: Box::new(cond),
-                nodes,
-            })
         }
         Rule::WhileExp => {
             let mut pairs = pair.into_inner();
             let cond = parse_exp(pairs.next().unwrap(), source_id)?;
             let mut nodes = Vec::new();
-            for pair in pairs {
+            for pair in pairs.next().unwrap().into_inner() {
                 let rule = pair.as_rule();
                 nodes.push(parse_exp(pair, source_id)?);
                 if rule == Rule::ReturnExp {

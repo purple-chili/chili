@@ -274,10 +274,21 @@ pub fn eval_by_node(
             }
             Ok(SpicyObj::Dict(m))
         }
-        AstNode::If { cond, nodes } => {
+        AstNode::If {
+            cond,
+            nodes,
+            else_nodes,
+        } => {
             let obj = eval_by_node(state, stack, cond, src, columns)?;
             if obj.is_truthy()? {
                 for node in nodes {
+                    let obj = eval_by_node(state, stack, node, src, columns)?;
+                    if obj.is_return() {
+                        return Ok(obj);
+                    }
+                }
+            } else if else_nodes.len() > 0 {
+                for node in else_nodes {
                     let obj = eval_by_node(state, stack, node, src, columns)?;
                     if obj.is_return() {
                         return Ok(obj);
@@ -359,6 +370,38 @@ pub fn eval_by_node(
         AstNode::Raise(node) => {
             let obj = eval_by_node(state, stack, node, src, columns)?;
             Err(SpicyError::RaiseErr(obj.to_string()))
+        }
+        AstNode::ShortCircuit {
+            op,
+            left_cond,
+            right_cond,
+        } => {
+            let left_cond = eval_by_node(state, stack, left_cond, src, columns)?;
+            if op == "||" {
+                if left_cond.is_truthy()? {
+                    return Ok(SpicyObj::Boolean(true));
+                } else {
+                    let right_cond = eval_by_node(state, stack, right_cond, src, columns)?;
+                    return Ok(SpicyObj::Boolean(right_cond.is_truthy()?));
+                }
+            }
+            if op == "&&" {
+                if !left_cond.is_truthy()? {
+                    return Ok(SpicyObj::Boolean(false));
+                } else {
+                    let right_cond = eval_by_node(state, stack, right_cond, src, columns)?;
+                    return Ok(SpicyObj::Boolean(right_cond.is_truthy()?));
+                }
+            }
+            if op == "??" {
+                if left_cond.is_null() {
+                    let right_cond = eval_by_node(state, stack, right_cond, src, columns)?;
+                    return Ok(right_cond);
+                } else {
+                    return Ok(left_cond);
+                }
+            }
+            Ok(SpicyObj::Null)
         }
     }
 }

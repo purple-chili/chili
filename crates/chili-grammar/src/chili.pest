@@ -48,6 +48,7 @@ Exp = {
 
 ControlKeywords = _{
     "if"
+  | "else"
   | "function"
   | "try"
   | "catch"
@@ -55,16 +56,16 @@ ControlKeywords = _{
   | "raise"
 }
 
-IfExp = { "if" ~ "(" ~ Exp ~ ")" ~ "{" ~ statements ~ "}" }
+BlockStatements = { statements }
+
+IfExp = { "if" ~ "(" ~ Exp ~ ")" ~ "{" ~ BlockStatements ~ "}" ~ ("else" ~ "{" ~ BlockStatements ~ "}")? }
 
 WhileExp = { "while" ~ "(" ~ Exp ~ ")" ~ "{" ~ statements ~ "}" }
 
 // if else
 IfElseExp = { "if" ~ "{" ~ statementsWithoutCtrl ~ "}" }
 
-TryStatements   = { statements }
-CatchStatements = { statements }
-TryExp          = { "try" ~ "{" ~ TryStatements ~ "}" ~ "catch" ~"(" ~ Id ~ ")" ~ "{" ~ CatchStatements ~ "}" }
+TryExp = { "try" ~ "{" ~ BlockStatements ~ "}" ~ "catch" ~ "(" ~ Id ~ ")" ~ "{" ~ BlockStatements ~ "}" }
 
 BracketExp = { "(" ~ (Exp | BinaryKeyword) ~ ")" }
 
@@ -138,6 +139,7 @@ BinaryOp = {
   | "@"
   | ("." ~ !(ASCII_ALPHANUMERIC))
   | "$"
+  | "??"
   | "?"
   | "!"
   | "++"
@@ -145,7 +147,9 @@ BinaryOp = {
   | "-"
   | "*"
   | "/"
+  | "||"
   | "|"
+  | "&&"
   | "&"
   | "#"
   | "^"
@@ -174,7 +178,7 @@ BinaryKeywords = _{
   | "in"
   | "like"
   | "log"
-  | "matches"
+  | "match"
   | "mod"
   | "join" // mod
 
@@ -270,7 +274,7 @@ Query          =  { (SelectOp ~ SelectExp? ~ ByExp? ~ FromExp ~ WhereExp? ~ Limi
 
 Table = { "(" ~ "[" ~ "]" ~ ColExp ~ ("," ~ ColExp)* ~ ")" }
 
-Matrix = { "[[" ~ Exp ~ (";" ~ Exp)* ~ "]]" }
+Matrix = { "[[" ~ Exp ~ ("," ~ Exp)* ~ "]]" }
 
 KeyValueExp = { Id ~ ":" ~ Exp }
 Dict        = { "{" ~ (KeyValueExp ~ ",")* ~ KeyValueExp? ~ "}" }

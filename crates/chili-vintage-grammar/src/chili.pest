@@ -46,15 +46,15 @@ Exp = {
 
 ControlKeywords = _{ "if" }
 
-IfExp = { "if" ~ "[" ~ statements ~ "]" }
+BlockStatements = { statements }
 
-WhileExp = { "while" ~ "[" ~ statements ~ "]" }
+IfExp = { "if" ~ "[" ~ BlockStatements ~ "]" }
+
+WhileExp = { "while" ~ "[" ~ BlockStatements ~ "]" }
 
 IfElseExp = { "$" ~ "[" ~ statementsWithoutCtrl ~ "]" }
 
-TryStatements   = { statements }
-CatchStatements = { statements }
-TryExp          = { "try" ~ "[" ~ TryStatements ~ "]" ~ "catch" ~ "[" ~ CatchStatements ~ "]" }
+TryExp = { "try" ~ "[" ~ BlockStatements ~ "]" ~ "catch" ~ "[" ~ BlockStatements ~ "]" }
 
 BracketExp = { "(" ~ (Exp | BinaryKeyword) ~ ")" }
 
@@ -146,6 +146,7 @@ BinaryOp = {
   | "@"
   | ("." ~ !(ASCII_ALPHANUMERIC))
   | "$"
+  | "??"
   | "?"
   | "!"
   | "++"
@@ -153,7 +154,9 @@ BinaryOp = {
   | "-"
   | "*"
   | "%"
+  | "||"
   | "|"
+  | "&&"
   | "&"
   | "#"
   | "^"
@@ -181,7 +184,7 @@ BinaryKeywords = _{
   | "in"
   | "like"
   | "log"
-  | "matches"
+  | "match"
   | "mod"
   | "join" // mod
 

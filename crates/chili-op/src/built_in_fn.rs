@@ -228,11 +228,11 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             Func::new_built_in_fn(Some(Box::new(math::log)), 2, "log", &["value", "base"]),
         ),
         (
-            "matches".to_owned(),
+            "match".to_owned(),
             Func::new_built_in_fn(
                 Some(Box::new(basic::matches)),
                 2,
-                "matches",
+                "match",
                 &["strings", "pattern"],
             ),
         ),

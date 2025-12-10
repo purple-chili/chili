@@ -603,7 +603,7 @@ pub fn matches(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         return Ok(SpicyObj::Expr(left.str().count_matches(right, true)));
     }
     validate_args(args, &[ArgType::StrLike, ArgType::StrOrStrs])?;
-    let err = || SpicyError::UnsupportedUnaryOpErr("matches".to_owned(), arg0.get_type_name());
+    let err = || SpicyError::UnsupportedUnaryOpErr("match".to_owned(), arg0.get_type_name());
     match arg0 {
         SpicyObj::Symbol(s0) | SpicyObj::String(s0) => {
             let p1 = arg1.str().map_err(|_| err())?;
