@@ -154,6 +154,14 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
                 })
             }
         }
+        #[cfg(not(feature = "vintage"))]
+        Rule::Column => {
+            use polars::prelude::col;
+            let column = pair.as_str().to_owned();
+            Ok(AstNode::SpicyObj(SpicyObj::Expr(col(column
+                [1..column.len() - 1]
+                .to_owned()))))
+        }
         Rule::Id => {
             let id = pair.as_str().to_owned();
             Ok(AstNode::Id {

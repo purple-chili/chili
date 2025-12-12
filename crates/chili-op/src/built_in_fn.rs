@@ -499,6 +499,10 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             Func::new_built_in_fn(Some(Box::new(sys::getenv)), 1, ".os.getenv", &["name"]),
         ),
         (
+            ".os.mem".to_owned(),
+            Func::new_built_in_fn(Some(Box::new(sys::mem)), 0, ".os.mem", &[]),
+        ),
+        (
             "union".to_owned(),
             Func::new_built_in_fn(Some(Box::new(basic::union)), 2, "union", &["p1", "p2"]),
         ),

@@ -558,7 +558,9 @@ pub fn eval_call(
             // vintage mode allows arguments number to be less to create a partially applied function
             #[cfg(feature = "vintage")]
             if args.len() > f.arg_num
-                && !(f.arg_num == 0 && args.len() == 1 && *args[0] == SpicyObj::DelayedArg)
+                && !(f.arg_num == 0
+                    && args.len() == 1
+                    && (*args[0] == SpicyObj::DelayedArg || args[0].size() == 0))
             {
                 return Err(SpicyError::MismatchedArgNumErr(f.arg_num, args.len()));
             }
@@ -566,12 +568,18 @@ pub fn eval_call(
             // in default mode, arguments number must match, however, allow calling with empty(delayed arg) to represent no argument, hence create a partially applied function
             #[cfg(not(feature = "vintage"))]
             if args.len() != f.arg_num
-                && !(f.arg_num == 0 && args.len() == 1 && *args[0] == SpicyObj::DelayedArg)
+                && !(f.arg_num == 0
+                    && args.len() == 1
+                    && (*args[0] == SpicyObj::DelayedArg || args[0].size() == 0))
             {
                 return Err(SpicyError::MismatchedArgNumErr(f.arg_num, args.len()));
             }
 
-            let res = eval_fn_call(state, stack, f, args);
+            let res = if f.arg_num == 0 && args.len() == 1 && args[0].size() == 0 {
+                eval_fn_call(state, stack, f, &vec![&SpicyObj::DelayedArg])
+            } else {
+                eval_fn_call(state, stack, f, args)
+            };
 
             match res {
                 Ok(obj) => Ok(obj),

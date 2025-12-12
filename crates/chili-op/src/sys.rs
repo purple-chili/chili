@@ -1,5 +1,6 @@
 use crate::random::set_global_random_seed;
 use chili_core::{ArgType, SpicyError, SpicyObj, SpicyResult, validate_args};
+use indexmap::IndexMap;
 use polars::{
     frame::DataFrame,
     prelude::{Categories, Column, DataType, TimeUnit},
@@ -126,4 +127,32 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         ])
         .map_err(|e| SpicyError::Err(e.to_string()))?,
     ))
+}
+
+pub fn mem(_args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    let sys = sysinfo::System::new_all();
+    let process =
+        sys.process(sysinfo::get_current_pid().map_err(|e| SpicyError::Err(e.to_string()))?);
+    if let Some(process) = process {
+        let memory_usage = process.memory();
+        let memory_usage_gb = memory_usage as f64 / 1048576.0;
+        let mut dict = IndexMap::new();
+        let memory_limit = std::env::var("CHILI_MEMORY_LIMIT").unwrap_or("0".to_owned());
+        dict.insert("used".to_owned(), SpicyObj::F64(memory_usage_gb));
+        dict.insert(
+            "limit".to_owned(),
+            SpicyObj::F64(memory_limit.parse::<f64>().unwrap_or(0.0)),
+        );
+        dict.insert(
+            "total".to_owned(),
+            SpicyObj::F64(sys.total_memory() as f64 / 1048576.0),
+        );
+        dict.insert(
+            "avail".to_owned(),
+            SpicyObj::F64(sys.free_memory() as f64 / 1048576.0),
+        );
+        Ok(SpicyObj::Dict(dict))
+    } else {
+        Err(SpicyError::Err("Process not found".to_owned()))
+    }
 }
