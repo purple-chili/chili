@@ -17,8 +17,8 @@ use log::{debug, error, info, warn};
 use polars::{
     frame::DataFrame,
     prelude::{
-        ArrowDataType, ArrowField, Column, DataType, IntoColumn, NamedFrom, NamedFromOwned,
-        TimeUnit,
+        ArrowDataType, ArrowField, Column, DataType, IntoColumn, IntoLazy, NamedFrom,
+        NamedFromOwned, TimeUnit, col,
     },
     series::Series,
 };
@@ -216,20 +216,27 @@ impl EngineState {
         Ok(vars.remove(id).unwrap_or(SpicyObj::Null))
     }
 
-    pub fn upsert_var(&self, id: &str, args: &SpicyObj) -> SpicyResult<SpicyObj> {
+    pub fn upsert_var(&self, id: &str, arg: &SpicyObj) -> SpicyResult<SpicyObj> {
         let mut vars = self
             .vars
             .write()
             .map_err(|_| SpicyError::WriteLockErr(id.to_owned()))?;
-        let arg0 = match vars.get_mut(id) {
+        let obj = match vars.get_mut(id) {
             Some(obj) => obj,
             None => {
-                vars.insert(id.to_owned(), args.clone());
-                return Ok(SpicyObj::I64(args.size() as i64));
+                if arg.is_df() {
+                    vars.insert(id.to_owned(), arg.clone());
+                    return Ok(SpicyObj::I64(arg.size() as i64));
+                } else {
+                    return Err(SpicyError::Err(format!(
+                        "the first upsert is required to be a dataframe, got {}",
+                        arg.get_type_name()
+                    )));
+                }
             }
         };
-        match arg0.mut_df() {
-            Ok(df) => match args {
+        match obj.mut_df() {
+            Ok(df) => match arg {
                 SpicyObj::DataFrame(records) => {
                     df.extend(records)
                         .map_err(|e| SpicyError::Err(e.to_string()))?;
@@ -263,13 +270,103 @@ impl EngineState {
                 }
                 _ => Err(SpicyError::Err(format!(
                     "only allows to upsert (dataframe|list) to dataframe id, got {}",
-                    args.get_type_name()
+                    arg.get_type_name()
                 ))),
             },
             Err(_) => Err(SpicyError::Err(
                 "only allows to upsert data to dataframe id".to_owned(),
             )),
         }
+    }
+
+    pub fn insert_var(&self, id: &str, args: &SpicyObj, by: &[&str]) -> SpicyResult<SpicyObj> {
+        let mut vars = self
+            .vars
+            .write()
+            .map_err(|_| SpicyError::WriteLockErr(id.to_owned()))?;
+        let count: usize;
+        let df = {
+            let arg0 = match vars.get_mut(id) {
+                Some(obj) => obj,
+                None => {
+                    if args.is_df() {
+                        let df = args.df().unwrap().clone();
+                        let df = df
+                            .lazy()
+                            .group_by(by)
+                            .agg([col("*").last()])
+                            .collect()
+                            .map_err(|e| SpicyError::Err(e.to_string()))?;
+                        count = df.height();
+                        vars.insert(id.to_owned(), SpicyObj::DataFrame(df));
+                        return Ok(SpicyObj::I64(count as i64));
+                    } else {
+                        return Err(SpicyError::Err(format!(
+                            "the first insert is required to be a dataframe, got {}",
+                            args.get_type_name()
+                        )));
+                    }
+                }
+            };
+            match arg0.mut_df() {
+                Ok(df) => match args {
+                    SpicyObj::DataFrame(records) => {
+                        count = df.height();
+                        df.extend(records)
+                            .map_err(|e| SpicyError::Err(e.to_string()))?;
+                        df.clone()
+                    }
+                    SpicyObj::MixedList(list) => {
+                        count = df.height();
+                        let series = list.iter().map(|args| args.as_series()).collect::<Result<
+                            Vec<Series>,
+                            SpicyError,
+                        >>(
+                        )?;
+                        if series.len() > df.width() {
+                            return Err(SpicyError::Err("number of columns in list is greater than number of columns in dataframe".to_string()));
+                        }
+                        let column_names = df.get_column_names_owned();
+                        let records = DataFrame::new(
+                            series
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, s)| {
+                                    s.clone()
+                                        .rename(column_names[i].clone())
+                                        .clone()
+                                        .into_column()
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                        .map_err(|e| SpicyError::Err(e.to_string()))?;
+                        df.extend(&records)
+                            .map_err(|e| SpicyError::Err(e.to_string()))?;
+                        df.clone()
+                    }
+                    _ => {
+                        return Err(SpicyError::Err(format!(
+                            "only allows to insert (dataframe|list) to dataframe id, got {}",
+                            args.get_type_name()
+                        )));
+                    }
+                },
+                Err(_) => {
+                    return Err(SpicyError::Err(
+                        "only allows to insert data to dataframe id".to_owned(),
+                    ));
+                }
+            }
+        };
+        let df = df
+            .lazy()
+            .group_by(by)
+            .agg([col("*").last()])
+            .collect()
+            .map_err(|e| SpicyError::Err(e.to_string()))?;
+        let updated_count = df.height();
+        vars.insert(id.to_owned(), SpicyObj::DataFrame(df));
+        Ok(SpicyObj::I64(updated_count as i64 - count as i64))
     }
 
     pub fn list_vars(&self, pattern: &str) -> SpicyResult<DataFrame> {

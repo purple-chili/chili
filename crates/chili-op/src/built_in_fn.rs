@@ -555,8 +555,8 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             Func::new_built_in_fn(Some(Box::new(math::all)), 1, "all", &["collection"]),
         ),
         (
-            "args".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::any)), 1, "args", &["collection"]),
+            "any".to_owned(),
+            Func::new_built_in_fn(Some(Box::new(math::any)), 1, "any", &["collection"]),
         ),
         (
             "acos".to_owned(),
@@ -923,6 +923,10 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             Func::new_built_in_fn(Some(Box::new(collection::keys)), 1, "key", &["dict"]),
         ),
         (
+            "value".to_owned(),
+            Func::new_built_in_fn(Some(Box::new(collection::values)), 1, "value", &["dict"]),
+        ),
+        (
             "schema".to_owned(),
             Func::new_built_in_fn(Some(Box::new(df::schema)), 1, "schema", &["df"]),
         ),
@@ -1018,12 +1022,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "assert".to_owned(),
-            Func::new_built_in_fn(
-                Some(Box::new(basic::assert)),
-                2,
-                "assert",
-                &["left", "right"],
-            ),
+            Func::new_built_in_fn(Some(Box::new(basic::assert)), 1, "assert", &["condition"]),
         ),
         (
             "equal".to_owned(),

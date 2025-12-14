@@ -376,7 +376,7 @@ fn parse_case05() {
     let code = "
     f: {[date]
         if[date>2020.01.01;
-            'error;
+            raise error;
             :date;
             date: date + 1;
         ];

@@ -29,7 +29,7 @@ CharLiteral            = @{ !("\\" | "\"" | LineTerminatorSequence) ~ ANY }
 UnicodeEscapeSequence  = @{ ASCII_HEX_DIGIT{4} }
 
 String = @{ "\"" ~ DoubleQuoteChar* ~ "\"" }
-Column = @{ "'" ~ SingleQuoteChar* ~ "'"}
+Column = @{ "'" ~ SingleQuoteChar* ~ "'" }
 
 Sym  = @{ "`" ~ (ASCII_ALPHANUMERIC | "." | ":" | "/" | "_" | "-")* }
 Syms = @{ Sym{2, } }

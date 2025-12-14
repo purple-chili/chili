@@ -4,6 +4,12 @@ DoubleQuoteChar = _{
   | !"\"" ~ CharLiteral
 }
 
+SingleQuoteChar = _{
+    "\\" ~ EscapeSequence
+  | LineContinuation
+  | !"'" ~ CharLiteral
+}
+
 EscapeSequence         = _{
     CharEscapeSequence
   | NulEscapeSequence
@@ -22,6 +28,7 @@ CharLiteral            = @{ !("\\" | "\"" | LineTerminatorSequence) ~ ANY }
 UnicodeEscapeSequence  = @{ ASCII_HEX_DIGIT{4} }
 
 String = @{ "\"" ~ DoubleQuoteChar* ~ "\"" }
+Column = @{ "'" ~ SingleQuoteChar* ~ "'" }
 
 Sym  = @{ "`" ~ (ASCII_ALPHANUMERIC | "." | ":" | "/" | "_" | "-")* }
 Syms = @{ Sym{2, } }
@@ -44,7 +51,7 @@ Exp = {
   | Term
 }
 
-ControlKeywords = _{ "if" }
+ControlKeywords = _{ "if" | "try" | "catch" | "while" | "raise" }
 
 BlockStatements = { statements }
 
@@ -62,7 +69,7 @@ ListItem = _{ Exp | BinaryOp | BinaryKeyword }
 ListExp  =  { "(" ~ (ListItem) ~ (";" ~ ListItem)+ ~ ")" }
 
 ReturnExp = { ":" ~ Exp }
-RaiseExp  = { "'" ~ Exp }
+RaiseExp  = { "raise" ~ Exp }
 
 UnaryOperand = _{
     Table
@@ -106,6 +113,7 @@ Term = _{
   | ListExp
   | EmptyList
   | String
+  | Column
   | Syms
   | Sym
   | Timestamps

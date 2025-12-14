@@ -7,6 +7,7 @@ use polars::datatypes::{
     DataType as PolarsDataType, Float64Type, Int16Type, Int32Type, Int64Type, TimeUnit,
 };
 use polars::frame::DataFrame;
+use polars::prelude::col;
 use polars::prelude::{
     Categories, Column, IndexOrder, Int8Type, Int128Type, NamedFrom, NamedFromOwned, UInt8Type,
     UInt16Type, UInt32Type, UInt64Type,
@@ -154,9 +155,7 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
                 })
             }
         }
-        #[cfg(not(feature = "vintage"))]
         Rule::Column => {
-            use polars::prelude::col;
             let column = pair.as_str().to_owned();
             Ok(AstNode::SpicyObj(SpicyObj::Expr(col(column
                 [1..column.len() - 1]

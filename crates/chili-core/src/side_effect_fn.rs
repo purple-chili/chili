@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::errors::{SpicyError, SpicyResult};
 use crate::eval::{eval_call, eval_fn_call, eval_for_console, eval_for_ide, eval_op};
 use crate::func::Func;
-use crate::{EngineState, SpicyObj, Stack, eval_query, job};
+use crate::{ArgType, EngineState, SpicyObj, Stack, eval_query, job, validate_args};
 
 fn time_it(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let times = args.last().unwrap();
@@ -62,9 +62,21 @@ fn exit(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyRes
 }
 
 fn upsert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::Sym, ArgType::DataFrameOrList])?;
     let id = args[0].str()?;
     let arg1 = args[1];
     state.upsert_var(id, arg1)
+}
+
+fn insert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(
+        args,
+        &[ArgType::Sym, ArgType::StrLike, ArgType::DataFrameOrList],
+    )?;
+    let id = args[0].str().unwrap();
+    let by = args[1].to_str_vec().unwrap();
+    let value = args[2];
+    state.insert_var(id, value, &by)
 }
 
 fn replay_q(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
@@ -262,7 +274,7 @@ fn each(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResu
                 // contains, count_matches,
                 match func.fn_body.as_str() {
                     "sum" => Ok(SpicyObj::Expr(expr.list().sum())),
-                    "args" => Ok(SpicyObj::Expr(expr.list().any())),
+                    "any" => Ok(SpicyObj::Expr(expr.list().any())),
                     "all" => Ok(SpicyObj::Expr(expr.list().all())),
                     "count" => Ok(SpicyObj::Expr(expr.list().len())),
                     "max" => Ok(SpicyObj::Expr(expr.list().max())),
@@ -441,6 +453,15 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 2,
                 "upsert",
                 &["id", "value"],
+            ),
+        ),
+        (
+            "insert".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(insert)),
+                3,
+                "insert",
+                &["id", "by", "df"],
             ),
         ),
         (

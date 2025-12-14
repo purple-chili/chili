@@ -1600,6 +1600,14 @@ pub fn keys(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     ))
 }
 
+pub fn values(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::Dict])?;
+    let df = args[0].dict().unwrap();
+    Ok(SpicyObj::MixedList(
+        df.values().map(|v| v.clone()).collect::<Vec<_>>(),
+    ))
+}
+
 pub fn flag(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     validate_args(args, &[ArgType::DataFrameOrSeries])?;
     match args[0] {
