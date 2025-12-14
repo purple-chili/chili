@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.2] - 2025-12-14
+
+### Added
+
+- New built-in function `insert` to insert data from DataFrame or list and keep the last record for each group
+- New built-in function `.os.mem` to retrieve memory statistics
+- Memory limit command line option for the runtime
+
+### Changed
+
+- Enhanced upsert function to enforce DataFrame type for the first argument
+- Updated parser to support new syntax for column definitions
+
 ## [0.6.1] - 2025-12-10
 
 ### Added
