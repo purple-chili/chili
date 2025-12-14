@@ -414,7 +414,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chili-bin"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "chili-core",
  "chili-grammar",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "chili-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "chili-grammar",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "chili-grammar"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "pest",
  "pest_derive",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "chili-op"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "chili-core",
  "chrono",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "chili-vintage-grammar"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "pest",
  "pest_derive",
