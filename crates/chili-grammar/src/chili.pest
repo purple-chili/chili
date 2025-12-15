@@ -65,7 +65,8 @@ ControlKeywords = _{
 
 BlockStatements = { statements }
 
-IfExp = { "if" ~ "(" ~ Exp ~ ")" ~ "{" ~ BlockStatements ~ "}" ~ ("else" ~ "{" ~ BlockStatements ~ "}")? }
+Else  = _{ "else" ~ (IfExp | "{" ~ BlockStatements ~ "}") }
+IfExp =  { "if" ~ "(" ~ Exp ~ ")" ~ "{" ~ BlockStatements ~ "}" ~ Else* }
 
 WhileExp = { "while" ~ "(" ~ Exp ~ ")" ~ "{" ~ statements ~ "}" }
 

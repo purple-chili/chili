@@ -477,3 +477,53 @@ fn parse_case07() {
         actual
     )
 }
+
+#[test]
+fn parse_case08() {
+    let code = "
+    if(a>1){
+        a: 1;
+    } else if(a>5) {
+        a: 3;
+    } else {
+        a: 2;
+    }
+    a
+    ";
+    let pairs = match ChiliParser::parse(Rule::Program, code) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}", e);
+            panic!("failed to parse")
+        }
+    };
+    let binding = pretty_format_rules(pairs);
+    let actual: Vec<&str> = binding.split("\n").collect();
+    assert_eq!(
+        vec![
+            "IfExp",
+            " -> Exp -> BinaryExp",
+            "     -> Id",
+            "     -> BinaryOp",
+            "     -> I64",
+            " -> BlockStatements -> Exp -> AssignmentExp",
+            "       -> Id",
+            "       -> Exp -> I64",
+            " -> IfExp",
+            "   -> Exp -> BinaryExp",
+            "       -> Id",
+            "       -> BinaryOp",
+            "       -> I64",
+            "   -> BlockStatements -> Exp -> AssignmentExp",
+            "         -> Id",
+            "         -> Exp -> I64",
+            "   -> BlockStatements -> Exp -> AssignmentExp",
+            "         -> Id",
+            "         -> Exp -> I64",
+            "Exp -> Id",
+            "EOI",
+            ""
+        ],
+        actual
+    )
+}

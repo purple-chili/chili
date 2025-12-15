@@ -41,7 +41,9 @@ fn parse_binary_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, Spicy
 fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> {
     let rule = pair.as_rule();
     match rule {
-        Rule::Exp => parse_exp(pair.into_inner().next().unwrap(), source_id),
+        Rule::Exp | Rule::BlockStatements => {
+            parse_exp(pair.into_inner().next().unwrap(), source_id)
+        }
         #[cfg(feature = "vintage")]
         Rule::UnaryExp | Rule::UnaryQueryExp => {
             let mut pair = pair.into_inner();
@@ -220,7 +222,7 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
                 Ok(AstNode::If {
                     cond: Box::new(cond),
                     nodes,
-                    else_nodes: vec![],
+                    else_nodes: Box::new(AstNode::SpicyObj(SpicyObj::Null)),
                 })
             } else {
                 let cond = parse_exp(pairs.next().unwrap(), source_id)?;
@@ -232,20 +234,15 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
                         break;
                     }
                 }
-                let mut else_nodes = Vec::new();
-                if let Some(pair) = pairs.next() {
-                    for pair in pair.into_inner() {
-                        let rule = pair.as_rule();
-                        else_nodes.push(parse_exp(pair, source_id)?);
-                        if rule == Rule::ReturnExp {
-                            break;
-                        }
-                    }
-                }
+                let else_nodes = if let Some(pair) = pairs.next() {
+                    parse_exp(pair, source_id)?
+                } else {
+                    AstNode::SpicyObj(SpicyObj::Null)
+                };
                 Ok(AstNode::If {
                     cond: Box::new(cond),
                     nodes,
-                    else_nodes,
+                    else_nodes: Box::new(else_nodes),
                 })
             }
         }

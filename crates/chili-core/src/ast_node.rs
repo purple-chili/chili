@@ -54,7 +54,7 @@ pub enum AstNode {
     If {
         cond: Box<AstNode>,
         nodes: Vec<AstNode>,
-        else_nodes: Vec<AstNode>,
+        else_nodes: Box<AstNode>,
     },
     While {
         cond: Box<AstNode>,

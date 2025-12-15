@@ -287,12 +287,10 @@ pub fn eval_by_node(
                         return Ok(obj);
                     }
                 }
-            } else if else_nodes.len() > 0 {
-                for node in else_nodes {
-                    let obj = eval_by_node(state, stack, node, src, columns)?;
-                    if obj.is_return() {
-                        return Ok(obj);
-                    }
+            } else {
+                let obj = eval_by_node(state, stack, else_nodes, src, columns)?;
+                if obj.is_return() {
+                    return Ok(obj);
                 }
             }
             Ok(SpicyObj::Null)

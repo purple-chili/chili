@@ -128,10 +128,6 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             ),
         ),
         (
-            "'".to_owned(),
-            Func::new_built_in_fn(None, 1, "'", &["error_msg"]),
-        ),
-        (
             "_".to_owned(),
             Func::new_built_in_fn(Some(Box::new(operator::remove)), 2, "_", &["p1", "p2"]),
         ),
