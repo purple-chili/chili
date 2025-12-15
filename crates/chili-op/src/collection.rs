@@ -1604,7 +1604,7 @@ pub fn values(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     validate_args(args, &[ArgType::Dict])?;
     let df = args[0].dict().unwrap();
     Ok(SpicyObj::MixedList(
-        df.values().map(|v| v.clone()).collect::<Vec<_>>(),
+        df.values().cloned().collect::<Vec<_>>(),
     ))
 }
 
