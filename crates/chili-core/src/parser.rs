@@ -191,6 +191,10 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
                 SourcePos::new(fn_span.start(), source_id),
             ))))
         }
+        Rule::BinaryOp => Ok(AstNode::Id {
+            pos: SourcePos::new(pair.as_span().start(), source_id),
+            name: pair.as_str().to_owned(),
+        }),
         Rule::FnCall => {
             let span = pair.as_span().start();
             let mut pairs = pair.into_inner();

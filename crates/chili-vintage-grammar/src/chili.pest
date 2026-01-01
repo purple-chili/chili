@@ -245,8 +245,6 @@ BinaryKeyword = @{
     BinaryKeywords ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
-// BinaryProj = ${ (BinaryKeyword | GlobalId | Id | FnCall | Fn) ~ Iterator? }
-
 QueryKeywords = _{
     "select"
   | "update"
@@ -294,7 +292,7 @@ Fn      = { "{" ~ Params ~ (statement)* ~ (RaiseExp | ReturnExp | IfExp | TryExp
 
 DelayedArg = { "" }
 Arg        = { Exp | DelayedArg }
-FnCall     = { (GlobalId | Fn | BinaryKeyword | Id | Table | ListExp | BracketExp) ~ "[" ~ (Arg ~ ";")* ~ Arg ~ "]" }
+FnCall     = { (GlobalId | Fn | Binary | Id | Table | ListExp | BracketExp) ~ "[" ~ (Arg ~ ";")* ~ Arg ~ "]" }
 
 OneSpace = _{ (" " | "\t")+ }
 

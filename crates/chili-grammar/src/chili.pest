@@ -45,9 +45,9 @@ Exp = {
   | IfElseExp
   | Fn
   | AssignmentExp // dict(`a): 1, has to be before functional call
-
+  
   | BinaryExp // dict(`a) + 2, has to be before functional call
-
+  
   | FnCall
   | BracketExp
   | Term
@@ -295,7 +295,7 @@ Fn      = { "function" ~ Params ~ "{" ~ (statement)* ~ (RaiseExp | ReturnExp | E
 
 DelayedArg = { "" }
 Arg        = { Exp | DelayedArg }
-FnCall     = { (GlobalId | Fn | BinaryKeyword | Id | Table | ListExp | BracketExp) ~ "(" ~ (Arg ~ ",")* ~ Arg ~ ")" }
+FnCall     = { (GlobalId | Fn | Binary | Id | Table | ListExp | BracketExp) ~ "(" ~ (Arg ~ ",")* ~ Arg ~ ")" }
 
 OneSpace = _{ (" " | "\t")+ }
 
