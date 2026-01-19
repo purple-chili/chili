@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.3] - 2025-12-16
+
+### Added
+
+- Lazy evaluation mode for the runtime
+- New built-in function `collect` to collect a lazy DataFrame
+
 ## [0.6.2] - 2025-12-14
 
 ### Added
