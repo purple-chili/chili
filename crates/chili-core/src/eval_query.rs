@@ -124,6 +124,7 @@ pub fn eval_query(
         &SpicyObj::MixedList(op_expr),
         &limited,
         &columns,
+        state.is_lazy_mode(),
     )
 }
 
@@ -135,6 +136,7 @@ pub fn eval_fn_query(
     op: &SpicyObj,
     limited: &SpicyObj,
     columns: &[String],
+    is_lazy_mode: bool,
 ) -> SpicyResult<SpicyObj> {
     let where_exprs = filter
         .as_exprs()
@@ -256,9 +258,13 @@ pub fn eval_fn_query(
         };
     }
 
-    lf.collect()
-        .map(SpicyObj::DataFrame)
-        .map_err(|e| SpicyError::EvalErr(e.to_string()))
+    if is_lazy_mode {
+        return Ok(SpicyObj::LazyFrame(lf));
+    } else {
+        lf.collect()
+            .map(SpicyObj::DataFrame)
+            .map_err(|e| SpicyError::EvalErr(e.to_string()))
+    }
 }
 
 fn get_dataframe(state: &EngineState, args: &SpicyObj) -> SpicyResult<SpicyObj> {
@@ -345,6 +351,7 @@ pub fn functional_select(
         args[4],
         args[5],
         &columns,
+        state.is_lazy_mode(),
     )
 }
 
@@ -365,6 +372,7 @@ pub fn functional_update(
         args[3],
         &SpicyObj::I64(0),
         &columns,
+        state.is_lazy_mode(),
     )
 }
 
@@ -385,5 +393,6 @@ pub fn functional_delete(
         args[2],
         &SpicyObj::I64(0),
         &columns,
+        state.is_lazy_mode(),
     )
 }

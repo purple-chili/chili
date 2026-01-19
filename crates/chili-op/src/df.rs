@@ -747,3 +747,12 @@ pub fn explode(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         .map_err(|e| SpicyError::Err(e.to_string()))
         .map(SpicyObj::DataFrame)
 }
+
+pub fn collect(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::LazyFrame])?;
+    let lf = args[0].lf().unwrap();
+    lf.clone()
+        .collect()
+        .map_err(|e| SpicyError::Err(e.to_string()))
+        .map(SpicyObj::DataFrame)
+}

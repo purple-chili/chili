@@ -48,13 +48,13 @@ tasks:
     deps:
       - build
     cmds:
-      - ./target/debug/chili
+      - ./target/debug/chili  {{.CLI_ARGS}}
 
   run-vintage:
     deps:
       - build-vintage
     cmds:
-      - ./target/debug/pepper
+      - ./target/debug/pepper  {{.CLI_ARGS}}
 
   dist:
     deps:

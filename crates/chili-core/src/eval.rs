@@ -505,6 +505,7 @@ pub fn eval_for_ide(
         | SpicyObj::Fn(_)
         | SpicyObj::DelayedArg
         | SpicyObj::Matrix(_)
+        | SpicyObj::LazyFrame(_)
         | SpicyObj::ParDataFrame(_) => Ok(SpicyObj::String(obj.to_string())),
         SpicyObj::MixedList(l) => {
             let s = l.iter().map(|args| args.to_string()).collect::<Vec<_>>();

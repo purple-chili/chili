@@ -76,11 +76,12 @@ pub struct EngineState {
     topic_map: RwLock<HashMap<String, Vec<i64>>>,
     arc_self: RwLock<Option<Arc<Self>>>,
     user: String,
+    lazy_mode: bool,
 }
 
 impl Default for EngineState {
     fn default() -> Self {
-        Self::new()
+        Self::initialize()
     }
 }
 
@@ -99,7 +100,7 @@ const FN_CALL_RIGHT_BRACE: &str = ")";
 const FN_CALL_SEP: &str = ",";
 
 impl EngineState {
-    pub fn new() -> Self {
+    pub fn initialize() -> Self {
         unsafe {
             env::set_var("POLARS_FMT_TABLE_DATAFRAME_SHAPE_BELOW", "1");
             env::set_var("POLARS_FMT_MAX_ROWS", "50");
@@ -127,12 +128,18 @@ impl EngineState {
             arc_self: RwLock::new(None),
             debug: false,
             user: whoami::username(),
+            lazy_mode: false,
         }
     }
 
-    pub fn new_with_debug(debug: bool) -> Self {
-        let mut state = Self::new();
+    pub fn is_lazy_mode(&self) -> bool {
+        self.lazy_mode
+    }
+
+    pub fn new(debug: bool, lazy: bool) -> Self {
+        let mut state = Self::initialize();
         state.debug = debug;
+        state.lazy_mode = lazy;
         state
     }
 

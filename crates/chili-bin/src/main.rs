@@ -72,6 +72,10 @@ struct Args {
     /// Optional memory limit in GB (default: 0 for unlimited, at least 1 GB)
     #[arg(short = 'm', long = "memory", default_value_t = 0.0)]
     memory_limit: f64,
+
+    /// Optional flag to enable lazy evaluation
+    #[arg(long, default_value = "false")]
+    lazy: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -176,7 +180,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let state = EngineState::new_with_debug(debug);
+    let state = EngineState::new(debug, args.lazy);
+
+    if debug {
+        info!("Debug mode is enabled");
+    }
+
+    if args.lazy {
+        info!("Lazy evaluation mode is enabled");
+    }
 
     state.register_fn(&LOG_FN);
     state.register_fn(&BUILT_IN_FN);

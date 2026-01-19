@@ -8,15 +8,17 @@ use ndarray::ArcArray2;
 use polars::datatypes::{AnyValue, DataType, PolarsNumericType, TimeUnit};
 use polars::lazy::dsl::{Expr, lit};
 use polars::prelude::{
-    Categories, Column, DataType as PolarsDataType, IntoSeries, LargeListArray, LiteralValue,
-    NamedFrom, NewChunkedArray, Scalar,
+    Categories, Column, DataType as PolarsDataType, IntoSeries, LargeListArray, LazyFrame,
+    LiteralValue, NamedFrom, NewChunkedArray, Scalar,
 };
 use polars::{chunked_array::ChunkedArray, frame::DataFrame, series::Series};
 use polars_arrow::array::{FixedSizeListArray, ValueSize};
 use rayon::iter::ParallelIterator;
+use std::fmt;
+use std::fmt::Debug;
 use std::{fmt::Display, str::FromStr};
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(Clone)]
 pub enum SpicyObj {
     Boolean(bool),  // -1
     U8(u8),         // -2
@@ -43,6 +45,7 @@ pub enum SpicyObj {
     MixedList(Vec<SpicyObj>),         // 90
     Dict(IndexMap<String, SpicyObj>), // 91 -> skip Dataframe
     DataFrame(DataFrame),             // 92 -> Arrow IPC
+    LazyFrame(LazyFrame),
 
     Fn(Func), // -102 => string
 
@@ -50,6 +53,49 @@ pub enum SpicyObj {
     Return(Box<SpicyObj>),
     DelayedArg, // projection null - internal use
     ParDataFrame(PartitionedDataFrame),
+}
+
+impl PartialEq for SpicyObj {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (SpicyObj::Boolean(a), SpicyObj::Boolean(b)) => a == b,
+            (SpicyObj::U8(a), SpicyObj::U8(b)) => a == b,
+            (SpicyObj::I16(a), SpicyObj::I16(b)) => a == b,
+            (SpicyObj::I32(a), SpicyObj::I32(b)) => a == b,
+            (SpicyObj::I64(a), SpicyObj::I64(b)) => a == b,
+            (SpicyObj::Date(a), SpicyObj::Date(b)) => a == b,
+            (SpicyObj::Time(a), SpicyObj::Time(b)) => a == b,
+            (SpicyObj::Datetime(a), SpicyObj::Datetime(b)) => a == b,
+            (SpicyObj::Timestamp(a), SpicyObj::Timestamp(b)) => a == b,
+            (SpicyObj::Duration(a), SpicyObj::Duration(b)) => a == b,
+            (SpicyObj::F32(a), SpicyObj::F32(b)) => a == b,
+            (SpicyObj::F64(a), SpicyObj::F64(b)) => a == b,
+            (SpicyObj::String(a), SpicyObj::String(b)) => a == b,
+            (SpicyObj::Symbol(a), SpicyObj::Symbol(b)) => a == b,
+            (SpicyObj::Expr(a), SpicyObj::Expr(b)) => a == b,
+            (SpicyObj::Null, SpicyObj::Null) => true,
+            (SpicyObj::Series(a), SpicyObj::Series(b)) => a.eq(b),
+            (SpicyObj::Matrix(a), SpicyObj::Matrix(b)) => a == b,
+            (SpicyObj::MixedList(a), SpicyObj::MixedList(b)) => a == b,
+            (SpicyObj::Dict(a), SpicyObj::Dict(b)) => a == b,
+            (SpicyObj::DataFrame(a), SpicyObj::DataFrame(b)) => a == b,
+            (SpicyObj::Fn(a), SpicyObj::Fn(b)) => a == b,
+            (SpicyObj::Err(a), SpicyObj::Err(b)) => a == b,
+            (SpicyObj::Return(a), SpicyObj::Return(b)) => a == b,
+            (SpicyObj::DelayedArg, SpicyObj::DelayedArg) => true,
+            (SpicyObj::ParDataFrame(a), SpicyObj::ParDataFrame(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Debug for SpicyObj {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SpicyObj::LazyFrame(_) => write!(f, "LazyFrame(...)"),
+            _ => write!(f, "{:?}", self),
+        }
+    }
 }
 
 impl SpicyObj {
@@ -222,6 +268,10 @@ impl SpicyObj {
 
     pub fn is_df(&self) -> bool {
         matches!(self, SpicyObj::DataFrame(_))
+    }
+
+    pub fn is_lf(&self) -> bool {
+        matches!(self, SpicyObj::LazyFrame(_))
     }
 
     pub fn is_numeric(&self) -> bool {
@@ -1116,6 +1166,7 @@ impl SpicyObj {
             SpicyObj::Matrix(_) => "matrix".to_owned(),
             SpicyObj::Dict(_) => "dict".to_owned(),
             SpicyObj::DataFrame(_) => "df".to_owned(),
+            SpicyObj::LazyFrame(_) => "lf".to_owned(),
             SpicyObj::Fn(_) => "fn".to_owned(),
             SpicyObj::Err(_) => "err".to_owned(),
             SpicyObj::Return(_) => "return".to_owned(),
@@ -1308,6 +1359,7 @@ impl_cast!(f32, F32, f32, "f32");
 impl_cast!(f64, F64, f64, "f64");
 
 impl_cast!(df, DataFrame, DataFrame, "df");
+impl_cast!(lf, LazyFrame, LazyFrame, "lf");
 impl_cast!(sym, Symbol, String, "str");
 impl_cast!(fn_, Fn, Func, "func");
 impl_cast!(series, Series, Series, "series");
@@ -1473,6 +1525,11 @@ impl Display for SpicyObj {
                 }
                 output
             }
+            SpicyObj::LazyFrame(lf) => format!(
+                "LazyFrame: {}",
+                lf.describe_plan()
+                    .unwrap_or("failed to describe plan".to_owned())
+            ),
             SpicyObj::DataFrame(df) => format!("{}", df),
             SpicyObj::Fn(fn_) => {
                 format!("{}", fn_)
