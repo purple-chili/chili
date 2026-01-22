@@ -499,6 +499,18 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             Func::new_built_in_fn(Some(Box::new(sys::mem)), 0, ".os.mem", &[]),
         ),
         (
+            ".os.version".to_owned(),
+            Func::new_built_in_fn(Some(Box::new(sys::version)), 0, ".os.version", &[]),
+        ),
+        (
+            ".os.pid".to_owned(),
+            Func::new_built_in_fn(Some(Box::new(sys::pid)), 0, ".os.pid", &[]),
+        ),
+        (
+            ".os.syntax".to_owned(),
+            Func::new_built_in_fn(Some(Box::new(sys::syntax)), 0, ".os.syntax", &[]),
+        ),
+        (
             "union".to_owned(),
             Func::new_built_in_fn(Some(Box::new(basic::union)), 2, "union", &["p1", "p2"]),
         ),
@@ -544,7 +556,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         // unary
         (
             "abs".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::abs)), 1, "abs", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::abs)), 1, "abs", &["n"]),
         ),
         (
             "all".to_owned(),
@@ -556,27 +568,27 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "acos".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::arccos)), 1, "acos", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::arccos)), 1, "acos", &["n"]),
         ),
         (
             "acosh".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::arccosh)), 1, "acosh", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::arccosh)), 1, "acosh", &["n"]),
         ),
         (
             "asin".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::arcsin)), 1, "asin", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::arcsin)), 1, "asin", &["n"]),
         ),
         (
             "asinh".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::arcsinh)), 1, "asinh", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::arcsinh)), 1, "asinh", &["n"]),
         ),
         (
             "atan".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::arctan)), 1, "atan", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::arctan)), 1, "atan", &["n"]),
         ),
         (
             "atanh".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::arctanh)), 1, "atanh", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::arctanh)), 1, "atanh", &["n"]),
         ),
         (
             "asc".to_owned(),
@@ -593,23 +605,23 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "cbrt".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::cbrt)), 1, "cbrt", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::cbrt)), 1, "cbrt", &["n"]),
         ),
         (
             "ceil".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::ceil)), 1, "ceil", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::ceil)), 1, "ceil", &["n"]),
         ),
         (
             "cos".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::cos)), 1, "cos", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::cos)), 1, "cos", &["n"]),
         ),
         (
             "cosh".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::cosh)), 1, "cosh", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::cosh)), 1, "cosh", &["n"]),
         ),
         (
             "cot".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::cot)), 1, "cot", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::cot)), 1, "cot", &["n"]),
         ),
         (
             "count".to_owned(),
@@ -660,7 +672,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "exp".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::exp)), 1, "exp", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::exp)), 1, "exp", &["n"]),
         ),
         (
             "first".to_owned(),
@@ -677,7 +689,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "floor".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::floor)), 1, "floor", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::floor)), 1, "floor", &["n"]),
         ),
         (
             "fill".to_owned(),
@@ -690,7 +702,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "hash".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(sys::nyi)), 1, "hash", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(sys::nyi)), 1, "hash", &["n"]),
         ),
         (
             "interp".to_owned(),
@@ -716,15 +728,15 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "ln".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::ln)), 1, "ln", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::ln)), 1, "ln", &["n"]),
         ),
         (
             "log10".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::log10)), 1, "log10", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::log10)), 1, "log10", &["n"]),
         ),
         (
             "log1p".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::log1p)), 1, "log1p", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::log1p)), 1, "log1p", &["n"]),
         ),
         (
             "lowercase".to_owned(),
@@ -756,7 +768,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "neg".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::neg)), 1, "neg", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::neg)), 1, "neg", &["n"]),
         ),
         (
             "next".to_owned(),
@@ -823,11 +835,11 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "sin".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::sin)), 1, "sin", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::sin)), 1, "sin", &["n"]),
         ),
         (
             "sinh".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::sinh)), 1, "sinh", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::sinh)), 1, "sinh", &["n"]),
         ),
         (
             "skew".to_owned(),
@@ -835,7 +847,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "sqrt".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::sqrt)), 1, "sqrt", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::sqrt)), 1, "sqrt", &["n"]),
         ),
         (
             "std0".to_owned(),
@@ -855,11 +867,11 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "tan".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::tan)), 1, "tan", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::tan)), 1, "tan", &["n"]),
         ),
         (
             "tanh".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(math::tanh)), 1, "tanh", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(math::tanh)), 1, "tanh", &["n"]),
         ),
         (
             "unique".to_owned(),
@@ -896,7 +908,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "enlist".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(basic::enlist)), 1, "enlist", &["value"]),
+            Func::new_built_in_fn(Some(Box::new(basic::enlist)), 1, "enlist", &["n"]),
         ),
         (
             "filter".to_owned(),
@@ -950,23 +962,23 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         // other
         (
             "aj".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(df::aj)), 3, "aj", &["columns", "df", "df"]),
+            Func::new_built_in_fn(Some(Box::new(df::aj)), 3, "aj", &["columns", "df0", "df1"]),
         ),
         (
             "cj".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(df::cj)), 3, "cj", &["columns", "df", "df"]),
+            Func::new_built_in_fn(Some(Box::new(df::cj)), 3, "cj", &["columns", "df0", "df1"]),
         ),
         (
             "ij".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(df::ij)), 3, "ij", &["columns", "df", "df"]),
+            Func::new_built_in_fn(Some(Box::new(df::ij)), 3, "ij", &["columns", "df0", "df1"]),
         ),
         (
             "lj".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(df::lj)), 3, "lj", &["columns", "df", "df"]),
+            Func::new_built_in_fn(Some(Box::new(df::lj)), 3, "lj", &["columns", "df0", "df1"]),
         ),
         (
             "fj".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(df::fj)), 3, "fj", &["columns", "df", "df"]),
+            Func::new_built_in_fn(Some(Box::new(df::fj)), 3, "fj", &["columns", "df0", "df1"]),
         ),
         // (
         //     "pj".to_owned(),
@@ -995,7 +1007,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(df::anti)),
                 3,
                 "anti",
-                &["columns", "df", "df"],
+                &["columns", "df0", "df1"],
             ),
         ),
         (
@@ -1004,7 +1016,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(df::semi)),
                 3,
                 "semi",
-                &["columns", "df", "df"],
+                &["columns", "df0", "df1"],
             ),
         ),
         (
@@ -1013,7 +1025,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(sys::console)),
                 2,
                 "console",
-                &["rows", "cols"],
+                &["row_num", "column_num"],
             ),
         ),
         (
@@ -1030,7 +1042,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(sys::nyi)),
                 2,
                 "fail",
-                &["list", "error_msg_pattern"],
+                &["fn_args", "error_msg_pattern"],
             ),
         ),
         (
@@ -1048,7 +1060,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(sys::nyi)),
                 2,
                 "rdatabase",
-                &["database_url", "sql"],
+                &["database_url", "sql_query"],
             ),
         ),
         (
@@ -1158,7 +1170,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(collection::clip)),
                 3,
                 "clip",
-                &["series", "min", "max"],
+                &["series", "lower_bound", "upper_bound"],
             ),
         ),
         (
@@ -1238,7 +1250,7 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "collect".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(df::collect)), 1, "collect", &["lf"]),
+            Func::new_built_in_fn(Some(Box::new(df::collect)), 1, "collect", &["lazy_frame"]),
         ),
         (
             "now".to_owned(),

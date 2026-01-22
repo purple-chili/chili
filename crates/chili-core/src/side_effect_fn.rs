@@ -399,7 +399,7 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
     [
         (
             "eval".to_owned(),
-            Func::new_side_effect_built_in_fn(Some(Box::new(eval_op)), 1, "eval", &["list"]),
+            Func::new_side_effect_built_in_fn(Some(Box::new(eval_op)), 1, "eval", &["fn_args"]),
         ),
         (
             "evalc".to_owned(),
@@ -417,7 +417,7 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(eval_for_ide)),
                 2,
                 "evali",
-                &["string", "limit"],
+                &["string", "limit_num"],
             ),
         ),
         (
@@ -426,7 +426,7 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(time_it)),
                 2,
                 "timeit",
-                &["list", "times"],
+                &["fn_args", "times"],
             ),
         ),
         (

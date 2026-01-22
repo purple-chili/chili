@@ -380,6 +380,9 @@ impl EngineState {
         let vars: DataFrame = {
             let mut vars: Vec<String> = vec![];
             let mut displays: Vec<String> = vec![];
+            let mut types: Vec<String> = vec![];
+            let mut columns: Vec<String> = vec![];
+            let mut is_built_in: Vec<bool> = vec![];
             let var_map = self
                 .vars
                 .read()
@@ -388,17 +391,33 @@ impl EngineState {
                 if pattern.is_empty() || k.starts_with(pattern) {
                     vars.push(k.to_owned());
                     displays.push(v.to_string());
+                    types.push(v.get_type_name());
+                    if let SpicyObj::DataFrame(df) = v {
+                        columns.push(df.get_column_names_str().join("|"));
+                    } else {
+                        columns.push("".to_string());
+                    }
+                    match v.fn_() {
+                        Ok(func) => is_built_in.push(func.is_built_in_fn()),
+                        Err(_) => is_built_in.push(false),
+                    }
                 }
             }
             DataFrame::new(vec![
                 Column::new("name".into(), vars),
                 Column::new("display".into(), displays),
+                Column::new("type".into(), types),
+                Column::new("columns".into(), columns),
+                Column::new("is_built_in".into(), is_built_in),
             ])
             .map_err(|e| SpicyError::EvalErr(e.to_string()))?
         };
         let par_df_vars = {
             let mut vars: Vec<String> = vec![];
             let mut displays: Vec<String> = vec![];
+            let mut types: Vec<String> = vec![];
+            let mut columns: Vec<String> = vec![];
+            let mut is_built_in: Vec<bool> = vec![];
             let par_df_map = self
                 .par_df
                 .read()
@@ -407,11 +426,22 @@ impl EngineState {
                 if pattern.is_empty() || k.starts_with(pattern) {
                     vars.push(k.to_owned());
                     displays.push(v.to_string());
+                    types.push("par_df".to_string());
+                    let lazy_df = v.scan_partition(0)?;
+                    let cols = match lazy_df.collect() {
+                        Ok(df) => df.get_column_names_str().join("|"),
+                        Err(_) => "".to_string(),
+                    };
+                    columns.push(cols);
+                    is_built_in.push(false);
                 }
             }
             DataFrame::new(vec![
                 Column::new("name".into(), vars),
                 Column::new("display".into(), displays),
+                Column::new("type".into(), types),
+                Column::new("columns".into(), columns),
+                Column::new("is_built_in".into(), is_built_in),
             ])
             .map_err(|e| SpicyError::EvalErr(e.to_string()))?
         };

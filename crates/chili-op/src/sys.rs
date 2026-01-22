@@ -5,6 +5,7 @@ use polars::{
     frame::DataFrame,
     prelude::{Categories, Column, DataType, TimeUnit},
 };
+use sysinfo::Pid;
 
 use std::{env, process::Command, time::SystemTime};
 
@@ -155,4 +156,22 @@ pub fn mem(_args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     } else {
         Err(SpicyError::Err("Process not found".to_owned()))
     }
+}
+
+pub fn version(_args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    Ok(SpicyObj::String(env!("CARGO_PKG_VERSION").to_owned()))
+}
+
+pub fn pid(_args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    Ok(SpicyObj::I64(
+        sysinfo::get_current_pid()
+            .unwrap_or(Pid::from_u32(0))
+            .as_u32() as i64,
+    ))
+}
+
+pub fn syntax(_args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    Ok(SpicyObj::String(
+        std::env::var("CHILI_SYNTAX").unwrap_or("chili".to_owned()),
+    ))
 }

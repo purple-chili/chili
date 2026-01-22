@@ -52,19 +52,19 @@ pub static LOG_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
     [
         (
             ".log.info".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(info)), 1, ".log.info", &["str"]),
+            Func::new_built_in_fn(Some(Box::new(info)), 1, ".log.info", &["message"]),
         ),
         (
             ".log.warn".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(warn)), 1, ".log.warn", &["str"]),
+            Func::new_built_in_fn(Some(Box::new(warn)), 1, ".log.warn", &["message"]),
         ),
         (
             ".log.debug".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(debug)), 1, ".log.debug", &["str"]),
+            Func::new_built_in_fn(Some(Box::new(debug)), 1, ".log.debug", &["message"]),
         ),
         (
             ".log.error".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(error)), 1, ".log.error", &["str"]),
+            Func::new_built_in_fn(Some(Box::new(error)), 1, ".log.error", &["message"]),
         ),
     ]
     .into_iter()

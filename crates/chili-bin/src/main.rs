@@ -35,7 +35,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None, name = "chili_")]
+#[command(version, about = "an implementation of runtime for chili language", long_about = None, name = "chili")]
 struct Args {
     /// Optional fixed source file path
     #[arg(index = 1)]
@@ -74,7 +74,7 @@ struct Args {
     memory_limit: f64,
 
     /// Optional flag to enable lazy evaluation
-    #[arg(long, default_value = "false")]
+    #[arg(short = 'L', long, default_value = "false")]
     lazy: bool,
 }
 
@@ -160,6 +160,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         env!("CARGO_PKG_VERSION"),
         std::process::id()
     );
+
+    #[cfg(not(feature = "vintage"))]
+    unsafe {
+        std::env::set_var("CHILI_SYNTAX", "chili")
+    };
 
     if args.memory_limit > 0.0 {
         let memory_limit = if args.memory_limit > 1024.0 {

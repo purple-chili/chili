@@ -1155,7 +1155,7 @@ impl SpicyObj {
                 DataType::Int8 => "i8s".to_owned(),
                 DataType::Decimal(_, _) => "decimals".to_owned(),
                 DataType::Binary => "binaries".to_owned(),
-                DataType::BinaryOffset => "binaryOffsets".to_owned(),
+                DataType::BinaryOffset => "binary_offsets".to_owned(),
                 DataType::List(_) => "lists".to_owned(),
                 DataType::Null => "nulls".to_owned(),
                 DataType::Enum(_, _) => "enums".to_owned(),
@@ -1171,8 +1171,8 @@ impl SpicyObj {
             SpicyObj::Err(_) => "err".to_owned(),
             SpicyObj::Return(_) => "return".to_owned(),
             SpicyObj::Null => "null".to_owned(),
-            SpicyObj::DelayedArg => "delayedArg".to_owned(),
-            SpicyObj::ParDataFrame { .. } => "parDf".to_owned(),
+            SpicyObj::DelayedArg => "delayed_arg".to_owned(),
+            SpicyObj::ParDataFrame { .. } => "par_df".to_owned(),
         }
     }
 
