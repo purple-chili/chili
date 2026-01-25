@@ -8,6 +8,9 @@ All notable changes to this project will be documented in this file.
 
 - Lazy evaluation mode for the runtime
 - New built-in function `collect` to collect a lazy DataFrame
+- `os.pid` to retrieve the process ID
+- `os.version` to retrieve the operating system version
+- `os.syntax` to retrieve the syntax type (chili or pepper)
 
 ## [0.6.2] - 2025-12-14
 
