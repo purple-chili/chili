@@ -193,11 +193,15 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
                         let length =
                             u32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap()) as usize;
                         *pos += 4;
-                        let mut res = Vec::with_capacity(length);
-                        for _ in 0..length {
-                            res.push(deserialize(vec, pos, false)?);
+                        if length == 0 {
+                            return Ok(SpicyObj::MixedList(Vec::new()));
+                        } else {
+                            let mut res = Vec::with_capacity(length);
+                            for _ in 0..length {
+                                res.push(deserialize(vec, pos, false)?);
+                            }
+                            return Ok(SpicyObj::MixedList(res));
                         }
-                        return Ok(SpicyObj::MixedList(res));
                     } else {
                         return Err(e);
                     }
@@ -205,6 +209,9 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
             };
             let start_pos = *pos;
             *pos = end_pos;
+            if k_type == 0 && end_pos - start_pos == 5 && !is_column {
+                return Ok(SpicyObj::MixedList(Vec::new()));
+            }
             if k_type == 10 {
                 deserialize_series(&vec[start_pos..end_pos], k_type, false)
             } else {
@@ -383,7 +390,7 @@ fn calculate_array_end_index(
             if let 1 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 12 = sub_k_type {
                 for _ in 0..length {
                     let current_k_type = vec[pos];
-                    if sub_k_type != current_k_type && current_k_type != 0 {
+                    if sub_k_type != current_k_type {
                         return Err(SpicyError::NotSupportedKMixedListErr(sub_k_type, vec[pos]));
                     }
                     pos += 2;
@@ -2545,6 +2552,22 @@ mod tests {
             SpicyObj::DataFrame(
                 DataFrame::new(vec![Series::new("a".into(), [1i64].as_ref()).into()]).unwrap(),
             ),
+        ]);
+        assert_eq!(k, expect);
+        assert_eq!(vec, serialize(&expect).unwrap());
+    }
+
+    #[test]
+    fn deserialize_and_serialize_mixed_list_string_and_empty_list() {
+        let vec = [
+            0, 0, 2, 0, 0, 0, 10, 0, 11, 0, 0, 0, 46, 111, 115, 46, 118, 101, 114, 115, 105, 111,
+            110, 0, 0, 0, 0, 0, 0,
+        ]
+        .to_vec();
+        let k = deserialize(&vec, &mut 0, false).unwrap();
+        let expect = SpicyObj::MixedList(vec![
+            SpicyObj::String(".os.version".to_owned()),
+            SpicyObj::MixedList(Vec::new()),
         ]);
         assert_eq!(k, expect);
         assert_eq!(vec, serialize(&expect).unwrap());

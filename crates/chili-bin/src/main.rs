@@ -264,17 +264,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // if not set, small package will be pending for 40ms
                 stream.set_nodelay(true).unwrap();
                 let peer_addr = stream.peer_addr().unwrap().to_string();
+                let ipc_type = IpcType::from_u8(auth_info.version)
+                    .expect(&format!("unsupported ipc version: {}", auth_info.version));
                 let h = state_tcp
                     .set_handle(
                         Some(Box::new(stream.try_clone().unwrap())),
                         &peer_addr,
-                        &format!(
-                            "{}://{}",
-                            IpcType::from_u8(auth_info.version).unwrap(),
-                            peer_addr,
-                        ),
+                        &format!("{}://{}", ipc_type, peer_addr,),
                         false,
-                        IpcType::from_u8(auth_info.version).unwrap(),
+                        ipc_type,
                         ConnType::Incoming,
                         0,
                     )

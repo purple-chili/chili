@@ -93,7 +93,34 @@ impl Debug for SpicyObj {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SpicyObj::LazyFrame(_) => write!(f, "LazyFrame(...)"),
-            _ => write!(f, "{:?}", self),
+            SpicyObj::Boolean(b) => write!(f, "Boolean({:?})", b),
+            SpicyObj::U8(u) => write!(f, "U8({:?})", u),
+            SpicyObj::I16(i) => write!(f, "I16({:?})", i),
+            SpicyObj::I32(i) => write!(f, "I32({:?})", i),
+            SpicyObj::I64(i) => write!(f, "I64({:?})", i),
+            SpicyObj::Date(d) => write!(f, "Date({:?})", d),
+            SpicyObj::Time(t) => write!(f, "Time({:?})", t),
+            SpicyObj::Datetime(d) => write!(f, "Datetime({:?})", d),
+            SpicyObj::Timestamp(t) => write!(f, "Timestamp({:?})", t),
+            SpicyObj::Duration(d) => write!(f, "Duration({:?})", d),
+            SpicyObj::F32(f32) => write!(f, "F32({:?})", f32),
+            SpicyObj::F64(f64) => write!(f, "F64({:?})", f64),
+            SpicyObj::String(s) => write!(f, "String({:?})", s),
+            SpicyObj::Symbol(s) => write!(f, "Symbol({:?})", s),
+            SpicyObj::Expr(expr) => write!(f, "Expr({:?})", expr),
+            SpicyObj::Null => write!(f, "Null"),
+            SpicyObj::Series(series) => write!(f, "Series({:?})", series),
+            SpicyObj::Matrix(array_base) => write!(f, "Matrix({:?})", array_base),
+            SpicyObj::MixedList(spicy_objs) => write!(f, "MixedList({:?})", spicy_objs),
+            SpicyObj::Dict(index_map) => write!(f, "Dict({:?})", index_map),
+            SpicyObj::DataFrame(data_frame) => write!(f, "DataFrame({:?})", data_frame),
+            SpicyObj::Fn(func) => write!(f, "Fn({:?})", func),
+            SpicyObj::Err(err) => write!(f, "Err({:?})", err),
+            SpicyObj::Return(spicy_obj) => write!(f, "Return({:?})", spicy_obj),
+            SpicyObj::DelayedArg => write!(f, "DelayedArg"),
+            SpicyObj::ParDataFrame(partitioned_data_frame) => {
+                write!(f, "ParDataFrame({:?})", partitioned_data_frame)
+            }
         }
     }
 }

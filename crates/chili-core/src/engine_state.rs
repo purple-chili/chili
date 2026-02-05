@@ -1328,6 +1328,10 @@ impl EngineState {
                 self.eval_ast(nodes, "", "")
             }
             SpicyObj::MixedList(_) if args.size() == 0 => Ok(SpicyObj::Null),
+            SpicyObj::Series(_) if args.is_syms() || args.is_str_or_strs() => {
+                let args = args.as_vec().unwrap();
+                eval_op(self, stack, &[&SpicyObj::MixedList(args)])
+            }
             SpicyObj::MixedList(_) | SpicyObj::Symbol(_) => eval_op(self, stack, &[args]),
             _ => Err(SpicyError::EvalErr(format!(
                 "Unable to eval '{}'",
@@ -1683,6 +1687,7 @@ pub enum IpcType {
 impl IpcType {
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
+            3 => Some(IpcType::Q),
             6 => Some(IpcType::Q),
             9 => Some(IpcType::Chili),
             _ => None,

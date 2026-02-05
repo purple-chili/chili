@@ -226,9 +226,10 @@ pub fn handle_q_conn(
             }
         };
 
-        debug!("eval q IPC message: {:?}", obj);
+        debug!("evaluate q IPC message: {:?}", obj);
         stack.clear_vars();
         let res = state.eval(&mut stack, &obj);
+        debug!("evaluated result: {:?}", res);
 
         if message_type == MessageType::Sync {
             match res {
