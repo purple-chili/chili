@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.4] - 2026-02-08
+
+### Added
+
+- Improved the handling of MixedList in the deserialization process to return an empty list when appropriate.
+- Modified ListExp, SelectExp, ByExp, Table, Matrix, and Dict to support optional trailing commas.
+- Enhanced BracketExp and ColNames to maintain consistency with the new syntax rules.
+
 ## [0.6.3] - 2026-01-25
 
 ### Added
