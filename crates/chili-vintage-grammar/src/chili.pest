@@ -66,7 +66,7 @@ TryExp = { "try" ~ "[" ~ BlockStatements ~ "]" ~ "catch" ~ "[" ~ BlockStatements
 BracketExp = { "(" ~ (Exp | BinaryKeyword) ~ ")" }
 
 ListItem = _{ Exp | BinaryOp | BinaryKeyword }
-ListExp  =  { "(" ~ (ListItem) ~ (";" ~ ListItem)+ ~ ")" }
+ListExp  =  { "(" ~ (ListItem) ~ (";" ~ ListItem)+ ~ ":"? ~ ")" }
 
 ReturnExp = { ":" ~ Exp }
 RaiseExp  = { "raise" ~ Exp }
@@ -266,11 +266,11 @@ QueryExp = _{
 UnaryQueryExp  =  { (GlobalId | Id) ~ (BinaryQueryExp | UnaryQueryExp | FnCall | Term) }
 BinaryQueryExp =  { (FnCall | UnaryExp | Term | BracketExp) ~ (BinaryOp | BinaryKeyword) ~ QueryExp }
 ColName        = @{ Id }
-ColNames       =  { ColName ~ ("," ~ ColName)* }
+ColNames       =  { ColName ~ ("," ~ ColName)* ~ ","? }
 RenameColExp   =  { ColName ~ ":" ~ QueryExp }
 ColExp         =  { RenameColExp | QueryExp }
-SelectExp      =  { ColExp ~ ("," ~ ColExp)* }
-ByExp          =  { "by" ~ ColExp ~ ("," ~ ColExp)* }
+SelectExp      =  { ColExp ~ ("," ~ ColExp)* ~ ","? }
+ByExp          =  { "by" ~ ColExp ~ ("," ~ ColExp)* ~ ","? }
 FromExp        =  { "from" ~ (Table | FnCall | Id | GlobalId | BracketExp) }
 WhereExp       =  { "where" ~ QueryExp ~ ("," ~ QueryExp)* }
 LimitedExp     =  { "limit" ~ (GlobalId | Id | I64 | BracketExp) }
@@ -279,12 +279,12 @@ DeleteOp       =  { "delete" }
 Query          =  { (SelectOp ~ SelectExp? ~ ByExp? ~ FromExp ~ WhereExp? ~ LimitedExp?) | (DeleteOp ~ FromExp ~ WhereExp) | (DeleteOp ~ ColNames* ~ FromExp) }
 // --> Query
 
-Table = { "(" ~ "[" ~ "]" ~ ColExp ~ (";" ~ ColExp)* ~ ")" }
+Table = { "(" ~ "[" ~ "]" ~ ColExp ~ (";" ~ ColExp)* ~ ";"? ~ ")" }
 
-Matrix = { "[[" ~ Exp ~ (";" ~ Exp)* ~ "]]" }
+Matrix = { "[[" ~ Exp ~ (";" ~ Exp)* ~ "]]" ~ ";"? }
 
 KeyValueExp = { Id ~ ":" ~ Exp }
-Dict        = { "{" ~ (KeyValueExp ~ ";")* ~ KeyValueExp? ~ "}" }
+Dict        = { "{" ~ (KeyValueExp ~ ";")* ~ KeyValueExp? ~ ";"? ~ "}" }
 
 Params  = { "[" ~ (Id ~ ";")* ~ Id? ~ "]" }
 NullExp = { "" }
