@@ -283,7 +283,7 @@ Query          =  { (SelectOp ~ SelectExp? ~ ByExp? ~ FromExp ~ WhereExp? ~ Limi
 
 Table = { "(" ~ "[" ~ "]" ~ ColExp ~ ("," ~ ColExp)* ~ ","? ~ ")" }
 
-Matrix = { "[[" ~ Exp ~ ("," ~ Exp)* ~ "]]" ~ ","? }
+Matrix = { "[[" ~ Exp ~ ("," ~ Exp)* ~ ","? ~ "]]" }
 
 KeyValueExp = { Id ~ ":" ~ Exp }
 Dict        = { "{" ~ (KeyValueExp ~ ",")* ~ KeyValueExp? ~ ","? ~ "}" }
