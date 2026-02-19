@@ -10,8 +10,8 @@ use polars::{
         frame::{LazyFrame, ScanArgsParquet},
     },
     prelude::{
-        Categories, CsvWriter, IntoLazy, JsonFormat, JsonReader, JsonWriter, ParquetReader, PlPath,
-        PlSmallStr, SinkOptions, SinkTarget,
+        Categories, CsvWriter, FileWriteFormat, IntoLazy, JsonFormat, JsonReader, JsonWriter,
+        ParquetReader, PlRefPath, PlSmallStr, SinkDestination, SinkTarget, UnifiedSinkArgs,
     },
 };
 use std::{
@@ -181,8 +181,11 @@ pub fn read_parquet(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if rechunk {
         args.rechunk = rechunk;
     }
-    let mut lazy_df = LazyFrame::scan_parquet(PlPath::Local(Path::new(file).into()), args)
-        .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
+    let mut lazy_df = LazyFrame::scan_parquet(
+        PlRefPath::new(Path::new(file).to_str().unwrap_or_default()),
+        args,
+    )
+    .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
     if !columns.is_empty() {
         lazy_df = lazy_df.select(columns);
     }
@@ -368,9 +371,9 @@ pub fn write_partition(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         }
         let mut err_msg = String::new();
         schema_df
-            .get_columns()
+            .columns()
             .iter()
-            .zip(df.get_columns().iter())
+            .zip(df.columns().iter())
             .for_each(|(col0, col1)| {
                 if col0.dtype() != col1.dtype() {
                     err_msg.push_str(&format!(
@@ -424,19 +427,25 @@ pub fn write_partition(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             if *rechunk {
                 let tmp_path = table_path.join("tmp");
                 let args = ScanArgsParquet::default();
-                let write_options = ParquetWriteOptions::default();
-                let _ =
-                    LazyFrame::scan_parquet(PlPath::Local(Path::new(&par_wild_path).into()), args)
-                        .map_err(|e| SpicyError::EvalErr(e.to_string()))?
-                        .sort(columns, sort_options)
-                        .sink_parquet(
-                            SinkTarget::Path(PlPath::Local(Path::new(&tmp_path).into())),
-                            write_options,
-                            None,
-                            SinkOptions::default(),
-                        )
-                        .map_err(|e| SpicyError::EvalErr(e.to_string()))?
-                        .collect();
+                let file_format =
+                    FileWriteFormat::Parquet(Arc::new(ParquetWriteOptions::default()));
+                let _ = LazyFrame::scan_parquet(
+                    PlRefPath::new(Path::new(&par_wild_path).to_str().unwrap_or_default()),
+                    args,
+                )
+                .map_err(|e| SpicyError::EvalErr(e.to_string()))?
+                .sort(columns, sort_options)
+                .sink(
+                    SinkDestination::File {
+                        target: SinkTarget::Path(PlRefPath::new(
+                            Path::new(&tmp_path).to_str().unwrap_or_default(),
+                        )),
+                    },
+                    file_format,
+                    UnifiedSinkArgs::default(),
+                )
+                .map_err(|e| SpicyError::EvalErr(e.to_string()))?
+                .collect();
                 for path in glob::glob(&par_wild_path).unwrap() {
                     match path {
                         Ok(path) => {

@@ -8,7 +8,7 @@ use crate::{
 };
 use indexmap::IndexMap;
 use ndarray::{Axis, s};
-use polars::prelude::{Categories, Expr, QuantileMethod, lit};
+use polars::prelude::{Categories, ExplodeOptions, Expr, QuantileMethod, lit};
 use polars::{
     chunked_array::{ChunkedArray, ops::ChunkCast},
     datatypes::{LogicalType, PolarsFloatType},
@@ -1618,7 +1618,7 @@ pub fn flag(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         },
         SpicyObj::DataFrame(df) => {
             let mut res = IndexMap::new();
-            for c in df.get_columns() {
+            for c in df.columns() {
                 let flag = match c.get_flags().is_sorted() {
                     polars::series::IsSorted::Ascending => "asc",
                     polars::series::IsSorted::Descending => "desc",
@@ -1653,7 +1653,10 @@ pub fn transpose(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
 pub fn flatten(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if args[0].is_expr() {
         let left = args[0].as_expr()?;
-        return Ok(SpicyObj::Expr(left.flatten()));
+        return Ok(SpicyObj::Expr(left.explode(ExplodeOptions {
+            empty_as_null: false,
+            keep_nulls: false,
+        })));
     }
     Err(SpicyError::NotYetImplemented(format!(
         "flatten for {:?}",

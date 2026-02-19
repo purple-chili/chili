@@ -154,7 +154,7 @@ impl SpicyObj {
             SpicyObj::DataFrame(df) => {
                 // 98 0 99 + symbol list(6) + values(6)
                 let mut length: usize = 15;
-                for column in df.get_columns().iter() {
+                for column in df.columns().iter() {
                     length += column.name().len() + 1;
                     length += get_series_len(column.as_materialized_series())?
                 }

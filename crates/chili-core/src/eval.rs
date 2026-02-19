@@ -204,7 +204,9 @@ pub fn eval_by_node(
                         .map_err(|e| SpicyError::EvalErr(format!("column {} - {}", i, e)))?,
                 )
             }
-            let df = DataFrame::new(cols).map_err(|e| SpicyError::EvalErr(e.to_string()))?;
+            let height = cols.first().map(|c| c.len()).unwrap_or(0);
+            let df =
+                DataFrame::new(height, cols).map_err(|e| SpicyError::EvalErr(e.to_string()))?;
             Ok(SpicyObj::DataFrame(df))
         }
         AstNode::Matrix(nodes) => {
@@ -226,7 +228,9 @@ pub fn eval_by_node(
                 }
                 cols.push(s.into())
             }
-            let df = DataFrame::new(cols).map_err(|e| SpicyError::EvalErr(e.to_string()))?;
+            let height = cols.first().map(|c| c.len()).unwrap_or(0);
+            let df =
+                DataFrame::new(height, cols).map_err(|e| SpicyError::EvalErr(e.to_string()))?;
             let matrix = df
                 .to_ndarray::<Float64Type>(IndexOrder::C)
                 .map_err(|e| SpicyError::Err(e.to_string()))?;
@@ -521,7 +525,7 @@ pub fn eval_for_ide(
                 .collect::<Vec<_>>();
             let keys = Series::new("keys".into(), keys);
             let values = Series::new("values".into(), values);
-            let df = DataFrame::new(vec![keys.into(), values.into()])
+            let df = DataFrame::new(keys.len(), vec![keys.into(), values.into()])
                 .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
             Ok(SpicyObj::DataFrame(df.slice(0, limit)))
         }
@@ -842,7 +846,7 @@ pub fn at(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 }
                 -13 | -14 => {
                     let column = arg1.str().unwrap();
-                    df0.select_columns([column])
+                    df0.select([column])
                         .map_err(|e| SpicyError::Err(e.to_string()))
                         .map(|vec| SpicyObj::Series(vec[0].clone().take_materialized_series()))
                 }

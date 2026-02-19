@@ -289,8 +289,8 @@ fn make_it_lazy(args: &SpicyObj, partitions: &[i32]) -> SpicyResult<(LazyFrame, 
     match args {
         SpicyObj::DataFrame(df) => {
             let columns = df
-                .get_column_names_str()
-                .into_iter()
+                .get_column_names()
+                .iter()
                 .map(|c| c.to_string())
                 .collect();
             Ok((df.clone().lazy(), columns))
@@ -320,8 +320,8 @@ fn make_it_lazy(args: &SpicyObj, partitions: &[i32]) -> SpicyResult<(LazyFrame, 
                 .map_err(|e| {
                     SpicyError::Err(format!("failed to get column name for dataframe: {}", e))
                 })?
-                .get_column_names_str()
-                .into_iter()
+                .get_column_names()
+                .iter()
                 .map(|c| c.to_string())
                 .collect();
             Ok((lf, columns))

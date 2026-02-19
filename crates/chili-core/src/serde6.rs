@@ -12,11 +12,11 @@ use polars_arrow::array::{
     Utf8ViewArray,
 };
 use polars_arrow::bitmap::Bitmap;
-use polars_arrow::buffer::Buffer;
 use polars_arrow::datatypes::{ArrowDataType, Field, TimeUnit};
 use polars_arrow::legacy::kernels::set::set_at_nulls;
 use polars_arrow::types::NativeType;
 use polars_arrow::{array::Utf8Array, offset::OffsetsBuffer};
+use polars_buffer::buffer::Buffer;
 use rayon::iter::IntoParallelIterator;
 use rayon::prelude::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::cmp::min;
@@ -222,7 +222,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
             if vec[*pos] == 98 {
                 let mut key_df: DataFrame = deserialize(vec, pos, true)?.try_into()?;
                 let value_df: DataFrame = deserialize(vec, pos, true)?.try_into()?;
-                unsafe { key_df.hstack_mut_unchecked(value_df.get_columns()) };
+                unsafe { key_df.hstack_mut_unchecked(value_df.columns()) };
                 Ok(SpicyObj::DataFrame(key_df))
             } else if vec[*pos] == 11 {
                 *pos += 1;
@@ -295,7 +295,10 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
             columns.iter_mut().zip(symbols).for_each(|(c, n)| {
                 c.rename(n.unwrap_or("").into());
             });
-            Ok(SpicyObj::DataFrame(DataFrame::new(columns).unwrap()))
+            let height = columns.first().map(|c| c.len()).unwrap_or(0);
+            Ok(SpicyObj::DataFrame(
+                DataFrame::new(height, columns).unwrap(),
+            ))
         }
         101 => {
             *pos += 1;
@@ -1087,7 +1090,7 @@ pub fn serialize(args: &SpicyObj) -> Result<Vec<u8>, SpicyError> {
                 vec.write_all(&[0]).unwrap();
             });
             vec.write_all(&[0, 0]).unwrap();
-            let columns = k.get_columns();
+            let columns = k.columns();
             vec.write_all(&column_count.to_le_bytes()).unwrap();
             let vectors = columns
                 .into_par_iter()
@@ -2550,7 +2553,7 @@ mod tests {
             SpicyObj::Symbol("upd".to_owned()),
             SpicyObj::Symbol("t".to_owned()),
             SpicyObj::DataFrame(
-                DataFrame::new(vec![Series::new("a".into(), [1i64].as_ref()).into()]).unwrap(),
+                DataFrame::new(1, vec![Series::new("a".into(), [1i64].as_ref()).into()]).unwrap(),
             ),
         ]);
         assert_eq!(k, expect);
@@ -2584,7 +2587,7 @@ mod tests {
         let df: DataFrame = k.try_into().unwrap();
         let s0 = Series::new("a".into(), [1i64].as_ref());
         let s1 = Series::new("b".into(), [1.0f64].as_ref());
-        let expect = DataFrame::new(vec![s0.into(), s1.into()]).unwrap();
+        let expect = DataFrame::new(1, vec![s0.into(), s1.into()]).unwrap();
         assert_eq!(df, expect);
         assert_eq!(vec, serialize(&SpicyObj::DataFrame(expect)).unwrap());
     }
@@ -2601,7 +2604,7 @@ mod tests {
         let df: DataFrame = k.try_into().unwrap();
         let s0 = Series::new("a".into(), [1i64].as_ref());
         let s1 = Series::new("b".into(), [1.0f64].as_ref());
-        let expect = DataFrame::new(vec![s0.into(), s1.into()]).unwrap();
+        let expect = DataFrame::new(1, vec![s0.into(), s1.into()]).unwrap();
         assert_eq!(df, expect);
     }
 

@@ -17,10 +17,10 @@ pest = { version = "2.8.3", features = ["pretty-print"] }
 clap = { version = "4.5", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11.8"
-reedline = { version = "0.44", features = ["external_printer"] }
+reedline = { version = "0.45.0", features = ["external_printer"] }
 nu-ansi-term = "0.50.3"
-chrono = "0.4.42"
-sysinfo = "0.37"
+chrono = "0.4"
+sysinfo = "0.38.2"
 crossterm = "0.29"
 
 [features]

@@ -1,6 +1,6 @@
 use std::{fmt::Display, path::PathBuf};
 
-use polars::prelude::{LazyFrame, PlPath, ScanArgsParquet};
+use polars::prelude::{LazyFrame, PlRefPath, ScanArgsParquet};
 
 use crate::{SpicyError, SpicyObj, SpicyResult};
 
@@ -58,7 +58,7 @@ impl PartitionedDataFrame {
     pub fn scan_partition(&self, par_num: i32) -> SpicyResult<LazyFrame> {
         if self.df_type == DFType::Single {
             return LazyFrame::scan_parquet(
-                PlPath::Local(PathBuf::from(&self.path).as_path().into()),
+                PlRefPath::new(PathBuf::from(&self.path).to_str().unwrap_or_default()),
                 ScanArgsParquet::default(),
             )
             .map_err(|e| SpicyError::Err(format!("failed to scan single {}: {}", self.name, e)));
@@ -67,14 +67,16 @@ impl PartitionedDataFrame {
         let args = ScanArgsParquet::default();
         let lazy_df = if self.pars.binary_search(&par_num).is_ok() {
             par_path.push(self.get_par_glob(par_num));
-            LazyFrame::scan_parquet(PlPath::Local(par_path.as_path().into()), args).map_err(
-                |e| SpicyError::Err(format!("failed to scan partitioned {}: {}", self.name, e)),
-            )?
+            LazyFrame::scan_parquet(PlRefPath::new(par_path.to_str().unwrap_or_default()), args)
+                .map_err(|e| {
+                    SpicyError::Err(format!("failed to scan partitioned {}: {}", self.name, e))
+                })?
         } else {
             par_path.push(self.get_empty_schema());
-            LazyFrame::scan_parquet(PlPath::Local(par_path.as_path().into()), args).map_err(
-                |e| SpicyError::Err(format!("failed to scan partitioned {}: {}", self.name, e)),
-            )?
+            LazyFrame::scan_parquet(PlRefPath::new(par_path.to_str().unwrap_or_default()), args)
+                .map_err(|e| {
+                    SpicyError::Err(format!("failed to scan partitioned {}: {}", self.name, e))
+                })?
         };
         Ok(lazy_df)
     }
@@ -103,16 +105,17 @@ impl PartitionedDataFrame {
         let lazy_df = if !pars.is_empty() {
             LazyFrame::scan_parquet_files(
                 pars.into_iter()
-                    .map(|p| PlPath::Local(p.as_path().into()))
+                    .map(|p| PlRefPath::new(p.to_str().unwrap_or_default()))
                     .collect(),
                 args,
             )
             .map_err(|e| SpicyError::EvalErr(e.to_string()))?
         } else {
             par_path.push(self.get_empty_schema());
-            LazyFrame::scan_parquet(PlPath::Local(par_path.as_path().into()), args).map_err(
-                |e| SpicyError::Err(format!("failed to scan partitioned {}: {}", self.name, e)),
-            )?
+            LazyFrame::scan_parquet(PlRefPath::new(par_path.to_str().unwrap_or_default()), args)
+                .map_err(|e| {
+                    SpicyError::Err(format!("failed to scan partitioned {}: {}", self.name, e))
+                })?
         };
         Ok(lazy_df)
     }
@@ -145,7 +148,7 @@ impl PartitionedDataFrame {
             }
             LazyFrame::scan_parquet_files(
                 pars.into_iter()
-                    .map(|p| PlPath::Local(p.as_path().into()))
+                    .map(|p| PlRefPath::new(p.to_str().unwrap_or_default()))
                     .collect(),
                 args,
             )
@@ -154,9 +157,10 @@ impl PartitionedDataFrame {
             })?
         } else {
             par_path.push(self.get_empty_schema());
-            LazyFrame::scan_parquet(PlPath::Local(par_path.as_path().into()), args).map_err(
-                |e| SpicyError::Err(format!("failed to scan partitioned {}: {}", self.name, e)),
-            )?
+            LazyFrame::scan_parquet(PlRefPath::new(par_path.to_str().unwrap_or_default()), args)
+                .map_err(|e| {
+                    SpicyError::Err(format!("failed to scan partitioned {}: {}", self.name, e))
+                })?
         };
         Ok(lazy_df)
     }

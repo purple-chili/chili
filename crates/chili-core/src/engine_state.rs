@@ -127,7 +127,7 @@ impl EngineState {
             topic_map: RwLock::new(HashMap::new()),
             arc_self: RwLock::new(None),
             debug: false,
-            user: whoami::username(),
+            user: whoami::username().unwrap_or_default(),
             lazy_mode: false,
         }
     }
@@ -259,6 +259,7 @@ impl EngineState {
                     }
                     let column_names = df.get_column_names_owned();
                     let records = DataFrame::new(
+                        series.len(),
                         series
                             .into_iter()
                             .enumerate()
@@ -335,6 +336,7 @@ impl EngineState {
                         }
                         let column_names = df.get_column_names_owned();
                         let records = DataFrame::new(
+                            series.len(),
                             series
                                 .into_iter()
                                 .enumerate()
@@ -393,7 +395,13 @@ impl EngineState {
                     displays.push(v.to_string());
                     types.push(v.get_type_name());
                     if let SpicyObj::DataFrame(df) = v {
-                        columns.push(df.get_column_names_str().join("|"));
+                        columns.push(
+                            df.get_column_names()
+                                .iter()
+                                .map(|c| c.as_str())
+                                .collect::<Vec<&str>>()
+                                .join("|"),
+                        );
                     } else {
                         columns.push("".to_string());
                     }
@@ -403,13 +411,16 @@ impl EngineState {
                     }
                 }
             }
-            DataFrame::new(vec![
-                Column::new("name".into(), vars),
-                Column::new("display".into(), displays),
-                Column::new("type".into(), types),
-                Column::new("columns".into(), columns),
-                Column::new("is_built_in".into(), is_built_in),
-            ])
+            DataFrame::new(
+                vars.len(),
+                vec![
+                    Column::new("name".into(), vars),
+                    Column::new("display".into(), displays),
+                    Column::new("type".into(), types),
+                    Column::new("columns".into(), columns),
+                    Column::new("is_built_in".into(), is_built_in),
+                ],
+            )
             .map_err(|e| SpicyError::EvalErr(e.to_string()))?
         };
         let par_df_vars = {
@@ -429,20 +440,28 @@ impl EngineState {
                     types.push("par_df".to_string());
                     let lazy_df = v.scan_partition(0)?;
                     let cols = match lazy_df.collect() {
-                        Ok(df) => df.get_column_names_str().join("|"),
+                        Ok(df) => df
+                            .get_column_names()
+                            .iter()
+                            .map(|c| c.as_str())
+                            .collect::<Vec<&str>>()
+                            .join("|"),
                         Err(_) => "".to_string(),
                     };
                     columns.push(cols);
                     is_built_in.push(false);
                 }
             }
-            DataFrame::new(vec![
-                Column::new("name".into(), vars),
-                Column::new("display".into(), displays),
-                Column::new("type".into(), types),
-                Column::new("columns".into(), columns),
-                Column::new("is_built_in".into(), is_built_in),
-            ])
+            DataFrame::new(
+                vars.len(),
+                vec![
+                    Column::new("name".into(), vars),
+                    Column::new("display".into(), displays),
+                    Column::new("type".into(), types),
+                    Column::new("columns".into(), columns),
+                    Column::new("is_built_in".into(), is_built_in),
+                ],
+            )
             .map_err(|e| SpicyError::EvalErr(e.to_string()))?
         };
         vars.vstack(&par_df_vars)
@@ -772,14 +791,17 @@ impl EngineState {
             is_local.push(v.is_local);
             on_disconnected.push(v.on_disconnected.clone().unwrap_or_default());
         }
-        DataFrame::new(vec![
-            Column::new("num".into(), num),
-            Column::new("socket".into(), socket),
-            Column::new("conn_type".into(), conn_type),
-            Column::new("ipc_type".into(), ipc_type),
-            Column::new("is_local".into(), is_local),
-            Column::new("on_disconnected".into(), on_disconnected),
-        ])
+        DataFrame::new(
+            len,
+            vec![
+                Column::new("num".into(), num),
+                Column::new("socket".into(), socket),
+                Column::new("conn_type".into(), conn_type),
+                Column::new("ipc_type".into(), ipc_type),
+                Column::new("is_local".into(), is_local),
+                Column::new("on_disconnected".into(), on_disconnected),
+            ],
+        )
         .map_err(|e| SpicyError::EvalErr(e.to_string()))
     }
 
@@ -1213,8 +1235,11 @@ impl EngineState {
             .boxed(),
         )
         .unwrap();
-        DataFrame::new(vec![Column::new("topic".into(), topics), series.into()])
-            .map_err(|e| SpicyError::EvalErr(e.to_string()))
+        DataFrame::new(
+            topics.len(),
+            vec![Column::new("topic".into(), topics), series.into()],
+        )
+        .map_err(|e| SpicyError::EvalErr(e.to_string()))
     }
 
     pub fn get_source(&self, index: usize) -> SpicyResult<(String, String)> {
@@ -1570,27 +1595,30 @@ impl EngineState {
             is_active.push(job.is_active);
             description.push(job.description.clone());
         }
-        let df = DataFrame::new(vec![
-            Column::new("id".into(), id),
-            Column::new("fn_name".into(), fn_name),
-            Column::new("start_time".into(), start_time)
-                .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
-                .unwrap(),
-            Column::new("end_time".into(), end_time)
-                .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
-                .unwrap(),
-            Column::new("interval".into(), interval)
-                .cast(&DataType::Duration(TimeUnit::Nanoseconds))
-                .unwrap(),
-            Column::new("last_run_time".into(), last_run_time)
-                .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
-                .unwrap(),
-            Column::new("next_run_time".into(), next_run_time)
-                .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
-                .unwrap(),
-            Column::new("is_active".into(), is_active),
-            Column::new("description".into(), description),
-        ])
+        let df = DataFrame::new(
+            jobs.len(),
+            vec![
+                Column::new("id".into(), id),
+                Column::new("fn_name".into(), fn_name),
+                Column::new("start_time".into(), start_time)
+                    .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+                    .unwrap(),
+                Column::new("end_time".into(), end_time)
+                    .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+                    .unwrap(),
+                Column::new("interval".into(), interval)
+                    .cast(&DataType::Duration(TimeUnit::Nanoseconds))
+                    .unwrap(),
+                Column::new("last_run_time".into(), last_run_time)
+                    .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+                    .unwrap(),
+                Column::new("next_run_time".into(), next_run_time)
+                    .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+                    .unwrap(),
+                Column::new("is_active".into(), is_active),
+                Column::new("description".into(), description),
+            ],
+        )
         .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
         Ok(df)
     }

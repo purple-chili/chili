@@ -11,7 +11,7 @@ use polars_ops::series::{max_horizontal, min_horizontal};
 use rand::distr::{Distribution, Uniform};
 use rand::rngs::SmallRng;
 use rand::seq::index::IndexVec;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -966,7 +966,7 @@ pub fn div(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if arg0.is_expr() || arg1.is_expr() {
         return Ok(SpicyObj::Expr(Expr::BinaryExpr {
             left: arg0.as_expr()?.into(),
-            op: Operator::Divide,
+            op: Operator::FloorDivide,
             right: arg1.as_expr()?.into(),
         }));
     }

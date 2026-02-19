@@ -9,19 +9,22 @@ resolver = "2"
 members = ["crates/chili-*"]
 
 [workspace.dependencies.polars-arrow]
-version = "0.52.0"
+version = "0.53.0"
 
 [workspace.dependencies.polars]
-version = "0.52.0"
+version = "0.53.0"
 
 [workspace.dependencies.polars-ops]
-version = "0.52.0"
+version = "0.53.0"
 
 [workspace.dependencies.polars-compute]
-version = "0.52.0"
+version = "0.53.0"
 
 [workspace.dependencies.polars-lazy]
-version = "0.52.0"
+version = "0.53.0"
+
+[workspace.dependencies.polars-buffer]
+version = "0.53.0"
 
 [profile.dev]
 opt-level = 1
@@ -35,4 +38,4 @@ codegen-units = 6
 
 [patch.crates-io.polars-core]
 git = "https://github.com/hinmeru/polars-core-patch.git"
-tag = "v0.52.0"
+tag = "v0.53.0"

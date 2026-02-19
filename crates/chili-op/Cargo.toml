@@ -40,6 +40,7 @@ polars = { workspace = true, default-features = true, features = [
     "offset_by",
     "parquet",
     "pct_change",
+    "pivot",
     "polars-ops",
     "polars-io",
     "random",
@@ -70,10 +71,10 @@ indexmap = "2.10"
 glob = "0.3"
 polars-arrow = { workspace = true }
 polars-ops = { workspace = true, features = ["pivot"] }
-rand = "0.9"
-ndarray = "0.16"
+rand = "0.10.0"
+ndarray = "0.17"
 regex = "1.11"
-ndarray-linalg = { version = "0.17.0", optional = true }
+ndarray-linalg = { version = "0.18", optional = true }
 chili-core = { path = "../chili-core" }
 num = "0.4"
-sysinfo = "0.37"
+sysinfo = "0.38.2"

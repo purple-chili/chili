@@ -1,12 +1,13 @@
 use indexmap::IndexMap;
 use polars::{
     datatypes::{Categories, DataType},
+    frame::DataFrame,
     lazy::dsl,
     prelude::{
         Expr, IntoLazy, NamedFrom, NewChunkedArray, ReshapeDimension, StringChunked,
         col as polars_col,
     },
-    series::Series,
+    series::{IntoSeries, Series},
 };
 use polars_ops::{
     chunked_array::{ListNameSpaceImpl, StringNameSpaceImpl},
@@ -69,10 +70,14 @@ pub fn null(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             Ok(SpicyObj::Dict(res))
         }
         SpicyObj::DataFrame(df) => Ok(SpicyObj::DataFrame(
-            df.get_columns()
-                .iter()
-                .map(|s| Into::<Series>::into(s.is_null()))
-                .collect(),
+            DataFrame::new(
+                df.height(),
+                df.columns()
+                    .iter()
+                    .map(|s| s.is_null().into_series().into())
+                    .collect(),
+            )
+            .map_err(|e| SpicyError::Err(e.to_string()))?,
         )),
         _ => Err(err()),
     }
@@ -82,7 +87,7 @@ pub fn mode(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg0 = args[0];
     if arg0.is_expr() {
         let left = arg0.as_expr()?;
-        return Ok(SpicyObj::Expr(left.mode()));
+        return Ok(SpicyObj::Expr(left.mode(true)));
     }
     let err = || SpicyError::UnsupportedUnaryOpErr("mode".to_owned(), arg0.get_type_name());
     match arg0 {
@@ -103,7 +108,7 @@ pub fn mode(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         | SpicyObj::Fn(_) => Ok(arg0.clone()),
         SpicyObj::Null => Ok(SpicyObj::Null),
         SpicyObj::Series(s) => Ok(SpicyObj::from_any_value(
-            polars_ops::chunked_array::mode::mode(s)
+            polars_ops::chunked_array::mode::mode(s, true)
                 .map_err(|e| SpicyError::Err(e.to_string()))?
                 .first()
                 .as_any_value(),

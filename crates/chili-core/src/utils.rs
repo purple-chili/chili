@@ -40,7 +40,7 @@ pub fn unpack_socket(socket: &str) -> Result<(String, String, String, String), S
     let user = if sockets.len() >= 3 && !sockets[2].is_empty() {
         sockets[2].to_string()
     } else {
-        whoami::username()
+        whoami::username().unwrap_or_default()
     };
 
     Ok((host.to_string(), port.to_string(), user, password))

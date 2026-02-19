@@ -6,5 +6,5 @@ authors.workspace = true
 description.workspace = true
 
 [dependencies]
-pest = { version = "2.8.3", features = ["pretty-print"] }
-pest_derive = "2.8.3"
+pest = { version = "2.8.6", features = ["pretty-print"] }
+pest_derive = "2.8.6"

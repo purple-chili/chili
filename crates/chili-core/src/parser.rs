@@ -355,7 +355,8 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
                     .into_iter()
                     .map(|node| node.spicy_obj().unwrap().series().unwrap().clone().into())
                     .collect();
-                let df = match DataFrame::new(series) {
+                let height = series.first().map(|c| c.len()).unwrap_or(0);
+                let df = match DataFrame::new(height, series) {
                     Ok(df) => df,
                     Err(e) => return Err(raise_error(e.to_string(), span)),
                 };
@@ -409,7 +410,8 @@ fn parse_exp(pair: Pair<Rule>, source_id: usize) -> Result<AstNode, SpicyError> 
                     .into_iter()
                     .map(|node| node.spicy_obj().unwrap().series().unwrap().clone().into())
                     .collect();
-                let df = match DataFrame::new(cols) {
+                let height = cols.first().map(|c| c.len()).unwrap_or(0);
+                let df = match DataFrame::new(height, cols) {
                     Ok(df) => df,
                     Err(e) => return Err(raise_error(e.to_string(), span)),
                 };

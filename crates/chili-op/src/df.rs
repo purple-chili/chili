@@ -1,22 +1,20 @@
 use chili_core::{ArgType, SpicyError, SpicyObj, SpicyResult, validate_args};
 use num::range;
-use polars_lazy::frame::pivot::PivotExpr;
 use std::sync::Arc;
 
 use polars::{
     datatypes::DataType,
-    frame::DataFrame,
+    error::PolarsError,
+    frame::{DataFrame, UniqueKeepStrategy},
     lazy::dsl::{col, lit, when},
     prelude::{
-        AsofStrategy, Categories, DataTypeExpr, IntoColumn, IntoLazy, NamedFrom, QuantileMethod,
-        Selector, SortMultipleOptions, SortOptions, UnpivotDF, int_ranges,
+        AggExpr, AsofStrategy, Categories, Column, DataTypeExpr, ExplodeOptions, Expr, IntoColumn,
+        IntoLazy, NamedFrom, PlSmallStr, QuantileMethod, Selector, SortMultipleOptions,
+        SortOptions, UnpivotDF, int_ranges,
     },
     series::Series,
 };
-use polars_ops::{
-    frame::{AsOfOptions, JoinArgs, JoinCoalesce, JoinType, JoinValidation},
-    pivot::{PivotAgg, pivot_stable},
-};
+use polars_ops::frame::{AsOfOptions, JoinArgs, JoinCoalesce, JoinType, JoinValidation};
 
 use crate::util::get_data_type_name;
 
@@ -31,7 +29,7 @@ pub fn unpivot(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let indices = args[1].to_str_vec().unwrap();
     let on_cols = args[2].to_str_vec().unwrap();
 
-    UnpivotDF::unpivot(df, on_cols, indices)
+    UnpivotDF::unpivot(df, Some(on_cols), indices)
         .map_err(|e| SpicyError::Err(e.to_string()))
         .map(SpicyObj::DataFrame)
 }
@@ -49,21 +47,48 @@ pub fn pivot(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     )?;
 
     let df = args[0].df().unwrap();
-    let indices = args[1].to_str_vec().unwrap();
-    let on_cols = args[2].to_str_vec().unwrap();
-    let values = args[3].to_str_vec().unwrap();
+    let indices = args[1]
+        .to_str_vec()
+        .unwrap()
+        .iter()
+        .map(|c| PlSmallStr::from(*c))
+        .collect::<Vec<_>>();
+    let on = args[2]
+        .to_str_vec()
+        .unwrap()
+        .iter()
+        .map(|c| PlSmallStr::from(*c))
+        .collect::<Vec<_>>();
+    let values = args[3]
+        .to_str_vec()
+        .unwrap()
+        .iter()
+        .map(|c| PlSmallStr::from(*c))
+        .collect::<Vec<_>>();
     let agg_fn_name = args[4].str().unwrap();
 
-    let pivot_agg = match agg_fn_name {
-        "" => None,
-        "first" => Some(PivotAgg(Arc::new(PivotExpr::from_expr(col("").first())))),
-        "last" => Some(PivotAgg(Arc::new(PivotExpr::from_expr(col("").last())))),
-        "max" => Some(PivotAgg(Arc::new(PivotExpr::from_expr(col("").max())))),
-        "mean" => Some(PivotAgg(Arc::new(PivotExpr::from_expr(col("").mean())))),
-        "median" => Some(PivotAgg(Arc::new(PivotExpr::from_expr(col("").median())))),
-        "min" => Some(PivotAgg(Arc::new(PivotExpr::from_expr(col("").min())))),
-        "count" => Some(PivotAgg(Arc::new(PivotExpr::from_expr(col("").count())))),
-        "sum" => Some(PivotAgg(Arc::new(PivotExpr::from_expr(col("").sum())))),
+    let pivot_expr = match agg_fn_name {
+        "" => Expr::Agg(AggExpr::Item {
+            input: Arc::new(Expr::Element),
+            allow_empty: true,
+        }),
+        "first" => Expr::Agg(AggExpr::First(Arc::new(Expr::Element))),
+        "last" => Expr::Agg(AggExpr::Last(Arc::new(Expr::Element))),
+        "max" => Expr::Agg(AggExpr::Max {
+            input: Arc::new(Expr::Element),
+            propagate_nans: true,
+        }),
+        "mean" => Expr::Agg(AggExpr::Mean(Arc::new(Expr::Element))),
+        "median" => Expr::Agg(AggExpr::Median(Arc::new(Expr::Element))),
+        "min" => Expr::Agg(AggExpr::Min {
+            input: Arc::new(Expr::Element),
+            propagate_nans: true,
+        }),
+        "count" => Expr::Agg(AggExpr::Count {
+            input: Arc::new(Expr::Element),
+            include_nulls: true,
+        }),
+        "sum" => Expr::Agg(AggExpr::Sum(Arc::new(Expr::Element))),
         _ => {
             return Err(SpicyError::Err(format!(
                 "Expect 'min', 'max', 'first', 'last', 'sum', 'mean', 'median', 'len', got '{}'",
@@ -72,17 +97,33 @@ pub fn pivot(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         }
     };
 
-    pivot_stable(
-        df,
-        on_cols,
-        Some(indices),
-        Some(values),
+    let lf = df.clone().lazy();
+    let on_columns = lf
+        .clone()
+        .select(on.iter().map(|c| col(c.as_str())).collect::<Vec<_>>())
+        .unique(None, UniqueKeepStrategy::First)
+        .collect()
+        .map_err(|e| SpicyError::Err(e.to_string()))?;
+    let lf = lf.pivot(
+        Selector::ByName {
+            names: on.into(),
+            strict: true,
+        },
+        Arc::new(on_columns),
+        Selector::ByName {
+            names: indices.into(),
+            strict: true,
+        },
+        Selector::ByName {
+            names: values.into(),
+            strict: true,
+        },
+        pivot_expr,
         true,
-        pivot_agg,
-        Some("_"),
-    )
-    .map_err(|e| SpicyError::Err(e.to_string()))
-    .map(SpicyObj::DataFrame)
+        PlSmallStr::from("_"),
+    );
+    let df = lf.collect().map_err(|e| SpicyError::Err(e.to_string()))?;
+    Ok(SpicyObj::DataFrame(df))
 }
 
 fn sort(args: &[&SpicyObj], descending: bool) -> SpicyResult<SpicyObj> {
@@ -375,10 +416,16 @@ pub fn wj(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 )
                 .alias("idx1"),
             )
-            .explode(Selector::ByName {
-                names: Arc::new(["idx1".into()]),
-                strict: true,
-            })
+            .explode(
+                Selector::ByName {
+                    names: Arc::new(["idx1".into()]),
+                    strict: true,
+                },
+                ExplodeOptions {
+                    empty_as_null: true,
+                    keep_nulls: true,
+                },
+            )
             .select([col("idx0"), col("idx1")]);
 
         lf = lf
@@ -432,10 +479,16 @@ pub fn wj(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                         )
                         .alias("idx1"),
                     )
-                    .explode(Selector::ByName {
-                        names: Arc::new(["idx1".into()]),
-                        strict: true,
-                    })
+                    .explode(
+                        Selector::ByName {
+                            names: Arc::new(["idx1".into()]),
+                            strict: true,
+                        },
+                        ExplodeOptions {
+                            empty_as_null: true,
+                            keep_nulls: true,
+                        },
+                    )
                     .select([col("idx0"), col("idx1")]);
                 patch_lf
                     .join(
@@ -555,11 +608,15 @@ pub fn describe(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg0 = args[0];
     let df = match arg0 {
         // refer to https://github.com/pola-rs/polars/blob/1c6b7b70e935fe70384fc0d1ca8d07763011d8b8/py-polars/polars/lazyframe/frame.py#L680
-        SpicyObj::DataFrame(df) => df
-            .iter()
-            .filter(|s| s.dtype().is_primitive_numeric() || s.dtype().is_temporal())
-            .cloned()
-            .collect(),
+        SpicyObj::DataFrame(df) => {
+            let columns = df
+                .columns()
+                .iter()
+                .filter(|s| s.dtype().is_primitive_numeric() || s.dtype().is_temporal())
+                .cloned()
+                .collect();
+            DataFrame::new(df.height(), columns).map_err(|e| SpicyError::Err(e.to_string()))?
+        }
         SpicyObj::Series(s) => {
             if s.dtype().is_primitive_numeric() || s.dtype().is_temporal() {
                 s.clone().into_frame()
@@ -586,7 +643,7 @@ pub fn describe(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         ],
     )
     .into_frame();
-    for s in df.iter() {
+    for s in df.columns().iter() {
         let column = s.name().as_str();
         let exprs = &[
             col(column).count().alias("count"),
@@ -635,11 +692,13 @@ pub fn describe(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         } else {
             stat = stat.select(exprs);
         }
-        let mut stat = stat.collect().map_err(|e| SpicyError::Err(e.to_string()))?;
+        let mut stat = stat
+            .collect()
+            .map_err(|e: PolarsError| SpicyError::Err(e.to_string()))?;
         let mut stat = stat
             .transpose(Some(column), None)
             .unwrap()
-            .get_columns()
+            .columns()
             .last()
             .unwrap()
             .clone();
@@ -660,11 +719,13 @@ pub fn schema(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         columns.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
     );
     let types = df
+        .columns()
         .iter()
         .map(|s| get_data_type_name(s.dtype()))
         .collect::<Vec<_>>();
     let types = Series::new("datatype".into(), types);
     let flags = df
+        .columns()
         .iter()
         .map(|s| match s.get_flags().is_sorted() {
             polars::series::IsSorted::Ascending => "asc",
@@ -673,8 +734,9 @@ pub fn schema(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         })
         .collect::<Vec<_>>();
     let flags = Series::new("flag".into(), flags);
+    let height = columns.len();
     Ok(SpicyObj::DataFrame(
-        DataFrame::new(vec![columns.into(), types.into(), flags.into()]).unwrap(),
+        DataFrame::new(height, vec![columns.into(), types.into(), flags.into()]).unwrap(),
     ))
 }
 
@@ -701,7 +763,7 @@ pub fn hstack(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         }
         SpicyObj::DataFrame(df1) => {
             let res = df0
-                .hstack(df1.get_columns())
+                .hstack(df1.columns())
                 .map_err(|e| SpicyError::Err(e.to_string()))?;
             Ok(SpicyObj::DataFrame(res))
         }
@@ -723,7 +785,7 @@ pub fn flip(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     validate_args(args, &[ArgType::Dict])?;
     let arg0 = args[0].dict().unwrap();
 
-    let df: DataFrame = arg0
+    let columns = arg0
         .iter()
         .map(|(k, v)| {
             if let SpicyObj::Series(s) = v {
@@ -735,17 +797,27 @@ pub fn flip(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 )))
             }
         })
-        .collect::<SpicyResult<DataFrame>>()?;
-    Ok(SpicyObj::DataFrame(df))
+        .collect::<SpicyResult<Vec<Column>>>()?;
+    let height = columns.first().map(|c| c.len()).unwrap_or(0);
+
+    Ok(SpicyObj::DataFrame(
+        DataFrame::new(height, columns).unwrap(),
+    ))
 }
 
 pub fn explode(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     validate_args(args, &[ArgType::DataFrame, ArgType::SymOrSyms])?;
     let df = args[0].df().unwrap();
     let columns = args[1].to_str_vec().unwrap();
-    df.explode(columns)
-        .map_err(|e| SpicyError::Err(e.to_string()))
-        .map(SpicyObj::DataFrame)
+    df.explode(
+        columns,
+        ExplodeOptions {
+            empty_as_null: true,
+            keep_nulls: true,
+        },
+    )
+    .map_err(|e| SpicyError::Err(e.to_string()))
+    .map(SpicyObj::DataFrame)
 }
 
 pub fn collect(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {

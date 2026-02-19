@@ -112,20 +112,23 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         }
     }
     Ok(SpicyObj::DataFrame(
-        DataFrame::new(vec![
-            Column::new("path".into(), paths),
-            Column::new("name".into(), names),
-            Column::new("size".into(), sizes),
-            Column::new("type".into(), types)
-                .cast(&DataType::Categorical(
-                    Categories::global(),
-                    Categories::global().mapping(),
-                ))
-                .unwrap(),
-            Column::new("mod_time".into(), mod_times)
-                .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
-                .unwrap(),
-        ])
+        DataFrame::new(
+            paths.len(),
+            vec![
+                Column::new("path".into(), paths),
+                Column::new("name".into(), names),
+                Column::new("size".into(), sizes),
+                Column::new("type".into(), types)
+                    .cast(&DataType::Categorical(
+                        Categories::global(),
+                        Categories::global().mapping(),
+                    ))
+                    .unwrap(),
+                Column::new("mod_time".into(), mod_times)
+                    .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+                    .unwrap(),
+            ],
+        )
         .map_err(|e| SpicyError::Err(e.to_string()))?,
     ))
 }

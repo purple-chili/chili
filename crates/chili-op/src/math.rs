@@ -4,13 +4,12 @@ use polars::{
     datatypes::DataType,
     lazy::dsl::col,
     prelude::{
-        IntoLazy, QuantileMethod, RollingFnParams, RollingOptionsFixedWindow, RollingVarParams,
-        RoundMode,
+        EWMOptions, IntoLazy, QuantileMethod, RollingFnParams, RollingOptionsFixedWindow,
+        RollingVarParams, RoundMode,
     },
     series::IntoSeries,
     time::chunkedarray::SeriesOpsTime,
 };
-use polars_arrow::legacy::kernels::ewm::EWMOptions;
 use polars_compute::rolling::RollingQuantileParams;
 use polars_ops::series::{LogSeries, RoundSeries, negate};
 
@@ -907,7 +906,7 @@ pub fn pow(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             .collect()
             .map_err(|e| SpicyError::Err(e.to_string()))?;
         Ok(SpicyObj::Series(
-            res.get_columns()
+            res.columns()
                 .first()
                 .unwrap()
                 .clone()
