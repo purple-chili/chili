@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use chili_parser::Language;
+
 use crate::{
     EngineState, Stack,
     ast_node::{AstNode, SourcePos},
@@ -24,10 +26,17 @@ pub struct Func {
     pub f_with_side_effect: Option<Box<SideEffectFuncType>>,
     pub is_built_in_fn: bool,
     pub is_raw: bool,
+    pub lang: Language,
 }
 
 impl Func {
-    pub fn new(fn_body: &str, params: Vec<String>, nodes: Vec<AstNode>, pos: SourcePos) -> Self {
+    pub fn new(
+        fn_body: &str,
+        params: Vec<String>,
+        nodes: Vec<AstNode>,
+        pos: SourcePos,
+        lang: Language,
+    ) -> Self {
         Self {
             fn_body: fn_body.to_owned(),
             pos,
@@ -40,6 +49,7 @@ impl Func {
             f_with_side_effect: None,
             is_built_in_fn: false,
             is_raw: false,
+            lang,
         }
     }
 
@@ -67,6 +77,7 @@ impl Func {
             f_with_side_effect: None,
             is_built_in_fn: true,
             is_raw: false,
+            lang: Language::Chili,
         }
     }
 
@@ -88,11 +99,12 @@ impl Func {
             f_with_side_effect,
             is_built_in_fn: true,
             is_raw: false,
+            lang: Language::Chili,
         }
     }
 
     // need to parse fn body to get arg_num and params
-    pub fn new_raw_fn(fn_body: &str) -> Self {
+    pub fn new_raw_fn(fn_body: &str, lang: Language) -> Self {
         Self {
             fn_body: fn_body.to_owned(),
             pos: SourcePos::new(0, 0),
@@ -105,6 +117,7 @@ impl Func {
             f_with_side_effect: None,
             is_built_in_fn: false,
             is_raw: true,
+            lang,
         }
     }
 

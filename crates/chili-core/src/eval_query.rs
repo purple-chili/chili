@@ -30,7 +30,7 @@ pub fn eval_query(
     let mut partitions = vec![];
     if let SpicyObj::ParDataFrame(par_df) = &args
         && !where_exp.is_empty()
-        && let AstNode::BinaryExp { f2, lhs, rhs } = where_exp[0].clone()
+        && let AstNode::BinaryExp { op: f2, lhs, rhs } = where_exp[0].clone()
     {
         skip_part_clause = true;
         if let AstNode::Id { name: par_unit, .. } = *lhs

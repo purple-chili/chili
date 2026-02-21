@@ -108,13 +108,13 @@ pub fn eval_by_node(
     columns: Option<&Vec<String>>,
 ) -> SpicyResult<SpicyObj> {
     match node {
-        AstNode::UnaryExp { f, exp } => {
+        AstNode::UnaryExp { op: f, exp } => {
             let obj = eval_by_node(state, stack, f, src, columns)?;
             let exp = eval_by_node(state, stack, exp, src, columns)?;
             eval_call(state, stack, &obj, &vec![&exp], &f.get_pos(), src)
         }
 
-        AstNode::BinaryExp { f2, lhs, rhs } => {
+        AstNode::BinaryExp { op: f2, lhs, rhs } => {
             let lhs = eval_by_node(state, stack, lhs, src, columns)?;
             let rhs = eval_by_node(state, stack, rhs, src, columns)?;
             let obj = eval_by_node(state, stack, f2, src, columns)?;
@@ -171,7 +171,9 @@ pub fn eval_by_node(
                 Err(SpicyError::NameErr(name.to_owned()))
             }
         }
-        AstNode::FnCall { pos: _, f, args } => {
+        AstNode::FnCall {
+            pos: _, f, args, ..
+        } => {
             let obj = eval_by_node(state, stack, f, src, columns)?;
             let args: Result<Vec<SpicyObj>, SpicyError> = args
                 .iter()
@@ -548,9 +550,9 @@ pub fn eval_call(
     match f {
         SpicyObj::Fn(f) => {
             let func = if f.is_raw {
-                if f.fn_body.starts_with("{") {
+                if f.fn_body.ends_with("}") {
                     let nodes = state
-                        .parse("", &f.fn_body)
+                        .parse_raw_fn(&f.fn_body, f.lang)
                         .map_err(|e| SpicyError::Err(format!("failed to parse raw fn: {}", e)))?;
 
                     state.eval_ast(nodes, "", "")?

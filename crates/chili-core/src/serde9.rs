@@ -4,6 +4,7 @@ use std::{
     sync::LazyLock,
 };
 
+use chili_parser::Language;
 use indexmap::IndexMap;
 // use ndarray::ArcArray2;
 use polars::{
@@ -416,10 +417,12 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
         // }
         // function
         154 => {
-            let byte_len = u32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap()) as usize;
+            let lang = Language::from(vec[*pos]);
             *pos += 4;
+            let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
+            *pos += 8;
             let s = String::from_utf8(vec[*pos..*pos + byte_len].to_vec()).unwrap();
-            obj = SpicyObj::Fn(Func::new_raw_fn(&s));
+            obj = SpicyObj::Fn(Func::new_raw_fn(&s, lang));
             *pos += byte_len + PADDING[byte_len % 8].len();
         }
         _ => return Err(SpicyError::NotAbleToDeserializeErr(code)),
@@ -937,9 +940,10 @@ pub fn serialize(args: &SpicyObj, compress: bool) -> SpicyResult<Vec<Vec<u8>>> {
         SpicyObj::Null => Ok(vec![vec![code, 0, 0, 0, 0, 0, 0, 0]]),
         SpicyObj::Fn(f) if f.part_args.is_none() => {
             let fn_body = &f.fn_body;
-            let mut buf = Vec::with_capacity(fn_body.len() + 8 + PADDING[fn_body.len() % 8].len());
+            let mut buf = Vec::with_capacity(fn_body.len() + 16 + PADDING[fn_body.len() % 8].len());
             buf.write_all(&[code, 0, 0, 0]).unwrap();
-            buf.write_all(&(fn_body.len() as u32).to_le_bytes())
+            buf.write_all(&[f.lang as u8, 0, 0, 0]).unwrap();
+            buf.write_all(&(fn_body.len() as u64).to_le_bytes())
                 .unwrap();
             buf.write_all(fn_body.as_bytes()).unwrap();
             buf.write_all(PADDING[fn_body.len() % 8]).unwrap();

@@ -1,4 +1,5 @@
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Copy)]
+#[repr(u8)]
 pub enum Language {
     #[default]
     Chili,
@@ -20,6 +21,16 @@ impl Language {
         match self {
             Self::Chili => "chi",
             Self::Pepper => "pep",
+        }
+    }
+}
+
+impl From<u8> for Language {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::Chili,
+            1 => Self::Pepper,
+            _ => panic!("invalid language value: {}", value),
         }
     }
 }

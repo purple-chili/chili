@@ -1135,6 +1135,9 @@ impl EngineState {
             .map_err(|e| SpicyError::Err(e.to_string()))?;
         for subscriber in subscribers {
             if let Some(v) = handle.get_mut(&subscriber) {
+                if v.conn_type == ConnType::Disconnected {
+                    continue;
+                }
                 match &mut v.rw {
                     Some(rw) => match crate::write_chili_ipc_msg(rw, bytes, MessageType::Async) {
                         Ok(_) => (),
@@ -1224,7 +1227,7 @@ impl EngineState {
         for (topic, handles) in topic_map.iter() {
             topics.push(topic.clone());
             subscribers.extend(handles);
-            offset += subscribers.len();
+            offset += handles.len();
             offsets.push(offset as i32);
         }
         let series = Series::from_arrow(
@@ -1285,6 +1288,14 @@ impl EngineState {
             parse(source, source_id, path)
         } else {
             parse(source, source_id, path)
+        }
+    }
+
+    pub fn parse_raw_fn(&self, fn_body: &str, lang: Language) -> Result<Vec<AstNode>, SpicyError> {
+        if lang == Language::Chili {
+            parse(fn_body, 0, "repl.chi")
+        } else {
+            parse(fn_body, 0, "repl.pep")
         }
     }
 

@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use chili_parser::Language;
+
 use crate::errors::{SpicyError, SpicyResult};
 use crate::obj::SpicyObj;
 
@@ -25,11 +27,11 @@ pub enum AstNode {
         right_cond: Box<AstNode>,
     },
     UnaryExp {
-        f: Box<AstNode>,
+        op: Box<AstNode>,
         exp: Box<AstNode>,
     },
     BinaryExp {
-        f2: Box<AstNode>,
+        op: Box<AstNode>,
         lhs: Box<AstNode>,
         rhs: Box<AstNode>,
     },
@@ -47,6 +49,7 @@ pub enum AstNode {
         name: String,
     },
     FnCall {
+        lang: Language,
         pos: SourcePos,
         f: Box<AstNode>,
         args: Vec<AstNode>,
@@ -132,7 +135,7 @@ impl AstNode {
                 }
             }
             AstNode::Id { pos, name: _ } => Some(pos.clone()),
-            AstNode::FnCall { pos, f: _, args: _ } => Some(pos.clone()),
+            AstNode::FnCall { pos, .. } => Some(pos.clone()),
             _ => None,
         }
     }
@@ -147,9 +150,9 @@ impl Display for AstNode {
                 left_cond: _,
                 right_cond: _,
             } => "short circuit expression",
-            AstNode::UnaryExp { f: _, exp: _ } => "unary expression",
+            AstNode::UnaryExp { op: _, exp: _ } => "unary expression",
             AstNode::BinaryExp {
-                f2: _,
+                op: _,
                 lhs: _,
                 rhs: _,
             } => "binary expression",
@@ -160,11 +163,7 @@ impl Display for AstNode {
                 exp: _,
             } => "index assignment expression",
             AstNode::Id { name, .. } => name,
-            AstNode::FnCall {
-                pos: _,
-                f: _,
-                args: _,
-            } => "function call",
+            AstNode::FnCall { .. } => "function call",
             AstNode::DataFrame(_) => "table expression",
             AstNode::Matrix(_) => "matrix expression",
             AstNode::Dict { keys: _, values: _ } => "dictionary expression",

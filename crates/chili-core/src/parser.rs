@@ -17,7 +17,7 @@ use crate::SpicyError;
 use crate::ast_node::{AstNode, QueryOp, SourcePos};
 use crate::func::Func;
 use crate::obj::SpicyObj;
-use chili_parser::{Expr, Span, Token};
+use chili_parser::{Expr, Language, Span, Token};
 
 use chumsky::prelude::*;
 
@@ -25,6 +25,7 @@ struct Context<'a> {
     pub source_id: usize,
     pub source_path: &'a str,
     pub source: &'a str,
+    pub lang: Language,
 }
 
 impl<'a> Context<'a> {
@@ -41,11 +42,11 @@ fn parse_exp(expr: Expr, context: &Context) -> Result<AstNode, SpicyError> {
     match expr {
         Expr::Statement(statement) => parse_exp(statement.0, context),
         Expr::Unary { op, rhs, .. } => Ok(AstNode::UnaryExp {
-            f: Box::new(parse_exp(*op, context)?),
+            op: Box::new(parse_exp(*op, context)?),
             exp: Box::new(parse_exp(*rhs, context)?),
         }),
         Expr::Binary { lhs, op, rhs, .. } => Ok(AstNode::BinaryExp {
-            f2: Box::new(AstNode::Id {
+            op: Box::new(AstNode::Id {
                 pos: context.get_source_pos(op.1),
                 name: op.0.str().unwrap().to_owned(),
             }),
@@ -94,6 +95,7 @@ fn parse_exp(expr: Expr, context: &Context) -> Result<AstNode, SpicyError> {
                 params,
                 nodes,
                 context.get_source_pos(span),
+                context.lang.clone(),
             ))))
         }
         Expr::Call { span, f, args } => {
@@ -107,6 +109,7 @@ fn parse_exp(expr: Expr, context: &Context) -> Result<AstNode, SpicyError> {
                 pos: context.get_source_pos(span),
                 f: Box::new(f),
                 args,
+                lang: context.lang.clone(),
             })
         }
         Expr::If {
@@ -671,6 +674,8 @@ pub fn parse(
         .filter(|(t, _)| !matches!(t, Token::Comment(_)))
         .collect::<Vec<_>>();
 
+    let mut lang = Language::Chili;
+
     let (program, errs) = if source_path.ends_with(".chi") {
         Expr::parser_chili()
             .parse(
@@ -680,6 +685,7 @@ pub fn parse(
             )
             .into_output_errors()
     } else {
+        lang = Language::Pepper;
         Expr::parser_pepper()
             .parse(
                 tokens
@@ -702,6 +708,7 @@ pub fn parse(
         source_id,
         source_path,
         source,
+        lang,
     };
     if let Some(block) = program.block() {
         for expr in block {
