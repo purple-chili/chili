@@ -1,5 +1,7 @@
 ![chili](https://github.com/purple-chili/chili/blob/main/icon.png?raw=true)
 
+![PyPI - Version](https://img.shields.io/pypi/v/chili-pie?style=for-the-badge&color=%2321759b) ![Visual Studio Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/jshinonome.vscode-chili?style=for-the-badge&label=vscode%20ext&color=%23007ACC) ![PyPI - Version](https://img.shields.io/pypi/v/chiz?style=for-the-badge&label=chiz&color=%23FFA600)
+
 # Chili: for data analysis and engineering.
 
 ## Language syntaxes
