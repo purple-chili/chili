@@ -1,0 +1,49 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "chili-pie"
+version = "0.7.0"
+description = "Chili Language Runtime, written in Rust."
+authors = [{ name = "hinmeru", email = "purple-chili@hotmail.com" }]
+readme = "README.md"
+requires-python = ">=3.7"
+license = { file = "LICENSE" }
+keywords = [
+    "automation",
+    "flake8",
+    "pycodestyle",
+    "pyflakes",
+    "pylint",
+    "clippy",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Rust",
+]
+
+[project.urls]
+Repository = "https://github.com/purple-chili/chili"
+Documentation = "https://purple-chili.github.io/"
+Changelog = "https://github.com/purple-chili/chili/blob/main/CHANGELOG.md"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "crates/chili-bin/Cargo.toml"
+module-name = "chili-pie"
+strip = true
+exclude = []

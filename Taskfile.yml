@@ -67,3 +67,20 @@ tasks:
     cmds:
       - mkdir -p ~/.vim
       - cp -r ./vim-config/* ~/.vim/
+
+  update-py-version:
+    cmds:
+      - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/" pyproject.toml
+
+  release-py:
+    deps:
+      - test
+    cmds:
+      - rm -rf dist
+      - maturin build --release --locked --out dist
+
+  install-py:
+    deps:
+      - release-py
+    cmds:
+      - uv pip install dist/chili_pie*.whl
