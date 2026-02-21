@@ -2911,7 +2911,7 @@ pub fn rand(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 SpicyObj::U8(v) => {
                     let dist = Uniform::new(0, v).unwrap();
                     let arr: Vec<u8> = if *v == 0 {
-                        (0..i).map(|_| small_rng.random()).collect()
+                        (0..i).map(|_| small_rng.random::<u8>()).collect()
                     } else {
                         (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
                     };
@@ -2920,7 +2920,7 @@ pub fn rand(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 SpicyObj::I16(v) => {
                     let dist = Uniform::new(0, v).unwrap();
                     let arr: Vec<i16> = if *v == 0 {
-                        (0..i).map(|_| small_rng.random()).collect()
+                        (0..i).map(|_| small_rng.random::<i16>()).collect()
                     } else {
                         (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
                     };
@@ -2929,7 +2929,7 @@ pub fn rand(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 SpicyObj::I32(v) | SpicyObj::Date(v) => {
                     let dist = Uniform::new(0, v).unwrap();
                     let arr: Vec<i32> = if *v == 0 {
-                        (0..i).map(|_| small_rng.random()).collect()
+                        (0..i).map(|_| small_rng.random::<i32>()).collect()
                     } else {
                         (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
                     };
