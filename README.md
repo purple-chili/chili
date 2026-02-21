@@ -1,4 +1,4 @@
-![chili](icon.png)
+![chili](https://github.com/purple-chili/chili/blob/main/icon.png?raw=true)
 
 # Chili: for data analysis and engineering.
 
