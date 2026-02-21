@@ -70,7 +70,7 @@ pub enum AstNode {
     },
     Return(Box<AstNode>),
     Raise(Box<AstNode>),
-    Table(Vec<AstNode>),
+    DataFrame(Vec<AstNode>),
     Matrix(Vec<AstNode>),
     Dict {
         keys: Vec<String>,
@@ -165,7 +165,7 @@ impl Display for AstNode {
                 f: _,
                 args: _,
             } => "function call",
-            AstNode::Table(_) => "table expression",
+            AstNode::DataFrame(_) => "table expression",
             AstNode::Matrix(_) => "matrix expression",
             AstNode::Dict { keys: _, values: _ } => "dictionary expression",
             AstNode::List(_) => "list expression",

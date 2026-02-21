@@ -1,11 +1,5 @@
 use anyhow::Result;
 
-#[cfg(not(feature = "vintage"))]
-use chili_grammar::Rule;
-#[cfg(feature = "vintage")]
-use chili_vintage_grammar::Rule;
-
-use pest::error::Error as PestError;
 use thiserror::Error;
 
 use crate::{ArgType, SpicyObj, arg_type::raise_arg_type_err};
@@ -117,12 +111,6 @@ pub enum SpicyError {
 }
 
 pub type SpicyResult<T> = Result<T, SpicyError>;
-
-impl From<PestError<Rule>> for SpicyError {
-    fn from(e: PestError<Rule>) -> Self {
-        SpicyError::Err(e.to_string())
-    }
-}
 
 impl SpicyError {
     pub fn new_arg_type_err(args: &SpicyObj, arg_pos: usize, arg_type: &ArgType) -> Self {

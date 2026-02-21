@@ -145,55 +145,54 @@ impl Func {
 }
 
 impl Display for Func {
-    #[cfg(feature = "vintage")]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let fn_body = if self.is_built_in_fn() {
-            format!("{{[{}]}}", self.params.join("; "))
-        } else {
-            self.fn_body.clone()
-        };
-        if self.part_args.is_none() {
-            match &self.f {
-                Some(_) => write!(f, "{{[{}]}}", self.params.join("; ")),
-                None => write!(f, "{}", fn_body),
+        let syntax = std::env::var("CHILI_SYNTAX").unwrap_or("chili".to_string());
+        if syntax == "chili" {
+            let fn_body = if self.is_built_in_fn() {
+                format!("function({}){{}}", self.params.join(", "),)
+            } else {
+                self.fn_body.clone()
+            };
+            if self.part_args.is_none() {
+                match &self.f {
+                    Some(_) => write!(f, "function({}){{}}", self.params.join(", ")),
+                    None => write!(f, "{}", fn_body),
+                }
+            } else {
+                write!(
+                    f,
+                    "function({})\n{{\n  {}\n}}",
+                    self.missing_index
+                        .iter()
+                        .map(|i| self.params[*i].clone())
+                        .collect::<Vec<String>>()
+                        .join(", "),
+                    fn_body
+                )
             }
         } else {
-            write!(
-                f,
-                "{{[{}]\n  {}\n}}",
-                self.missing_index
-                    .iter()
-                    .map(|i| self.params[*i].clone())
-                    .collect::<Vec<String>>()
-                    .join("; "),
-                fn_body
-            )
-        }
-    }
-
-    #[cfg(not(feature = "vintage"))]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let fn_body = if self.is_built_in_fn() {
-            format!("function({}){{}}", self.params.join(", "),)
-        } else {
-            self.fn_body.clone()
-        };
-        if self.part_args.is_none() {
-            match &self.f {
-                Some(_) => write!(f, "function({}){{}}", self.params.join(", ")),
-                None => write!(f, "{}", fn_body),
+            let fn_body = if self.is_built_in_fn() {
+                format!("{{[{}]}}", self.params.join("; "))
+            } else {
+                self.fn_body.clone()
+            };
+            if self.part_args.is_none() {
+                match &self.f {
+                    Some(_) => write!(f, "{{[{}]}}", self.params.join("; ")),
+                    None => write!(f, "{}", fn_body),
+                }
+            } else {
+                write!(
+                    f,
+                    "{{[{}]\n  {}\n}}",
+                    self.missing_index
+                        .iter()
+                        .map(|i| self.params[*i].clone())
+                        .collect::<Vec<String>>()
+                        .join("; "),
+                    fn_body
+                )
             }
-        } else {
-            write!(
-                f,
-                "function({})\n{{\n  {}\n}}",
-                self.missing_index
-                    .iter()
-                    .map(|i| self.params[*i].clone())
-                    .collect::<Vec<String>>()
-                    .join(", "),
-                fn_body
-            )
         }
     }
 }

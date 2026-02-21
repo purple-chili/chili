@@ -7,7 +7,6 @@ description = "chili operations"
 
 [features]
 matrix = ["ndarray-linalg/openblas-static"]
-vintage = ['chili-core/vintage']
 
 [dependencies]
 polars = { workspace = true, default-features = true, features = [

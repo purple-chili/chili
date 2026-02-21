@@ -12,17 +12,6 @@ tasks:
     silent: true
 
   test:
-    deps:
-      - test-vintage-grammar
-      - test-grammar
-
-  test-vintage-grammar:
-    dir: crates/chili-vintage-grammar
-    cmds:
-      - cargo test
-
-  test-grammar:
-    dir: crates/chili-grammar
     cmds:
       - cargo test
 
@@ -30,18 +19,9 @@ tasks:
     cmds:
       - cargo build --bin chili
 
-  build-vintage:
-    cmds:
-      - cargo build --bin pepper --features vintage
-
   release:
     cmds:
       - cargo build --release --bin chili
-      - ls -lh ./target/x86_64-unknown-linux-gnu/release/chili
-
-  release-vintage:
-    cmds:
-      - cargo build --release --bin pepper --features vintage
       - ls -lh ./target/x86_64-unknown-linux-gnu/release/chili
 
   run:
@@ -50,23 +30,20 @@ tasks:
     cmds:
       - ./target/debug/chili  {{.CLI_ARGS}}
 
-  run-vintage:
+  run-pepper:
     deps:
-      - build-vintage
+      - build
     cmds:
-      - ./target/debug/pepper  {{.CLI_ARGS}}
+      - ./target/debug/chili -P {{.CLI_ARGS}}
 
   dist:
     deps:
       - release
-      - release-vintage
     cmds:
-      - rm -f ./dist/chili* ./dist/pepper*
+      - rm -f ./dist/chili*
       - mkdir -p ./dist
       - cp ./target/x86_64-unknown-linux-gnu/release/chili ./dist/chili
-      - cp ./target/x86_64-unknown-linux-gnu/release/pepper ./dist/pepper
       - cd ./dist && tar -czvf chili_x86_64_linux_gnu_{{.VERSION}}.tar.gz ./chili
-      - cd ./dist && tar -czvf pepper_x86_64_linux_gnu_{{.VERSION}}.tar.gz ./pepper
 
   podman-dist:
     cmds:
@@ -77,7 +54,6 @@ tasks:
       - podman-dist
     cmds:
       - cp ./dist/chili ~/bin
-      - cp ./dist/pepper ~/bin
 
   tag:
     cmds:

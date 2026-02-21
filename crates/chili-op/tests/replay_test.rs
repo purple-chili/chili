@@ -1,16 +1,11 @@
-#[cfg(feature = "vintage")]
 use std::path::PathBuf;
 
-#[cfg(feature = "vintage")]
 use chili_core::parse;
 
-#[cfg(feature = "vintage")]
 mod util;
 
-#[cfg(feature = "vintage")]
 use crate::util::create_state;
 
-#[cfg(feature = "vintage")]
 mod tests {
     use super::*;
 
@@ -18,14 +13,14 @@ mod tests {
     fn replay6_case00() {
         let mut tp_log_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         tp_log_path.push("tests/tp_log/20250707.data");
-        let state = create_state();
+        let state = create_state(false);
         let src = "
         upd: {[table; data]
             table upsert data;
             tick[1]
         };
         ";
-        let nodes = parse(src, 0).unwrap();
+        let nodes = parse(src, 0, "repl.pep").unwrap();
         state.eval_ast(nodes, "", src).unwrap();
         let nodes = parse(
             &format!(
@@ -33,6 +28,7 @@ mod tests {
                 &tp_log_path.to_str().unwrap()
             ),
             0,
+            "repl.pep",
         )
         .unwrap();
         state.eval_ast(nodes, "", "").unwrap();
@@ -43,6 +39,7 @@ mod tests {
                 &tp_log_path.to_str().unwrap()
             ),
             0,
+            "repl.pep",
         )
         .unwrap();
         state.eval_ast(nodes, "", "").unwrap();
@@ -53,14 +50,14 @@ mod tests {
     fn replay6_case01() {
         let mut tp_log_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         tp_log_path.push("tests/tp_log/20250707.data");
-        let state = create_state();
+        let state = create_state(false);
         let src = "
         upd: {[table; data]
             table upsert data;
             tick[1]
         };
         ";
-        let nodes = parse(src, 0).unwrap();
+        let nodes = parse(src, 0, "repl.pep").unwrap();
         state.eval_ast(nodes, "", src).unwrap();
         let nodes = parse(
             &format!(
@@ -68,6 +65,7 @@ mod tests {
                 &tp_log_path.to_str().unwrap()
             ),
             0,
+            "repl.pep",
         )
         .unwrap();
         state.eval_ast(nodes, "", "").unwrap();

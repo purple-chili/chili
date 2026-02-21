@@ -259,7 +259,7 @@ pub fn eval_fn_query(
     }
 
     if is_lazy_mode {
-        return Ok(SpicyObj::LazyFrame(lf));
+        Ok(SpicyObj::LazyFrame(lf))
     } else {
         lf.collect()
             .map(SpicyObj::DataFrame)

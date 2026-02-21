@@ -1,0 +1,14 @@
+// minus vs negative
+1-1;
+1 -1;
+1 - 1;
+1 - -1;
+
+// valid but wrong op
+1--1;
+1 -- 1;
+
+// delayed arg
+f(,1,2);
+f(,,3);
+f(1,,);

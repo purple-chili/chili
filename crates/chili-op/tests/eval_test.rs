@@ -6,15 +6,14 @@ mod util;
 
 use crate::util::create_state;
 
-#[cfg(feature = "vintage")]
-mod tests {
+mod pepper_tests {
     use super::*;
 
     #[test]
     fn eval_case00() {
         let code = "total:sum 1.0 2.0f*3";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(false);
+        let nodes = parse(code, 0, "repl.pep")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -35,8 +34,8 @@ mod tests {
     r1: h[];
     g 3
     ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(false);
+        let nodes = parse(code, 0, "repl.pep")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -46,6 +45,7 @@ mod tests {
         assert_eq!(obj, SpicyObj::I64(28));
         assert_eq!(state.get_var("r0").unwrap().to_i64().unwrap(), 7);
         assert_eq!(state.get_var("r1").unwrap().to_i64().unwrap(), 9);
+        unsafe { std::env::set_var("CHILI_SYNTAX", "pepper") };
         assert_eq!(
             state.get_var("f").unwrap().to_string(),
             "{[x; y; z] x + y * z}"
@@ -64,8 +64,8 @@ mod tests {
     df1: select sum col1+col2, newCol: col2 by sym from t;
     count df1
     ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(false);
+        let nodes = parse(code, 0, "repl.pep")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -86,8 +86,8 @@ mod tests {
     t: timeit[(+; 1; 1); 1000];
     t
     ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(false);
+        let nodes = parse(code, 0, "repl.pep")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -109,8 +109,8 @@ mod tests {
     r1: d2[`c];
     d3[`c] + sum d[`a`d]
     ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(false);
+        let nodes = parse(code, 0, "repl.pep")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -134,8 +134,8 @@ mod tests {
     r1: f 2024.04.01;
     r2: f 2019.01.01;
     ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(false);
+        let nodes = parse(code, 0, "repl.pep")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -151,7 +151,7 @@ mod tests {
         let code = "
     f: {[date]
         if[date>2020.01.01;
-            'date;
+            raise date;
             date: date + 1;
         ];
         2020.01.01
@@ -159,8 +159,8 @@ mod tests {
     r1: f 2024.04.01;
     r2: f 2019.01.01;
     ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(false);
+        let nodes = parse(code, 0, "repl.pep")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -184,8 +184,8 @@ mod tests {
         err ~ \"type\";
     ]
     ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(false);
+        let nodes = parse(code, 0, "repl.pep")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -207,8 +207,8 @@ mod tests {
         let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         src_path.push("tests/src/main.pep");
         let code = format!("import \"{}\";", src_path.to_str().unwrap());
-        let state = create_state();
-        let nodes = parse(&code, 0)
+        let state = create_state(false);
+        let nodes = parse(&code, 0, "repl.pep")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -219,15 +219,14 @@ mod tests {
     }
 }
 
-#[cfg(not(feature = "vintage"))]
-mod tests {
+mod chili_tests {
     use super::*;
 
     #[test]
     fn eval_case00() {
         let code = "total:sum(1.0 2.0f*3)";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(true);
+        let nodes = parse(code, 0, "repl.chi")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -248,8 +247,8 @@ mod tests {
         r1: h();
         g(3)
         ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(true);
+        let nodes = parse(code, 0, "repl.chi")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -277,8 +276,8 @@ mod tests {
         df1: select sum(col1+col2), newCol: col2 by sym from t;
         count(df1)
         ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(true);
+        let nodes = parse(code, 0, "repl.chi")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -299,8 +298,8 @@ mod tests {
         t: timeit([+, 1, 1], 1000);
         t
         ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(true);
+        let nodes = parse(code, 0, "repl.chi")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -322,8 +321,8 @@ mod tests {
         r1: d2(`c);
         d3(`c) + sum(d(`a`d))
         ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(true);
+        let nodes = parse(code, 0, "repl.chi")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -347,8 +346,8 @@ mod tests {
         r1: f(2024.04.01);
         r2: f(2019.01.01);
         ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(true);
+        let nodes = parse(code, 0, "repl.chi")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -372,8 +371,8 @@ mod tests {
         r1: f(2024.04.01);
         r2: f(2019.01.01);
         ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(true);
+        let nodes = parse(code, 0, "repl.chi")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -397,8 +396,8 @@ mod tests {
             err ~ \"type\";
         }
         ";
-        let state = create_state();
-        let nodes = parse(code, 0)
+        let state = create_state(true);
+        let nodes = parse(code, 0, "repl.chi")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e
@@ -420,8 +419,8 @@ mod tests {
         let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         src_path.push("tests/src/main.chi");
         let code = format!("import(\"{}\");", src_path.to_str().unwrap());
-        let state = create_state();
-        let nodes = parse(&code, 0)
+        let state = create_state(true);
+        let nodes = parse(&code, 0, "repl.chi")
             .map_err(|e| {
                 eprintln!("{}", e);
                 e

@@ -76,6 +76,10 @@ struct Args {
     /// Optional flag to enable lazy evaluation
     #[arg(short = 'L', long, default_value = "false")]
     lazy: bool,
+
+    /// Optional flag to enable pepper syntax
+    #[arg(short = 'P', long, default_value = "false")]
+    pepper: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -120,9 +124,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .target(target)
         .init();
 
-    #[cfg(not(feature = "vintage"))]
-    println!(
-        "\x1b[1;32m\
+    if args.pepper {
+        println!(
+            "\x1b[1;32m\
+            *                                                             \n\
+            *   ████████   ██████  ████████  ████████   ██████  ████████  \n\
+            *  ▒▒███▒▒███ ███▒▒███▒▒███▒▒███▒▒███▒▒███ ███▒▒███▒▒███▒▒███ \n\
+            *   ▒███ ▒███▒███████  ▒███ ▒███ ▒███ ▒███▒███████  ▒███ ▒▒▒  \n\
+            *   ▒███ ▒███▒███▒▒▒   ▒███ ▒███ ▒███ ▒███▒███▒▒▒   ▒███      \n\
+            *   ▒███████ ▒▒██████  ▒███████  ▒███████ ▒▒██████  █████     \n\
+            *   ▒███▒▒▒   ▒▒▒▒▒▒   ▒███▒▒▒   ▒███▒▒▒   ▒▒▒▒▒▒  ▒▒▒▒▒      \n\
+            *   ▒███               ▒███      ▒███                         \n\
+            *   █████              █████     █████                        \n\
+            *  ▒▒▒▒▒              ▒▒▒▒▒     ▒▒▒▒▒                         \n\
+            *                                                             \n\
+            *                                                 ver {:>6 }  \n\
+            *                                                 pid {:>6 }  \n\
+            *                                                             \x1b[0m",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id()
+        );
+    } else {
+        println!(
+            "\x1b[1;32m\
         *                                         \n\
         *            █████       ███  ████   ███  \n\
         *           ▒▒███       ▒▒▒  ▒▒███  ▒▒▒   \n\
@@ -136,35 +160,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         *                             ver {:>6 }  \n\
         *                             pid {:>6 }  \n\
         *                                         \x1b[0m",
-        env!("CARGO_PKG_VERSION"),
-        std::process::id()
-    );
+            env!("CARGO_PKG_VERSION"),
+            std::process::id()
+        );
+    }
 
-    #[cfg(feature = "vintage")]
-    println!(
-        "\x1b[1;32m\
-        *                                                             \n\
-        *   ████████   ██████  ████████  ████████   ██████  ████████  \n\
-        *  ▒▒███▒▒███ ███▒▒███▒▒███▒▒███▒▒███▒▒███ ███▒▒███▒▒███▒▒███ \n\
-        *   ▒███ ▒███▒███████  ▒███ ▒███ ▒███ ▒███▒███████  ▒███ ▒▒▒  \n\
-        *   ▒███ ▒███▒███▒▒▒   ▒███ ▒███ ▒███ ▒███▒███▒▒▒   ▒███      \n\
-        *   ▒███████ ▒▒██████  ▒███████  ▒███████ ▒▒██████  █████     \n\
-        *   ▒███▒▒▒   ▒▒▒▒▒▒   ▒███▒▒▒   ▒███▒▒▒   ▒▒▒▒▒▒  ▒▒▒▒▒      \n\
-        *   ▒███               ▒███      ▒███                         \n\
-        *   █████              █████     █████                        \n\
-        *  ▒▒▒▒▒              ▒▒▒▒▒     ▒▒▒▒▒                         \n\
-        *                                                             \n\
-        *                                                 ver {:>6 }  \n\
-        *                                                 pid {:>6 }  \n\
-        *                                                             \x1b[0m",
-        env!("CARGO_PKG_VERSION"),
-        std::process::id()
-    );
-
-    #[cfg(not(feature = "vintage"))]
-    unsafe {
-        std::env::set_var("CHILI_SYNTAX", "chili")
-    };
+    unsafe { std::env::set_var("CHILI_SYNTAX", if args.pepper { "pepper" } else { "chili" }) };
 
     if args.memory_limit > 0.0 {
         let memory_limit = if args.memory_limit > 1024.0 {
@@ -185,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let state = EngineState::new(debug, args.lazy);
+    let state = EngineState::new(debug, args.lazy, args.pepper);
 
     if debug {
         info!("Debug mode is enabled");
@@ -265,7 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 stream.set_nodelay(true).unwrap();
                 let peer_addr = stream.peer_addr().unwrap().to_string();
                 let ipc_type = IpcType::from_u8(auth_info.version)
-                    .expect(&format!("unsupported ipc version: {}", auth_info.version));
+                    .unwrap_or_else(|| panic!("unsupported ipc version: {}", auth_info.version));
                 let h = state_tcp
                     .set_handle(
                         Some(Box::new(stream.try_clone().unwrap())),
@@ -329,7 +330,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         DefaultPromptSegment::Empty,
     );
 
-    let history_path = home_dir().unwrap().join(".chili_history");
+    let history_path = if args.pepper {
+        home_dir().unwrap().join(".pepper_history")
+    } else {
+        home_dir().unwrap().join(".chili_history")
+    };
+
     let history = Box::new(
         FileBackedHistory::with_file(1000, history_path).expect("Failed to create history file"),
     );
@@ -354,7 +360,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_completer(Box::new(completer))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
         .with_edit_mode(Box::new(edit_mode))
-        .with_validator(Box::new(ChiliValidator {}))
+        .with_validator(Box::new(ChiliValidator {
+            use_chili_syntax: !args.pepper,
+        }))
         .with_external_printer(printer)
         .use_bracketed_paste(true);
 

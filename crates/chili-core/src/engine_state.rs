@@ -11,6 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use chili_parser::Language;
 use indexmap::IndexMap;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info, warn};
@@ -77,6 +78,7 @@ pub struct EngineState {
     arc_self: RwLock<Option<Arc<Self>>>,
     user: String,
     lazy_mode: bool,
+    repl_lang: Language,
 }
 
 impl Default for EngineState {
@@ -85,19 +87,18 @@ impl Default for EngineState {
     }
 }
 
-#[cfg(feature = "vintage")]
-const FN_CALL_LEFT_BRACE: &str = "[";
-#[cfg(feature = "vintage")]
-const FN_CALL_RIGHT_BRACE: &str = "]";
-#[cfg(feature = "vintage")]
-const FN_CALL_SEP: &str = ";";
+trait FormatFn {
+    fn format_call(&self, fn_name: &str, params: &[String]) -> String;
+}
 
-#[cfg(not(feature = "vintage"))]
-const FN_CALL_LEFT_BRACE: &str = "(";
-#[cfg(not(feature = "vintage"))]
-const FN_CALL_RIGHT_BRACE: &str = ")";
-#[cfg(not(feature = "vintage"))]
-const FN_CALL_SEP: &str = ",";
+impl FormatFn for Language {
+    fn format_call(&self, fn_name: &str, params: &[String]) -> String {
+        match self {
+            Language::Chili => format!("{}({})", fn_name, params.join(", ")),
+            Language::Pepper => format!("{}[{}]", fn_name, params.join("; ")),
+        }
+    }
+}
 
 impl EngineState {
     pub fn initialize() -> Self {
@@ -129,17 +130,29 @@ impl EngineState {
             debug: false,
             user: whoami::username().unwrap_or_default(),
             lazy_mode: false,
+            repl_lang: Language::Chili,
         }
+    }
+
+    pub fn enable_pepper(&mut self) {
+        self.repl_lang = Language::Pepper;
+    }
+
+    pub fn is_repl_use_chili_syntax(&self) -> bool {
+        self.repl_lang == Language::Chili
     }
 
     pub fn is_lazy_mode(&self) -> bool {
         self.lazy_mode
     }
 
-    pub fn new(debug: bool, lazy: bool) -> Self {
+    pub fn new(debug: bool, lazy: bool, enable_pepper: bool) -> Self {
         let mut state = Self::initialize();
         state.debug = debug;
         state.lazy_mode = lazy;
+        if enable_pepper {
+            state.enable_pepper();
+        }
         state
     }
 
@@ -171,13 +184,7 @@ impl EngineState {
                 if func.arg_num == func.params.len() {
                     vars.insert(
                         key.to_string(),
-                        format!(
-                            "{}{}{}{}",
-                            key,
-                            FN_CALL_LEFT_BRACE,
-                            func.params.join(format!("{} ", FN_CALL_SEP).as_str()),
-                            FN_CALL_RIGHT_BRACE,
-                        ),
+                        self.repl_lang.format_call(key, &func.params),
                     );
                 }
             } else {
@@ -1268,7 +1275,17 @@ impl EngineState {
         } else {
             0
         };
-        parse(source, source_id)
+
+        if path.is_empty() {
+            let path = if self.repl_lang == Language::Chili {
+                "repl.chi"
+            } else {
+                "repl.pep"
+            };
+            parse(source, source_id, path)
+        } else {
+            parse(source, source_id, path)
+        }
     }
 
     pub fn eval_ast(
@@ -1541,17 +1558,12 @@ impl EngineState {
             for (id, job) in active_jobs.iter_mut() {
                 let obj = self.eval(
                     &mut Stack::new(None, 0, 0, ""),
-                    &SpicyObj::String(format!(
-                        "{}{}{}",
-                        job.fn_name, FN_CALL_LEFT_BRACE, FN_CALL_RIGHT_BRACE
-                    )),
+                    &SpicyObj::String(self.repl_lang.format_call(&job.fn_name, &[])),
                 );
-                if obj.is_err() {
+                if let Err(e) = obj {
                     error!(
                         "failed to execute job id '{}' , fn_name '{}', err - {}\n",
-                        id,
-                        job.fn_name,
-                        obj.unwrap_err()
+                        id, job.fn_name, e
                     );
                 };
                 if job.next_run_time + job.interval < job.end_time {

@@ -18,7 +18,7 @@ Copy all files in `vim-config` directory to `~/.vim` directory.
 ## References
 
 - [Polars](https://www.pola.rs/): an open-source library for data manipulation.
-- [pest](https://pest.rs/): the elegant parser.
+- [chumsky](https://github.com/zesterer/chumsky): a high performance parser.
 - [kola](https://github.com/jshinonome/kola): source code is reused for interfacing with `q`.
 - [Nushell](https://www.nushell.sh/): a new type of shell.
 

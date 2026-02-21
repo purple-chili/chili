@@ -27,11 +27,6 @@ pub const NS_IN_DAY: i64 = 86_400_000_000_000;
 pub const MS_IN_DAY: i64 = 86_400_000;
 pub const NS_IN_MS: i64 = 1_000_000;
 
-#[cfg(feature = "vintage")]
-pub const TRUE_DIV_OP: &str = "%";
-#[cfg(not(feature = "vintage"))]
-pub const TRUE_DIV_OP: &str = "/";
-
 // |     |    b|   u8|  u16|  u32|  u64|   i8|  i16|  i32|  i64| i128|  f32|  f64| date| time|   ms|   ns|    d|  str|  cat|
 // |    b|  u32|   u8|  u16|  u32|  u64|   i8|  i16|  i32|  i64| i128|  f32|  f64|    -|    -|    -|    -|    -|  str|    -|
 // |   u8|   u8|   u8|  u16|  u32|  u64|  i16|  i16|  i32|  i64| i128|  f32|  f64|    -|    -|    -|    -|    -|  str|    -|
@@ -786,7 +781,7 @@ pub fn true_div(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     }
     let c0 = arg0.get_type_code();
     let c1 = arg1.get_type_code();
-    let op = TRUE_DIV_OP;
+    let op = "true_div";
     let err = || {
         SpicyError::UnsupportedBinaryOpErr(
             op.to_owned(),

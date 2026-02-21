@@ -10,7 +10,7 @@ use crate::util::create_state;
 fn hdb_case0() {
     let mut hdb_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     hdb_path.push("tests/data");
-    let state = create_state();
+    let state = create_state(true);
     let _ = state.load_par_df(hdb_path.to_str().unwrap());
     assert_eq!(state.get_par_df("table1").unwrap().pars, vec![10957, 10958]);
     assert_eq!(state.get_par_df("table2").unwrap().pars, vec![2000]);
@@ -37,7 +37,7 @@ fn hdb_case0() {
     r16: count(select from table1 where date in 2000.01.01 2000.01.02);
     r17: count(select from table1 where date in 2000.01.02);
     ";
-    let nodes = parse(code, 0)
+    let nodes = parse(code, 0, "repl.chi")
         .map_err(|e| {
             eprintln!("{}", e);
             e

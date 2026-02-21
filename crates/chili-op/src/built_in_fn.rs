@@ -1,8 +1,4 @@
-use crate::{
-    basic, collection, df, io, math, matrix,
-    operator::{self, TRUE_DIV_OP},
-    str, sys, temporal,
-};
+use crate::{basic, collection, df, io, math, matrix, operator, str, sys, temporal};
 use chili_core::Func;
 use std::{collections::HashMap, sync::LazyLock};
 
@@ -89,13 +85,12 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             Func::new_built_in_fn(Some(Box::new(operator::mul)), 2, "*", &["p1", "p2"]),
         ),
         (
-            TRUE_DIV_OP.to_owned(),
-            Func::new_built_in_fn(
-                Some(Box::new(operator::true_div)),
-                2,
-                TRUE_DIV_OP,
-                &["p1", "p2"],
-            ),
+            "%".to_owned(),
+            Func::new_built_in_fn(Some(Box::new(operator::true_div)), 2, "%", &["p1", "p2"]),
+        ),
+        (
+            "/".to_owned(),
+            Func::new_built_in_fn(Some(Box::new(operator::true_div)), 2, "/", &["p1", "p2"]),
         ),
         (
             "div".to_owned(),

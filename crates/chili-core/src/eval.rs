@@ -191,18 +191,23 @@ pub fn eval_by_node(
                 Ok(SpicyObj::Series(s.clone().rename(name.into()).clone()))
             }
         }
-        AstNode::Table(nodes) => {
+        AstNode::DataFrame(nodes) => {
             let mut cols: Vec<Column> = Vec::with_capacity(nodes.len());
             for (i, node) in nodes.iter().enumerate() {
                 let obj = match node {
                     AstNode::SpicyObj(obj) => obj.clone(),
                     _ => eval_by_node(state, stack, node, src, columns)?,
                 };
-                cols.push(
-                    obj.series()
-                        .map(|s| s.clone().into())
-                        .map_err(|e| SpicyError::EvalErr(format!("column {} - {}", i, e)))?,
-                )
+                let mut column: Column = obj
+                    .series()
+                    .map(|s| s.clone().into())
+                    .map_err(|e| SpicyError::EvalErr(format!("column {} - {}", i, e)))?;
+                if column.name().is_empty() {
+                    column.rename(format!("col{:02}", i).into());
+                } else if let AstNode::Id { name, .. } = node {
+                    column.rename(name.into());
+                }
+                cols.push(column)
             }
             let height = cols.first().map(|c| c.len()).unwrap_or(0);
             let df =
@@ -558,24 +563,24 @@ pub fn eval_call(
 
             let f = if !func.is_null() { func.fn_()? } else { f };
 
-            // vintage mode allows arguments number to be less to create a partially applied function
-            #[cfg(feature = "vintage")]
-            if args.len() > f.arg_num
-                && !(f.arg_num == 0
-                    && args.len() == 1
-                    && (*args[0] == SpicyObj::DelayedArg || args[0].size() == 0))
-            {
-                return Err(SpicyError::MismatchedArgNumErr(f.arg_num, args.len()));
-            }
-
-            // in default mode, arguments number must match, however, allow calling with empty(delayed arg) to represent no argument, hence create a partially applied function
-            #[cfg(not(feature = "vintage"))]
-            if args.len() != f.arg_num
-                && !(f.arg_num == 0
-                    && args.len() == 1
-                    && (*args[0] == SpicyObj::DelayedArg || args[0].size() == 0))
-            {
-                return Err(SpicyError::MismatchedArgNumErr(f.arg_num, args.len()));
+            if state.is_repl_use_chili_syntax() {
+                // chili syntax requires arguments number to be matched, however, allow calling with empty(delayed arg) to represent no argument, hence create a partially applied function
+                if args.len() != f.arg_num
+                    && !(f.arg_num == 0
+                        && args.len() == 1
+                        && (*args[0] == SpicyObj::DelayedArg || args[0].size() == 0))
+                {
+                    return Err(SpicyError::MismatchedArgNumErr(f.arg_num, args.len()));
+                }
+            } else {
+                // pepper syntax allows arguments number to be less to create a partially applied function
+                if args.len() > f.arg_num
+                    && !(f.arg_num == 0
+                        && args.len() == 1
+                        && (*args[0] == SpicyObj::DelayedArg || args[0].size() == 0))
+                {
+                    return Err(SpicyError::MismatchedArgNumErr(f.arg_num, args.len()));
+                }
             }
 
             let res = if f.arg_num == 0 && args.len() == 1 && args[0].size() == 0 {

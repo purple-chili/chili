@@ -1,11 +1,9 @@
-#[cfg(not(feature = "vintage"))]
-use chili_grammar::{ChiliParser, Rule};
-#[cfg(feature = "vintage")]
-use chili_vintage_grammar::{ChiliParser, Rule};
-use pest::{Parser, error::InputLocation};
+use chili_parser::{Expr, Token};
+use chumsky::prelude::*;
 use reedline::{ValidationResult, Validator};
-
-pub struct ChiliValidator {}
+pub struct ChiliValidator {
+    pub use_chili_syntax: bool,
+}
 
 impl Validator for ChiliValidator {
     fn validate(&self, line: &str) -> ValidationResult {
@@ -13,18 +11,37 @@ impl Validator for ChiliValidator {
             return ValidationResult::Complete;
         }
 
-        match ChiliParser::parse(Rule::Program, line) {
-            Ok(_) => ValidationResult::Complete,
-            Err(e) => {
-                let end = match e.location {
-                    InputLocation::Pos(pos) => pos,
-                    InputLocation::Span(span) => span.1,
-                };
-                if end == line.len() {
-                    ValidationResult::Incomplete
-                } else {
-                    ValidationResult::Complete
-                }
+        let (tokens, errs) = Token::lexer().parse(line).into_output_errors();
+        if !errs.is_empty() {
+            return ValidationResult::Complete;
+        }
+        let tokens = tokens.unwrap();
+        let (_, errs) = if self.use_chili_syntax {
+            Expr::parser_chili()
+                .parse(
+                    tokens
+                        .as_slice()
+                        .map((line.len()..line.len()).into(), |(t, s)| (t, s)),
+                )
+                .into_output_errors()
+        } else {
+            Expr::parser_pepper()
+                .parse(
+                    tokens
+                        .as_slice()
+                        .map((line.len()..line.len()).into(), |(t, s)| (t, s)),
+                )
+                .into_output_errors()
+        };
+
+        if errs.is_empty() {
+            ValidationResult::Complete
+        } else {
+            let err_end = errs.last().unwrap().span().end;
+            if err_end == line.len() {
+                ValidationResult::Incomplete
+            } else {
+                ValidationResult::Complete
             }
         }
     }
