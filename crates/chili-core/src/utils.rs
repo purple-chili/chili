@@ -156,7 +156,11 @@ impl MessageType {
 pub fn decode_header6(header: &[u8]) -> (MessageType, usize, u8) {
     let message_type = MessageType::from_u8(header[1]).unwrap();
     let len = u32::from_le_bytes(header[4..].try_into().unwrap()) as usize;
-    (message_type, len + ((header[3] as usize) << 32), header[2])
+    (
+        message_type,
+        len + ((header[3] as usize).wrapping_shl(32)),
+        header[2],
+    )
 }
 
 pub fn decode_header9(header: &[u8]) -> (MessageType, usize) {
