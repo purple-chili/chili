@@ -11,6 +11,10 @@ impl Validator for ChiliValidator {
             return ValidationResult::Complete;
         }
 
+        if line.trim().is_empty() {
+            return ValidationResult::Complete;
+        }
+
         let (tokens, errs) = Token::lexer().parse(line).into_output_errors();
         if !errs.is_empty() {
             return ValidationResult::Complete;
