@@ -1,4 +1,5 @@
 use std::{
+    cell::LazyCell,
     env,
     io::{Read, Write},
     net::TcpStream,
@@ -8,6 +9,7 @@ use std::{
 
 use crate::{errors::SpicyError, obj::SpicyObj};
 use log::{debug, error, info};
+use regex::Regex;
 
 use crate::{EngineState, Stack, engine_state::ReadWrite, serde6, serde9};
 
@@ -193,6 +195,8 @@ pub fn write_chili_ipc_msg(
     Ok(())
 }
 
+const RE_STYLE: LazyCell<Regex> = LazyCell::new(|| Regex::new(r"\x1B\[[0-9;]*m").unwrap());
+
 pub fn handle_q_conn(
     rw: &mut dyn ReadWrite,
     is_local: bool,
@@ -247,7 +251,8 @@ pub fn handle_q_conn(
                     let _ = rw.write_all(&v8);
                 }
                 Err(e) => {
-                    let err = serde6::serialize(&SpicyObj::Err(e.to_string())).unwrap();
+                    let err_msg = RE_STYLE.replace_all(&e.to_string(), "").to_string();
+                    let err = serde6::serialize(&SpicyObj::Err(err_msg)).unwrap();
                     let _ = rw.write_all(&[1, 2, 0, 0]);
                     let _ = rw.write_all(&(err.len() as u32 + 8).to_le_bytes());
                     let _ = rw.write_all(&err);
@@ -335,7 +340,8 @@ pub fn handle_chili_conn(
                     let _ = crate::write_chili_ipc_msg(rw, &v8, MessageType::Response);
                 }
                 Err(e) => {
-                    let err = serde9::serialize_err(&e.to_string());
+                    let err_msg = RE_STYLE.replace_all(&e.to_string(), "").to_string();
+                    let err = serde9::serialize_err(&err_msg);
                     let _ = rw.write_all(&err);
                 }
             }
