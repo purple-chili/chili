@@ -111,3 +111,25 @@ pub fn should_fail_pepper_expr(src: &str, msg: &str) {
 
     assert!(has_err, "Should fail - {}", msg)
 }
+
+#[track_caller]
+pub fn assert_eq_tokens(src: &str, src_path: &str, expected: Vec<&str>, include_punc: bool) {
+    let (tokens, errs) = chili_parser::Token::lexer()
+        .parse(&src)
+        .into_output_errors();
+
+    if errs.len() > 0 {
+        print_errs(errs, src_path, &src);
+    }
+
+    let tokens = tokens
+        .unwrap()
+        .into_iter()
+        .filter(|(token, _)| match token {
+            Token::Punc(_) => include_punc,
+            _ => true,
+        })
+        .map(|(token, span)| format!("{}|{}", token, span.end - span.start))
+        .collect::<Vec<String>>();
+    assert_eq!(tokens, expected);
+}

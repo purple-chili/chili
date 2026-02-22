@@ -305,7 +305,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.src.is_some()
-        && let Err(e) = arc_state.load_source_path("", &args.src.unwrap())
+        && let Err(e) = arc_state.import_source_path("", &args.src.unwrap())
     {
         eprintln!("\x1b[1;91m{}\x1b[0m", e);
         if !debug {

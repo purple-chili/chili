@@ -360,7 +360,7 @@ fn scan(_state: &EngineState, _stack: &mut Stack, _args: &[&SpicyObj]) -> SpicyR
 fn import(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let path = args[0].str()?;
     let base_path = stack.get_base_path().unwrap_or_default();
-    state.load_source_path(&base_path, path)
+    state.import_source_path(&base_path, path)
 }
 
 fn set_callback(

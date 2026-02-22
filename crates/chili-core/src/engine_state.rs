@@ -1318,7 +1318,7 @@ impl EngineState {
         Ok(obj)
     }
 
-    pub fn load_source_path(&self, relative_src_path: &str, path: &str) -> SpicyResult<SpicyObj> {
+    pub fn import_source_path(&self, relative_src_path: &str, path: &str) -> SpicyResult<SpicyObj> {
         if !path.starts_with("/") && !path.starts_with(".") {
             return Err(SpicyError::EvalErr(format!(
                 "invalid path '{}', expected absolute or relative path, start with '/' or '.'",

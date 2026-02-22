@@ -441,7 +441,7 @@ impl Token {
             .map(|s: &str| Token::Int(s.to_string()))
             .boxed();
 
-        let finity = just('-')
+        let finite = just('-')
             .or_not()
             .then(
                 text::int(10)
@@ -457,7 +457,7 @@ impl Token {
             .map(|s: &str| Token::Float(s.to_string()))
             .boxed();
 
-        let float = infinity.clone().or(finity.clone()).boxed();
+        let float = infinity.clone().or(finite.clone()).boxed();
 
         let float_follow_null = just("0n")
             .then(
@@ -493,6 +493,19 @@ impl Token {
                     .repeated(),
             )
             .then(one_of("ef").then(text::digits(10).or_not()).or_not())
+            .to_slice()
+            .map(|s: &str| Token::Float(s.to_string()))
+            .boxed();
+
+        let ints_as_floats = int
+            .clone()
+            .then(
+                any()
+                    .filter(|c: &char| c.is_whitespace())
+                    .then(null_.clone().or(int.clone()))
+                    .repeated(),
+            )
+            .then(one_of("ef").then(text::digits(10).or_not()))
             .to_slice()
             .map(|s: &str| Token::Float(s.to_string()))
             .boxed();
@@ -629,6 +642,7 @@ impl Token {
             dates,
             times,
             floats,
+            ints_as_floats,
             ints,
             sym,
             str_,
