@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "chili-pie"
-version = "0.7.0"
+version = "0.7.1"
 description = "Chili Language Runtime, written in Rust."
 authors = [{ name = "hinmeru", email = "purple-chili@hotmail.com" }]
 readme = "README.md"

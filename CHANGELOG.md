@@ -2,13 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.1] - 2026-02-22
+
+### Added
+
+- Supported Windows
+
 ## [0.7.0] - 2026-02-21
 
 ### Added
 
 - Refactored to use chumsky as the parser
 - Unified the binaries into one chili binary
-- Add `-P` or `--pepper` flag to enable REPL using pepper syntax
+- Added `-P` or `--pepper` flag to enable REPL using pepper syntax
+- Supported macOS
 
 ## [0.6.4] - 2026-02-08
 
