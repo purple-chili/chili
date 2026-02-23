@@ -325,8 +325,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let prompt_prefix = if args.pepper {
+        "p ".to_owned()
+    } else {
+        "c ".to_owned()
+    };
     let prompt = DefaultPrompt::new(
-        DefaultPromptSegment::Basic("* ".to_owned()),
+        DefaultPromptSegment::Basic(prompt_prefix),
         DefaultPromptSegment::Empty,
     );
 

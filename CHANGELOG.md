@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.2] - 2026-02-23
+
+### Removed
+
+- Removed the `%` operator
+
+### Fixed
+
+- Fixed the handling of Windows paths
+- Fixed the symbol token for Windows paths
+
 ## [0.7.1] - 2026-02-22
 
 ### Added

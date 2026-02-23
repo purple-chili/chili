@@ -1319,31 +1319,69 @@ impl EngineState {
     }
 
     pub fn import_source_path(&self, relative_src_path: &str, path: &str) -> SpicyResult<SpicyObj> {
-        if !path.starts_with("/") && !path.starts_with(".") {
-            return Err(SpicyError::EvalErr(format!(
-                "invalid path '{}', expected absolute or relative path, start with '/' or '.'",
-                path
-            )));
-        }
-        let full_path = if relative_src_path.is_empty() {
-            fs::canonicalize(path)
-                .map_err(|e| SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e)))?
-        } else {
-            let relative_path = PathBuf::from(relative_src_path);
-            match relative_path.parent() {
-                Some(base_path) if path.starts_with(".") => {
-                    let full_path = base_path.join(path);
-                    fs::canonicalize(&full_path).map_err(|e| {
-                        SpicyError::EvalErr(format!(
-                            "failed to locate '{}', {}",
-                            full_path.display(),
-                            e
-                        ))
-                    })?
-                }
-                _ => fs::canonicalize(path).map_err(|e| {
+        #[cfg(target_os = "windows")]
+        let full_path = {
+            let is_windows_full_path = path.chars().nth(1).unwrap_or(' ') == ':';
+            if !path.starts_with(".") && !is_windows_full_path {
+                return Err(SpicyError::EvalErr(format!(
+                    "invalid path '{}', expected absolute or relative path, start with '/' or '.'",
+                    path
+                )));
+            }
+            let path = &path.replace("/", "\\");
+            if relative_src_path.is_empty() {
+                fs::canonicalize(path).map_err(|e| {
                     SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
-                })?,
+                })?
+            } else {
+                let relative_path = PathBuf::from(relative_src_path);
+                match relative_path.parent() {
+                    Some(base_path) if path.starts_with(".") => {
+                        let full_path = base_path.join(path);
+                        fs::canonicalize(&full_path).map_err(|e| {
+                            SpicyError::EvalErr(format!(
+                                "failed to locate '{}', {}",
+                                full_path.display(),
+                                e
+                            ))
+                        })?
+                    }
+                    _ => fs::canonicalize(path).map_err(|e| {
+                        SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
+                    })?,
+                }
+            }
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let full_path = {
+            if !path.starts_with("/") && !path.starts_with(".") {
+                return Err(SpicyError::EvalErr(format!(
+                    "invalid path '{}', expected absolute or relative path, start with '/' or '.'",
+                    path
+                )));
+            }
+            if relative_src_path.is_empty() {
+                fs::canonicalize(path).map_err(|e| {
+                    SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
+                })?
+            } else {
+                let relative_path = PathBuf::from(relative_src_path);
+                match relative_path.parent() {
+                    Some(base_path) if path.starts_with(".") => {
+                        let full_path = base_path.join(path);
+                        fs::canonicalize(&full_path).map_err(|e| {
+                            SpicyError::EvalErr(format!(
+                                "failed to locate '{}', {}",
+                                full_path.display(),
+                                e
+                            ))
+                        })?
+                    }
+                    _ => fs::canonicalize(path).map_err(|e| {
+                        SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
+                    })?,
+                }
             }
         };
 

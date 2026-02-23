@@ -85,10 +85,6 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             Func::new_built_in_fn(Some(Box::new(operator::mul)), 2, "*", &["p1", "p2"]),
         ),
         (
-            "%".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(operator::true_div)), 2, "%", &["p1", "p2"]),
-        ),
-        (
             "/".to_owned(),
             Func::new_built_in_fn(Some(Box::new(operator::true_div)), 2, "/", &["p1", "p2"]),
         ),
