@@ -2,16 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.7.2] - 2026-02-23
+## [0.7.2] - 2026-02-24
 
 ### Removed
 
 - Removed the `%` operator
+- Vim syntax highlighting support, chiz will support it soon
 
 ### Fixed
 
 - Fixed the handling of Windows paths
 - Fixed the symbol token for Windows paths
+- Fixed `upsert` and `insert` to support DataFrame as the first argument
 
 ## [0.7.1] - 2026-02-22
 

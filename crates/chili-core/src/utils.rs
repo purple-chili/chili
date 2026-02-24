@@ -9,6 +9,7 @@ use std::{
 
 use crate::{errors::SpicyError, obj::SpicyObj};
 use log::{debug, error, info};
+use polars::{frame::DataFrame, prelude::IntoColumn, series::Series};
 use regex::Regex;
 
 use crate::{EngineState, Stack, engine_state::ReadWrite, serde6, serde9};
@@ -377,4 +378,32 @@ pub fn handle_chili_conn(
             }
         }
     }
+}
+
+pub fn convert_list_to_df(list: &[SpicyObj], df: &DataFrame) -> Result<DataFrame, SpicyError> {
+    let series = list
+        .iter()
+        .map(|args| args.as_series())
+        .collect::<Result<Vec<Series>, SpicyError>>()?;
+    if series.len() > df.width() {
+        return Err(SpicyError::Err(
+            "number of columns in list is greater than number of columns in dataframe".to_string(),
+        ));
+    }
+    let height = series.first().map(|s| s.len()).unwrap_or(0);
+    let column_names = df.get_column_names_owned();
+    DataFrame::new(
+        height,
+        series
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| {
+                s.clone()
+                    .rename(column_names[i].clone())
+                    .clone()
+                    .into_column()
+            })
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| SpicyError::Err(e.to_string()))
 }

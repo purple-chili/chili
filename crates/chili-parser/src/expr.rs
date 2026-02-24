@@ -144,8 +144,8 @@ impl Expr {
                     .boxed();
 
                 let list = list_exprs
-                    .map_with(|v, e| Expr::List((v, e.span())))
                     .delimited_by(just(list_open), just(list_close))
+                    .map_with(|v, e| Expr::List((v, e.span())))
                     .labelled("list")
                     .boxed();
 
@@ -214,8 +214,8 @@ impl Expr {
 
                 let dict = pairs
                     .clone()
-                    .map_with(|v, e| Expr::Dict((v, e.span())))
                     .delimited_by(just(Token::Punc('{')), just(Token::Punc('}')))
+                    .map_with(|v, e| Expr::Dict((v, e.span())))
                     .labelled("dictionary")
                     .boxed();
 
@@ -223,8 +223,8 @@ impl Expr {
                 let bracket = inline_expr
                     .clone()
                     .or(op_as_id)
-                    .map_with(|ex, e| Expr::Bracket(Box::new((ex, e.span()))))
                     .delimited_by(just(Token::Punc('(')), just(Token::Punc(')')))
+                    .map_with(|ex, e| Expr::Bracket(Box::new((ex, e.span()))))
                     .labelled("bracket")
                     .boxed();
 
@@ -620,8 +620,8 @@ impl Expr {
                     .boxed();
 
                 let list = list_exprs
-                    .map_with(|v, e| Expr::List((v, e.span())))
                     .delimited_by(just(list_open), just(list_close))
+                    .map_with(|v, e| Expr::List((v, e.span())))
                     .labelled("list")
                     .boxed();
 
@@ -690,8 +690,8 @@ impl Expr {
 
                 let dict = pairs
                     .clone()
-                    .map_with(|v, e| Expr::Dict((v, e.span())))
                     .delimited_by(just(Token::Punc('{')), just(Token::Punc('}')))
+                    .map_with(|v, e| Expr::Dict((v, e.span())))
                     .labelled("dictionary")
                     .boxed();
 
@@ -699,8 +699,8 @@ impl Expr {
                 let bracket = inline_expr
                     .clone()
                     .or(op_as_id)
-                    .map_with(|ex, e| Expr::Bracket(Box::new((ex, e.span()))))
                     .delimited_by(just(Token::Punc('(')), just(Token::Punc(')')))
+                    .map_with(|ex, e| Expr::Bracket(Box::new((ex, e.span()))))
                     .labelled("bracket")
                     .boxed();
 

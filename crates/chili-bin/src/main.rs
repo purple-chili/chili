@@ -193,6 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.lazy {
+        unsafe { std::env::set_var("CHILI_LAZY_MODE", "true") };
         info!("Lazy evaluation mode is enabled");
     }
 

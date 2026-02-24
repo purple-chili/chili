@@ -11,12 +11,6 @@
 - chili: a modern programming language similar to `javascript`.
 - pepper: a vintage programming language similar to `q`.
 
-## Vim syntaxes
-
-Copy all files in `vim-config` directory to `~/.vim` directory.
-
-`cp -r vim-config/* ~/.vim/`
-
 ## References
 
 - [Polars](https://www.pola.rs/): an open-source library for data manipulation.

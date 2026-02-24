@@ -1,5 +1,5 @@
 use log::{info, warn};
-use polars::prelude::{SortMultipleOptions, SortOptions};
+use polars::prelude::{IntoLazy, SortMultipleOptions, SortOptions, col};
 use polars::series::ops::NullBehavior;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashMap;
@@ -10,6 +10,7 @@ use std::time::Instant;
 use crate::errors::{SpicyError, SpicyResult};
 use crate::eval::{eval_call, eval_fn_call, eval_for_console, eval_for_ide, eval_op};
 use crate::func::Func;
+use crate::utils::convert_list_to_df;
 use crate::{ArgType, EngineState, SpicyObj, Stack, eval_query, job, validate_args};
 
 fn time_it(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
@@ -62,21 +63,77 @@ fn exit(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyRes
 }
 
 fn upsert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
-    validate_args(args, &[ArgType::Sym, ArgType::DataFrameOrList])?;
-    let id = args[0].str()?;
+    validate_args(args, &[ArgType::Any, ArgType::DataFrameOrList])?;
+    let arg0 = args[0];
     let arg1 = args[1];
-    state.upsert_var(id, arg1)
+    if arg0.is_sym() {
+        let id = arg0.str().unwrap();
+        state.upsert_var(id, arg1)
+    } else if arg0.is_df() {
+        let mut df = args[0].df().unwrap().clone();
+        match arg1 {
+            SpicyObj::DataFrame(df1) => {
+                df.clone()
+                    .extend(&df1)
+                    .map_err(|e| SpicyError::Err(e.to_string()))?;
+                Ok(SpicyObj::DataFrame(df))
+            }
+            SpicyObj::MixedList(list) => {
+                let df1 = convert_list_to_df(&list, &df)?;
+                df.extend(&df1)
+                    .map_err(|e| SpicyError::Err(e.to_string()))?;
+                Ok(SpicyObj::DataFrame(df))
+            }
+            _ => unreachable!(),
+        }
+    } else {
+        Err(SpicyError::EvalErr(format!(
+            "Expect data type 'sym' or 'df' for '1' argument , got '{}'.",
+            arg0.get_type_name()
+        )))
+    }
 }
 
 fn insert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     validate_args(
         args,
-        &[ArgType::Sym, ArgType::StrLike, ArgType::DataFrameOrList],
+        &[ArgType::Any, ArgType::StrLike, ArgType::DataFrameOrList],
     )?;
-    let id = args[0].str().unwrap();
+    let arg0 = args[0];
     let by = args[1].to_str_vec().unwrap();
     let value = args[2];
-    state.insert_var(id, value, &by)
+    if arg0.is_sym() {
+        let id = arg0.str().unwrap();
+        state.insert_var(id, value, &by)
+    } else if arg0.is_df() {
+        let mut df = arg0.df().unwrap().clone();
+        let df = match value {
+            SpicyObj::DataFrame(df1) => {
+                df.extend(&df1)
+                    .map_err(|e| SpicyError::Err(e.to_string()))?;
+                df
+            }
+            SpicyObj::MixedList(list) => {
+                let df1 = convert_list_to_df(&list, &df)?;
+                df.extend(&df1)
+                    .map_err(|e| SpicyError::Err(e.to_string()))?;
+                df
+            }
+            _ => unreachable!(),
+        };
+        let df = df
+            .lazy()
+            .group_by(by)
+            .agg([col("*").last()])
+            .collect()
+            .map_err(|e| SpicyError::Err(e.to_string()))?;
+        Ok(SpicyObj::DataFrame(df))
+    } else {
+        Err(SpicyError::EvalErr(format!(
+            "Expect data type 'sym' or 'df' for '1' argument , got '{}'.",
+            arg0.get_type_name()
+        )))
+    }
 }
 
 fn replay_q(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {

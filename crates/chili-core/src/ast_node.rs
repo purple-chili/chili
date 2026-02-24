@@ -164,7 +164,7 @@ impl Display for AstNode {
             } => "index assignment expression",
             AstNode::Id { name, .. } => name,
             AstNode::FnCall { .. } => "function call",
-            AstNode::DataFrame(_) => "table expression",
+            AstNode::DataFrame(_) => "df expression",
             AstNode::Matrix(_) => "matrix expression",
             AstNode::Dict { keys: _, values: _ } => "dictionary expression",
             AstNode::List(_) => "list expression",

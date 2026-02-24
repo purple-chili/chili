@@ -18,8 +18,8 @@ use log::{debug, error, info, warn};
 use polars::{
     frame::DataFrame,
     prelude::{
-        ArrowDataType, ArrowField, Column, DataType, IntoColumn, IntoLazy, NamedFrom,
-        NamedFromOwned, TimeUnit, col,
+        ArrowDataType, ArrowField, Column, DataType, IntoLazy, NamedFrom, NamedFromOwned, TimeUnit,
+        col,
     },
     series::Series,
 };
@@ -40,8 +40,8 @@ use crate::{
     parse, read_chili_ipc_msg, serde6, serde9,
     side_effect_fn::SIDE_EFFECT_FN,
     utils::{
-        self, MessageType, handle_chili_conn, handle_q_conn, read_q_msg, read_q_table_name,
-        send_auth, unpack_socket,
+        self, MessageType, convert_list_to_df, handle_chili_conn, handle_q_conn, read_q_msg,
+        read_q_table_name, send_auth, unpack_socket,
     },
 };
 
@@ -257,31 +257,10 @@ impl EngineState {
                     Ok(SpicyObj::I64(records.height() as i64))
                 }
                 SpicyObj::MixedList(list) => {
-                    let series =
-                        list.iter()
-                            .map(|args| args.as_series())
-                            .collect::<Result<Vec<Series>, SpicyError>>()?;
-                    if series.len() > df.width() {
-                        return Err(SpicyError::Err("number of columns in list is greater than number of columns in dataframe".to_string()));
-                    }
-                    let column_names = df.get_column_names_owned();
-                    let records = DataFrame::new(
-                        series.len(),
-                        series
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, s)| {
-                                s.clone()
-                                    .rename(column_names[i].clone())
-                                    .clone()
-                                    .into_column()
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .map_err(|e| SpicyError::Err(e.to_string()))?;
-                    df.extend(&records)
+                    let df1 = convert_list_to_df(&list, &df)?;
+                    df.extend(&df1)
                         .map_err(|e| SpicyError::Err(e.to_string()))?;
-                    Ok(SpicyObj::I64(records.height() as i64))
+                    Ok(SpicyObj::I64(df1.height() as i64))
                 }
                 _ => Err(SpicyError::Err(format!(
                     "only allows to upsert (dataframe|list) to dataframe id, got {}",
@@ -324,49 +303,28 @@ impl EngineState {
                 }
             };
             match arg0.mut_df() {
-                Ok(df) => match args {
-                    SpicyObj::DataFrame(records) => {
-                        count = df.height();
-                        df.extend(records)
-                            .map_err(|e| SpicyError::Err(e.to_string()))?;
-                        df.clone()
-                    }
-                    SpicyObj::MixedList(list) => {
-                        count = df.height();
-                        let series = list.iter().map(|args| args.as_series()).collect::<Result<
-                            Vec<Series>,
-                            SpicyError,
-                        >>(
-                        )?;
-                        if series.len() > df.width() {
-                            return Err(SpicyError::Err("number of columns in list is greater than number of columns in dataframe".to_string()));
+                Ok(df) => {
+                    count = df.height();
+                    match args {
+                        SpicyObj::DataFrame(records) => {
+                            df.extend(records)
+                                .map_err(|e| SpicyError::Err(e.to_string()))?;
+                            df.clone()
                         }
-                        let column_names = df.get_column_names_owned();
-                        let records = DataFrame::new(
-                            series.len(),
-                            series
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, s)| {
-                                    s.clone()
-                                        .rename(column_names[i].clone())
-                                        .clone()
-                                        .into_column()
-                                })
-                                .collect::<Vec<_>>(),
-                        )
-                        .map_err(|e| SpicyError::Err(e.to_string()))?;
-                        df.extend(&records)
-                            .map_err(|e| SpicyError::Err(e.to_string()))?;
-                        df.clone()
+                        SpicyObj::MixedList(list) => {
+                            let records = convert_list_to_df(&list, &df)?;
+                            df.extend(&records)
+                                .map_err(|e| SpicyError::Err(e.to_string()))?;
+                            df.clone()
+                        }
+                        _ => {
+                            return Err(SpicyError::Err(format!(
+                                "only allows to insert (dataframe|list) to dataframe id, got {}",
+                                args.get_type_name()
+                            )));
+                        }
                     }
-                    _ => {
-                        return Err(SpicyError::Err(format!(
-                            "only allows to insert (dataframe|list) to dataframe id, got {}",
-                            args.get_type_name()
-                        )));
-                    }
-                },
+                }
                 Err(_) => {
                     return Err(SpicyError::Err(
                         "only allows to insert data to dataframe id".to_owned(),
