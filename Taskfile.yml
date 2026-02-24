@@ -56,6 +56,8 @@ tasks:
       - cp ./dist/chili ~/bin
 
   tag:
+    deps:
+      - update-py-version
     cmds:
       - git tag {{.VERSION}} && git push origin tag {{.VERSION}}
 
