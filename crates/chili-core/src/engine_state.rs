@@ -712,7 +712,15 @@ impl EngineState {
         };
         stream.set_nodelay(true).unwrap();
 
-        let _ = send_auth(&mut stream, &user, &password, version)?;
+        let remote_version = send_auth(&mut stream, &user, &password, version)?;
+
+        if remote_version != version {
+            stream.shutdown(std::net::Shutdown::Both).unwrap();
+            return Err(SpicyError::Err(format!(
+                "mismatched version, remote: {}, local: {}, use `q:// for q process",
+                remote_version, version
+            )));
+        }
 
         let is_local = host.starts_with("localhost") | host.starts_with("127.0.0.1");
         let h = self.set_handle(

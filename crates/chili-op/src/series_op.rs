@@ -45,7 +45,7 @@ pub(crate) fn xbar(s: Column, bar: Column) -> PolarsResult<Column> {
                     bar.cast(&DataType::Int64).unwrap()
                 };
                 ((s1.cast(&DataType::Int64).unwrap() / bar_size.clone())? * bar_size)?
-                    .cast(&DataType::Datetime(TimeUnit::Microseconds, None))?
+                    .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))?
             }
             DataType::Time
             | DataType::Datetime(TimeUnit::Nanoseconds, None)
