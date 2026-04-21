@@ -5,11 +5,14 @@ use std::{
     fs::{self, DirEntry, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     net::TcpStream,
+    num::NonZeroUsize,
     path::PathBuf,
-    sync::{Arc, LazyLock, RwLock},
+    sync::{Arc, LazyLock, Mutex, RwLock},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use lru::LruCache;
 
 use chili_parser::Language;
 use indexmap::IndexMap;
@@ -29,7 +32,6 @@ use polars_arrow::{
     array::{Int64Array, ListArray},
     offset::OffsetsBuffer,
 };
-
 use rayon::prelude::*;
 
 use crate::{
@@ -69,6 +71,13 @@ pub struct Handle {
     pub on_disconnected: Option<String>,
 }
 
+/// LRU cache size for parsed AST trees. 256 entries × ~1 KB per AST is
+/// well under 1 MB total memory budget. mdata's gateway sends a small
+/// number of distinct query shapes per (path, source) pair, so this is
+/// more than enough headroom for the steady-state hit rate to converge
+/// near 100%.
+const PARSE_CACHE_CAPACITY: usize = 256;
+
 pub struct EngineState {
     debug: bool,
     vars: RwLock<HashMap<String, SpicyObj>>,
@@ -80,6 +89,12 @@ pub struct EngineState {
     job: RwLock<IndexMap<i64, Job>>,
     topic_map: RwLock<HashMap<String, Vec<i64>>>,
     arc_self: RwLock<Option<Arc<Self>>>,
+    /// Proposal D — LRU parse cache. Keyed on (path, source) so the same
+    /// source under different IPC handles or REPL/IPC contexts produces
+    /// distinct entries (the cached AST embeds source positions referencing
+    /// the original source_id, which is preserved by NOT calling set_source
+    /// on a cache hit).
+    parse_cache: Mutex<LruCache<(String, String), Arc<Vec<AstNode>>>>,
     user: String,
     lazy_mode: bool,
     repl_lang: Language,
@@ -131,6 +146,9 @@ impl EngineState {
             job: RwLock::new(IndexMap::new()),
             topic_map: RwLock::new(HashMap::new()),
             arc_self: RwLock::new(None),
+            parse_cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(PARSE_CACHE_CAPACITY).unwrap(),
+            )),
             debug: false,
             user: whoami::username().unwrap_or_default(),
             lazy_mode: false,
@@ -1234,31 +1252,74 @@ impl EngineState {
     }
 
     pub fn set_source(&self, path: &str, src: &str) -> SpicyResult<usize> {
+        // Idempotent: if (path, src) already exists in the source registry,
+        // return the existing source_id rather than appending a duplicate.
+        // Required for parse cache concurrency correctness — without this,
+        // two threads racing on the same uncached query both append to the
+        // source vec, producing distinct source_ids for identical content
+        // and bloating the source registry under concurrent Python load.
+        // O(n) scan is fine because the registry is small (typically <1000
+        // entries) and writes are off the hot path.
         let mut source = self
             .source
             .write()
             .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
+        if let Some(idx) = source.iter().position(|(p, s)| p == path && s == src) {
+            return Ok(idx);
+        }
         source.push((path.to_owned(), src.to_owned()));
         Ok(source.len() - 1)
     }
 
     pub fn parse(&self, path: &str, source: &str) -> Result<Vec<AstNode>, SpicyError> {
+        // Look up by (path, source). On cache hit, return a clone of the
+        // cached AST WITHOUT calling set_source (the cached AST already
+        // embeds source positions for the original source_id, which is
+        // still alive in self.source — sources are append-only so once
+        // assigned a source_id is valid for the lifetime of the engine).
+        //
+        // Double-check pattern: probe under the lock, miss → drop lock,
+        // do the slow parse outside the lock, then re-acquire to insert.
+        // This avoids holding the parse_cache mutex across the chumsky
+        // parse call (which can be milliseconds long for big queries).
+
+        let cache_key = (path.to_string(), source.to_string());
+
+        // Fast path: cache hit
+        if let Ok(mut cache) = self.parse_cache.lock() {
+            if let Some(ast) = cache.get(&cache_key) {
+                return Ok((**ast).clone());
+            }
+        }
+        // (lock dropped here)
+
+        // Slow path: parse and insert
         let source_id = if !path.is_empty() {
             self.set_source(path, source).unwrap()
         } else {
             0
         };
-
-        if path.is_empty() {
+        let parsed = if path.is_empty() {
             let path = if self.repl_lang == Language::Chili {
                 "repl.chi"
             } else {
                 "repl.pep"
             };
-            parse(source, source_id, path)
+            parse(source, source_id, path)?
         } else {
-            parse(source, source_id, path)
+            parse(source, source_id, path)?
+        };
+
+        let arc = Arc::new(parsed.clone());
+        if let Ok(mut cache) = self.parse_cache.lock() {
+            cache.put(cache_key, arc);
         }
+        Ok(parsed)
+    }
+
+    /// Returns the current parse cache size (mostly for tests / observability).
+    pub fn parse_cache_len(&self) -> usize {
+        self.parse_cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 
     pub fn parse_raw_fn(&self, fn_body: &str, lang: Language) -> Result<Vec<AstNode>, SpicyError> {
@@ -1487,8 +1548,9 @@ impl EngineState {
         table_name: String,
         is_file: bool,
     ) -> Option<(String, PartitionedDataFrame)> {
-        // Top-level file → single (unpartitioned) table.
+        // Top-level file → single table.
         if is_file {
+            info!("loading single dataframe '{}'...", table_name);
             return Some((
                 table_name.clone(),
                 PartitionedDataFrame {
@@ -1517,8 +1579,8 @@ impl EngineState {
         let filename_len = files.iter().map(|f| f.file_name().len()).max().unwrap_or(0);
         if filename_len == 0 {
             error!(
-                "not able to find args files for '{:?}', skip...",
-                table_path.file_name()
+                "skip partitioned dataframe '{}' because no files found",
+                table_name
             );
             return None;
         }
@@ -1527,6 +1589,11 @@ impl EngineState {
         } else {
             DFType::ByYear
         };
+
+        info!(
+            "loading dataframe '{}' partitioned by '{}'...",
+            table_name, df_type
+        );
 
         let mut par_vec: Vec<i32> = Vec::new();
         for p in &files {
