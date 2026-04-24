@@ -6,3 +6,5 @@ dist
 polars-core
 **/__pycache__
 *.so
+.mypy_cache
+.venv

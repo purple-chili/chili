@@ -5,6 +5,12 @@ vars:
   VERSION:
     sh: grep "version" Cargo.toml | head -1 | cut -d'"' -f 2
 
+env:
+  LD_LIBRARY_PATH:
+    # Set the LD_LIBRARY_PATH to the Python library directory
+    sh: python -c "from distutils.sysconfig import get_config_var as s;
+      print(s(\"LIBDIR\"))"
+
 tasks:
   default:
     cmds:
@@ -91,6 +97,8 @@ tasks:
       - uv pip install dist/chili_pie*.whl
 
   release-py-binding:
+    deps:
+      - test
     cmds:
       - rm -rf dist
       - maturin build --release --locked --out dist --manifest-path
