@@ -64,7 +64,7 @@ rayon = "1.11.0"
 polars-arrow = { workspace = true }
 polars-buffer = { workspace = true }
 ndarray = "0.17"
-chrono = "0.4"
+chrono = { workspace = true }
 whoami = "2.1.0"
 log = "0.4"
 indicatif = "0.18"

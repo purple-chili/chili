@@ -64,7 +64,7 @@ polars = { workspace = true, default-features = true, features = [
 ] }
 polars-lazy = { workspace = true, features = ["pivot"] }
 polars-compute = { workspace = true }
-chrono = "0.4"
+chrono = { workspace = true }
 chrono-tz = "0.10"
 indexmap = "2.10"
 glob = "0.3"

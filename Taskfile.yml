@@ -47,7 +47,8 @@ tasks:
 
   podman-dist:
     cmds:
-      - podman run --cpus=8 -it --rm -v $PWD:/build:Z -v $HOME/.cargo:$HOME/.cargo:Z manylinux2014 /bin/bash -i -c "task dist"
+      - podman run --cpus=8 -it --rm -v $PWD:/build:Z -v
+        $HOME/.cargo:$HOME/.cargo:Z manylinux2014 /bin/bash -i -c "task dist"
 
   install:
     deps:
@@ -73,6 +74,8 @@ tasks:
   update-py-version:
     cmds:
       - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/" pyproject.toml
+      - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/"
+        crates/chili-py/pyproject.toml
 
   release-py:
     deps:
@@ -86,3 +89,17 @@ tasks:
       - release-py
     cmds:
       - uv pip install dist/chili_pie*.whl
+
+  release-py-binding:
+    deps:
+      - test
+    cmds:
+      - rm -rf dist
+      - maturin build --release --locked --out dist --manifest-path
+        crates/chili-py/Cargo.toml
+
+  install-py-binding:
+    deps:
+      - release-py-binding
+    cmds:
+      - uv pip install dist/chili_sauce*.whl

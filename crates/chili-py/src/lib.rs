@@ -2,15 +2,19 @@
 
 use std::sync::Arc;
 
-use chili_core::constant::NS_IN_DAY;
+use chili_core::constant::{NS_IN_DAY, UNIX_EPOCH_DAY};
 use chili_core::{EngineState, SpicyObj, Stack};
 use chili_op::BUILT_IN_FN;
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Timelike, Utc};
 use indexmap::IndexMap;
 use polars::frame::DataFrame;
-use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyDate, PyDateTime, PyDelta, PyDict, PyList, PyTime, PyTuple, PyTzInfo};
+use pyo3::types::{
+    PyBool, PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyFloat, PyInt, PyList, PyString, PyTime,
+    PyTuple, PyTzInfo,
+};
+use pyo3::{create_exception, intern};
 use pyo3_polars::{PyDataFrame, PySeries};
 
 create_exception!(engine, ChiliError, PyException);
@@ -26,60 +30,88 @@ fn unwrap_return(mut o: SpicyObj) -> SpicyObj {
     o
 }
 
-fn spicy_from_py_bound(obj: &Bound<'_, PyAny>) -> PyResult<SpicyObj> {
-    if obj.is_none() {
-        return Ok(SpicyObj::Null);
-    }
-
-    if let Ok(v) = obj.extract::<bool>() {
-        return Ok(SpicyObj::Boolean(v));
-    }
-    if let Ok(v) = obj.extract::<i64>() {
-        return Ok(SpicyObj::I64(v));
-    }
-    if let Ok(v) = obj.extract::<f64>() {
-        return Ok(SpicyObj::F64(v));
-    }
-    if let Ok(v) = obj.extract::<String>() {
-        return Ok(SpicyObj::String(v));
-    }
-
-    if let Ok(df) = obj.extract::<PyDataFrame>() {
-        return Ok(SpicyObj::DataFrame(df.into()));
-    }
-    if let Ok(s) = obj.extract::<PySeries>() {
-        return Ok(SpicyObj::Series(s.into()));
-    }
-
-    if let Ok(tuple) = obj.cast::<PyTuple>() {
-        let mut out = Vec::with_capacity(tuple.len());
-        for item in tuple.iter() {
-            out.push(spicy_from_py_bound(&item)?);
+fn spicy_from_py_bound(any: &Bound<'_, PyAny>) -> PyResult<SpicyObj> {
+    if any.is_instance_of::<PyBool>() {
+        Ok(SpicyObj::Boolean(any.extract::<bool>()?))
+        // TODO: this heap allocs on failure
+    } else if any.is_instance_of::<PyInt>() {
+        match any.extract::<i64>() {
+            Ok(v) => Ok(SpicyObj::I64(v)),
+            Err(e) => Err(e),
         }
-        return Ok(SpicyObj::MixedList(out));
-    }
-
-    if let Ok(list) = obj.cast::<PyList>() {
-        let mut out = Vec::with_capacity(list.len());
-        for item in list.iter() {
-            out.push(spicy_from_py_bound(&item)?);
+    } else if any.is_instance_of::<PyFloat>() {
+        Ok(SpicyObj::F64(any.extract::<f64>()?))
+    } else if any.is_instance_of::<PyString>() {
+        let value = any.extract::<&str>()?;
+        Ok(SpicyObj::Symbol(value.to_string()))
+    } else if any.is_instance_of::<PyBytes>() {
+        let value = any.cast::<PyBytes>()?;
+        Ok(SpicyObj::String(String::from_utf8(
+            value.as_bytes().to_vec(),
+        )?))
+    } else if any.hasattr(intern!(any.py(), "_s"))? {
+        let series = any.extract::<PySeries>()?.into();
+        Ok(SpicyObj::Series(series))
+    } else if any.hasattr(intern!(any.py(), "_df"))? {
+        let df = any.extract::<PyDataFrame>()?.into();
+        Ok(SpicyObj::DataFrame(df))
+    } else if any.is_none() {
+        Ok(SpicyObj::Null)
+    } else if any.is_instance_of::<PyDateTime>() {
+        let datetime: DateTime<Utc> = any.extract()?;
+        Ok(SpicyObj::Timestamp(
+            datetime.timestamp_nanos_opt().unwrap_or(0),
+        ))
+    } else if any.is_instance_of::<PyDate>() {
+        let date = any.cast::<PyDate>()?;
+        let dt: NaiveDate = date.extract()?;
+        Ok(SpicyObj::Date(dt.num_days_from_ce() - UNIX_EPOCH_DAY))
+    } else if any.is_instance_of::<PyTime>() {
+        let time = any.cast::<PyTime>()?;
+        let dt: NaiveTime = time.extract()?;
+        Ok(SpicyObj::Time(
+            dt.nanosecond() as i64 + dt.num_seconds_from_midnight() as i64 * 1_000_000_000,
+        ))
+    } else if any.is_instance_of::<PyDelta>() {
+        let delta: Duration = any.extract()?;
+        Ok(SpicyObj::Duration(delta.num_nanoseconds().unwrap_or(0)))
+    } else if any.is_instance_of::<PyDict>() {
+        let py_dict = any.cast::<PyDict>()?;
+        let mut dict = IndexMap::with_capacity(py_dict.len());
+        for (k, v) in py_dict.into_iter() {
+            let k = match k.extract::<&str>() {
+                Ok(s) => s.to_string(),
+                Err(_) => {
+                    return Err(ChiliError::new_err(format!(
+                        "Requires str as key, got {:?}",
+                        k.get_type()
+                    )));
+                }
+            };
+            let v = spicy_from_py_bound(&v)?;
+            dict.insert(k, v);
         }
-        return Ok(SpicyObj::MixedList(out));
-    }
-
-    if let Ok(dict) = obj.cast::<PyDict>() {
-        let mut map: IndexMap<String, SpicyObj> = IndexMap::new();
-        for (k, v) in dict.iter() {
-            let key: String = k.extract()?;
-            map.insert(key, spicy_from_py_bound(&v)?);
+        Ok(SpicyObj::Dict(dict))
+    } else if any.is_instance_of::<PyList>() {
+        let py_list = any.cast::<PyList>()?;
+        let mut k_list = Vec::with_capacity(py_list.len());
+        for py_any in py_list {
+            k_list.push(spicy_from_py_bound(&py_any)?);
         }
-        return Ok(SpicyObj::Dict(map));
+        Ok(SpicyObj::MixedList(k_list))
+    } else if any.is_instance_of::<PyTuple>() {
+        let py_tuple = any.cast::<PyTuple>()?;
+        let mut k_tuple = Vec::with_capacity(py_tuple.len());
+        for py_any in py_tuple {
+            k_tuple.push(spicy_from_py_bound(&py_any)?);
+        }
+        Ok(SpicyObj::MixedList(k_tuple))
+    } else {
+        Err(ChiliError::new_err(format!(
+            "Unsupported Python type for chili conversion: {}",
+            any.get_type().name()?
+        )))
     }
-
-    Err(ChiliError::new_err(format!(
-        "unsupported Python value for chili conversion: {}",
-        obj.get_type().name()?
-    )))
 }
 
 fn spicy_to_py(py: Python<'_>, obj: SpicyObj) -> PyResult<Py<PyAny>> {
