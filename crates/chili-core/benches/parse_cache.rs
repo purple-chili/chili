@@ -11,7 +11,8 @@
 use std::time::Duration;
 
 use chili_core::EngineState;
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 fn make_engine() -> EngineState {
     let mut state = EngineState::initialize();

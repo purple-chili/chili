@@ -2,3 +2,4 @@
 pub const UNIX_EPOCH_DAY: i32 = 719_163;
 pub const NS_IN_DAY: i64 = 86_400_000_000_000;
 pub const NS_IN_MS: i64 = 1_000_000;
+pub const MS_IN_DAY: i64 = 86_400_000;

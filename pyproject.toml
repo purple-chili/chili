@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "chili-pie"
-version = "0.7.5"
+version = "0.8.0"
 description = "Chili Language Runtime, written in Rust."
 authors = [{ name = "hinmeru", email = "purple-chili@hotmail.com" }]
 readme = "README.md"
@@ -24,9 +24,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",

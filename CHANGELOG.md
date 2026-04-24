@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-04-24
+
+### Added
+
+- Python bindings for the Chili engine
+
 ## [0.7.5] - 2026-04-15
 
 ### Added

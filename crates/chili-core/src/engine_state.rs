@@ -38,7 +38,7 @@ use crate::{
     Stack,
     authinfo::AuthInfo,
     broker::BROKER_FN,
-    eval::{eval_by_node, eval_op},
+    eval::{eval_by_node, eval_fn_call, eval_op},
     io::IO_FN,
     job::{self, Job},
     obj::SpicyObj,
@@ -1467,6 +1467,18 @@ impl EngineState {
         }
     }
 
+    pub fn fn_call(&self, func: &str, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+        let func = self.get_var(func)?;
+        let mut stack = Stack::new(None, 0, 0, "");
+        match func {
+            SpicyObj::Fn(f) => eval_fn_call(self, &mut stack, &f, &args.to_vec()),
+            _ => Err(SpicyError::EvalErr(format!(
+                "Not able to call '{}'",
+                func.get_type_name()
+            ))),
+        }
+    }
+
     pub fn get_par_df(&self, name: &str) -> SpicyResult<PartitionedDataFrame> {
         let par_df = self
             .par_df
@@ -1479,6 +1491,15 @@ impl EngineState {
                 name
             ))),
         }
+    }
+
+    pub fn clear_par_df(&self) -> SpicyResult<()> {
+        let mut par_df = self
+            .par_df
+            .write()
+            .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
+        par_df.clear();
+        Ok(())
     }
 
     pub fn load_par_df(&self, path: &str) -> SpicyResult<()> {

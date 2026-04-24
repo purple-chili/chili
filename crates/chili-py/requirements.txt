@@ -1,0 +1,5 @@
+# Runtime: `chili.engine` uses Polars types; Rust side uses pyo3-polars 0.26 (polars crate 0.53).
+polars>=1.38.0
+
+# Build the extension from this crate (see pyproject.toml [build-system]).
+maturin>=1.9,<2

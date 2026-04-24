@@ -1,0 +1,18 @@
+[package]
+name = "chili-py"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Python bindings for chili-core EngineState"
+
+[lib]
+name = "engine_state"
+crate-type = ["cdylib"]
+
+[dependencies]
+chili-core = { path = "../chili-core" }
+chili-op = { path = "../chili-op" }
+indexmap = "2.12.0"
+polars = { workspace = true }
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py310"] }
+pyo3-polars = "0.26.0"

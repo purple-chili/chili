@@ -4,3 +4,5 @@ tmp
 dist
 /.vscode
 polars-core
+**/__pycache__
+*.so
