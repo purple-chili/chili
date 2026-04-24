@@ -91,8 +91,6 @@ tasks:
       - uv pip install dist/chili_pie*.whl
 
   release-py-binding:
-    deps:
-      - test
     cmds:
       - rm -rf dist
       - maturin build --release --locked --out dist --manifest-path
