@@ -152,7 +152,16 @@ pub fn build_wide_hdb(
     let sym_refs: Vec<&str> = syms.iter().map(|s| s.as_str()).collect();
     for d in dates.iter().rev() {
         let df = make_wide_row(&sym_refs, rows_per_symbol);
-        write_partition_native(tmp.path(), &SpicyObj::Date(*d), table, &df, &[], false).unwrap();
+        write_partition_native(
+            tmp.path(),
+            &SpicyObj::Date(*d),
+            table,
+            &df,
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
     }
 }
 
@@ -165,7 +174,16 @@ pub fn write_one_partition(
     rows_per_symbol: usize,
 ) {
     let df = make_row(symbols, rows_per_symbol);
-    write_partition_native(hdb, &SpicyObj::Date(date_days), table, &df, &[], false).unwrap();
+    write_partition_native(
+        hdb,
+        &SpicyObj::Date(date_days),
+        table,
+        &df,
+        &[],
+        false,
+        false,
+    )
+    .unwrap();
 }
 
 /// Encoded dates: days since 1970-01-01 starting at 2024-01-02.

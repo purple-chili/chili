@@ -424,10 +424,7 @@ fn make_it_lazy(args: &SpicyObj, partitions: &[i32]) -> SpicyResult<(LazyFrame, 
             let lf = if par_df.df_type == DFType::Single {
                 par_df.scan_partition(0)?
             } else if partitions.is_empty() {
-                return Err(SpicyError::EvalErr(format!(
-                    "requires '{:?}' condition for this partitioned dataframe",
-                    par_df.df_type
-                )));
+                return Err(SpicyError::MissingParCondErr(par_df.df_type.to_string()));
             } else if partitions.len() == 1 {
                 let par_num = partitions[0];
                 par_df.scan_partition(par_num)?

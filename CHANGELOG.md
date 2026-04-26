@@ -2,11 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.8.0] - 2026-04-24
+## [0.8.0] - 2026-04-26
 
 ### Added
 
 - Python bindings "chili-sauce" for the Chili engine
+- Modified `write_partition` and related functions to support an `overwrite` option, allowing existing partitions to be replaced.
 
 ## [0.7.5] - 2026-04-15
 

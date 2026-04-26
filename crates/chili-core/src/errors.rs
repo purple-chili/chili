@@ -108,6 +108,8 @@ pub enum SpicyError {
     #[error("Not supported polars nested list type {0:?}.")]
     NotSupportedPolarsNestedListTypeErr(polars::datatypes::DataType),
     // -> serde
+    #[error("Requires '{0}' condition for this partitioned dataframe")]
+    MissingParCondErr(String),
 }
 
 pub type SpicyResult<T> = Result<T, SpicyError>;

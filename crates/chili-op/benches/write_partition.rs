@@ -36,6 +36,7 @@ fn bench_wpar(c: &mut Criterion) {
                         &df,
                         &[],
                         false,
+                        false,
                     )
                     .unwrap();
                 }

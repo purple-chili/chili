@@ -70,11 +70,17 @@ class ChiliEngine:
         date: str,
         sort_columns: Optional[list[str]] = None,
         rechunk: bool = False,
+        overwrite: bool = False,
     ) -> int:
-        return self.fn_call("wpar", [df, hdb_path, table, date, sort_columns, rechunk])
+        return self.fn_call(
+            "wpar", [df, hdb_path, table, date, sort_columns, rechunk, overwrite]
+        )
 
     def load_partitioned_df(self, hdb_path: str) -> None:
         self.fn_call("load", [hdb_path])
 
     def clear_partitioned_df(self) -> None:
         return self.engine.clear_par_df()
+
+    def stats(self) -> dict[str, Any]:
+        return self.engine.stats()

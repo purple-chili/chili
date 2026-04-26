@@ -294,6 +294,7 @@ pub fn write_partition(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             ArgType::DataFrame,
             ArgType::SymOrSyms,
             ArgType::Boolean,
+            ArgType::Boolean,
         ],
     )?;
     let hdb_path = args[0].str().unwrap();
@@ -303,7 +304,10 @@ pub fn write_partition(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let columns = args[4].to_str_vec().unwrap();
     // rechunk | append
     let rechunk = *args[5].bool().unwrap();
-    write_partition_native(hdb_path, partition, table_name, &df, &columns, rechunk)
+    let overwrite = *args[6].bool().unwrap();
+    write_partition_native(
+        hdb_path, partition, table_name, &df, &columns, rechunk, overwrite,
+    )
 }
 
 pub fn write_partition_native(
@@ -313,6 +317,7 @@ pub fn write_partition_native(
     df: &polars::prelude::DataFrame,
     sort_columns: &[&str],
     rechunk: bool,
+    overwrite: bool,
 ) -> SpicyResult<SpicyObj> {
     let sort_options = SortMultipleOptions::default();
     // Proposal O — same canonicalize cache as the public `write_partition`.
@@ -381,6 +386,12 @@ pub fn write_partition_native(
                     table_name
                 )));
             } else {
+                if table_path.exists() && !overwrite {
+                    return Err(SpicyError::Err(format!(
+                        "{} already exists, skip writing as overwrite is false",
+                        table_name
+                    )));
+                }
                 return util::write_parquet_to_filepath(table_path.to_string_lossy().as_ref(), df)
                     .map(|size| SpicyObj::I64(size as i64));
             }
@@ -449,16 +460,23 @@ pub fn write_partition_native(
     }
 
     let par_wild_path = format!("{}_*", par_path.display());
-    let max_par = glob::glob(&par_wild_path)
+    let existing_sub_parts: Vec<PathBuf> = glob::glob(&par_wild_path)
         .map_err(|e| SpicyError::Err(e.to_string()))?
-        .count();
+        .map(|p| p.map_err(|e| SpicyError::Err(e.to_string())))
+        .collect::<SpicyResult<Vec<_>>>()?;
 
-    if max_par == 0 {
+    if overwrite && !existing_sub_parts.is_empty() {
+        for path in &existing_sub_parts {
+            fs::remove_file(path).map_err(|e| SpicyError::Err(e.to_string()))?;
+        }
+    }
+
+    if existing_sub_parts.is_empty() || overwrite {
         let sub_par_path = format!("{}_0000", par_path.display());
         util::write_parquet_to_filepath_with_row_group_size(&sub_par_path, &df, row_group_size)
             .map(|size| SpicyObj::I64(size as i64))
     } else {
-        let mut par = max_par;
+        let mut par = existing_sub_parts.len();
         let mut sub_par_path = format!("{}_{:04}", par_path.display(), par);
         while PathBuf::from_str(&sub_par_path).unwrap().exists() && par < 10000 {
             par += 1;

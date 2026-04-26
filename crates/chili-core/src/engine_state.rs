@@ -1913,6 +1913,36 @@ impl EngineState {
             }
         }
     }
+
+    pub fn stats(&self) -> SpicyResult<SpicyObj> {
+        let mut status = IndexMap::new();
+        status.insert("lazy_mode".into(), SpicyObj::Boolean(self.is_lazy_mode()));
+        status.insert(
+            "repl_lang".into(),
+            SpicyObj::String(self.repl_lang.as_str().to_owned()),
+        );
+        status.insert(
+            "partitioned_df_count".into(),
+            SpicyObj::I64(self.par_df.read().unwrap().len() as i64),
+        );
+        status.insert(
+            "parse_cache_len".into(),
+            SpicyObj::I64(self.parse_cache.lock().unwrap().len() as i64),
+        );
+        status.insert(
+            "partitioned_df_paths".into(),
+            SpicyObj::Series(Series::new(
+                "path".into(),
+                self.par_df
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .map(|(_, p)| p.path.clone())
+                    .collect::<Vec<String>>(),
+            )),
+        );
+        Ok(SpicyObj::Dict(status))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
