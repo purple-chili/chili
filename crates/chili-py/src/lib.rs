@@ -16,7 +16,7 @@ use pyo3::types::{
     PyTuple, PyTzInfo,
 };
 use pyo3::{create_exception, intern};
-use pyo3_polars::{PyDataFrame, PySeries};
+use pyo3_polars::{PyDataFrame, PyLazyFrame, PySeries};
 
 create_exception!(chili, ChiliError, PyRuntimeError);
 create_exception!(chili, ChiliParseError, ChiliError);
@@ -226,6 +226,7 @@ fn spicy_to_py(py: Python<'_>, obj: SpicyObj) -> PyResult<Py<PyAny>> {
         SpicyObj::DataFrame(df) => Ok(PyDataFrame(df).into_pyobject(py)?.into_any().unbind()),
         SpicyObj::Series(s) => Ok(PySeries(s).into_pyobject(py)?.into_any().unbind()),
         SpicyObj::Err(msg) => Err(ChiliError::new_err(msg)),
+        SpicyObj::LazyFrame(lf) => Ok(PyLazyFrame(lf).into_pyobject(py)?.into_any().unbind()),
         other => Ok(other.to_string().into_pyobject(py)?.into_any().unbind()),
     }
 }

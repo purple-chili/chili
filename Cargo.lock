@@ -2164,6 +2164,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "numpy"
+version = "0.27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7aac2e6a6e4468ffa092ad43c39b81c79196c2bb773b8db4085f695efe3bba17"
+dependencies = [
+ "half",
+ "libc",
+ "ndarray",
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "pyo3",
+ "pyo3-build-config",
+ "rustc-hash",
+]
+
+[[package]]
 name = "objc2-core-foundation"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2472,6 +2489,7 @@ dependencies = [
  "polars-compute",
  "polars-core",
  "polars-error",
+ "polars-expr",
  "polars-io",
  "polars-lazy",
  "polars-ops",
@@ -2706,6 +2724,7 @@ dependencies = [
  "polars-schema",
  "polars-time",
  "polars-utils",
+ "pyo3",
  "rayon",
  "regex",
  "reqwest",
@@ -2762,6 +2781,7 @@ dependencies = [
  "polars-stream",
  "polars-time",
  "polars-utils",
+ "pyo3",
  "rayon",
  "version_check",
 ]
@@ -2783,6 +2803,7 @@ dependencies = [
  "polars-plan",
  "polars-time",
  "polars-utils",
+ "pyo3",
  "rayon",
  "recursive",
 ]
@@ -2890,12 +2911,14 @@ dependencies = [
  "polars-compute",
  "polars-core",
  "polars-error",
+ "polars-ffi",
  "polars-io",
  "polars-json",
  "polars-ops",
  "polars-parquet",
  "polars-time",
  "polars-utils",
+ "pyo3",
  "rayon",
  "recursive",
  "regex",
@@ -2993,6 +3016,7 @@ dependencies = [
  "polars-plan",
  "polars-time",
  "polars-utils",
+ "pyo3",
  "rand 0.9.4",
  "rayon",
  "recursive",
@@ -3047,7 +3071,9 @@ dependencies = [
  "memmap2",
  "num-derive",
  "num-traits",
+ "numpy",
  "polars-error",
+ "pyo3",
  "rand 0.9.4",
  "raw-cpuid",
  "rayon",
@@ -3199,6 +3225,9 @@ dependencies = [
  "polars-core",
  "polars-error",
  "polars-ffi",
+ "polars-lazy",
+ "polars-plan",
+ "polars-utils",
  "pyo3",
  "thiserror 1.0.69",
 ]
