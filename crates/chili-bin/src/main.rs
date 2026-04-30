@@ -6,7 +6,7 @@ mod validator;
 use crate::logger::LOG_FN;
 use crate::pipe::Pipe;
 use crate::validator::ChiliValidator;
-use chili_core::{ConnType, EngineState, IpcType, utils};
+use chili_core::EngineState;
 use chili_op::BUILT_IN_FN;
 use clap::Parser;
 use crossterm::cursor::Show;
@@ -26,7 +26,7 @@ use reedline::{
 };
 use std::fs::File;
 use std::io::{IsTerminal, Write, stdout};
-use std::net::TcpListener;
+
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
@@ -237,84 +237,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     arc_state.set_arc_self(Arc::clone(&arc_state)).unwrap();
 
     if args.port > 0 {
-        info!("listening at port {}", args.port);
         let state_tcp = Arc::clone(&arc_state);
-        let addr = if args.remote {
-            format!("0.0.0.0:{}", args.port)
-        } else {
-            format!("127.0.0.1:{}", args.port)
-        };
+        let port = args.port;
+        let remote = args.remote;
+        let users = args.users.clone();
         thread::spawn(move || {
-            let listener = match TcpListener::bind(addr) {
-                Ok(l) => l,
-                Err(e) => {
-                    eprintln!("{} - {}", e, args.port);
-                    exit(1)
-                }
-            };
-
-            for stream in listener.incoming() {
-                let state_tcp = Arc::clone(&state_tcp);
-                let mut stream = stream.unwrap();
-                let auth_info = state_tcp.validate_auth_token(&mut stream, &args.users);
-                if !auth_info.is_authenticated {
-                    info!(
-                        "{}@{} failed to authenticate, disconnecting...",
-                        auth_info.username,
-                        stream.peer_addr().unwrap()
-                    );
-                    stream.shutdown(std::net::Shutdown::Both).unwrap();
-                    continue;
-                }
-                info!(
-                    "{}@{} connected",
-                    auth_info.username,
-                    stream.peer_addr().unwrap()
-                );
-                if auth_info.version <= 6 {
-                    stream.write_all(&[6]).unwrap();
-                } else {
-                    stream.write_all(&[9]).unwrap();
-                }
-                // if not set, small package will be pending for 40ms
-                stream.set_nodelay(true).unwrap();
-                let peer_addr = stream.peer_addr().unwrap().to_string();
-                let ipc_type = IpcType::from_u8(auth_info.version)
-                    .unwrap_or_else(|| panic!("unsupported ipc version: {}", auth_info.version));
-                let h = state_tcp
-                    .set_handle(
-                        Some(Box::new(stream.try_clone().unwrap())),
-                        &peer_addr,
-                        &format!("{}://{}", ipc_type, peer_addr,),
-                        false,
-                        ipc_type,
-                        ConnType::Incoming,
-                        0,
-                    )
-                    .unwrap();
-                if auth_info.version <= 6 {
-                    let mut stream = Box::new(stream);
-                    thread::spawn(move || {
-                        utils::handle_q_conn(
-                            &mut stream,
-                            peer_addr.starts_with("127.0.0.1"),
-                            h.to_i64().unwrap(),
-                            state_tcp,
-                            &auth_info.username,
-                        )
-                    });
-                } else {
-                    thread::spawn(move || {
-                        utils::handle_chili_conn(
-                            &mut stream,
-                            peer_addr.starts_with("127.0.0.1"),
-                            h.to_i64().unwrap(),
-                            state_tcp,
-                            &auth_info.username,
-                        )
-                    });
-                }
-            }
+            state_tcp.start_tcp_listener(port, remote, users);
         });
     }
 

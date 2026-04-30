@@ -96,6 +96,13 @@ tasks:
     cmds:
       - uv pip install dist/chili_pie*.whl
 
+  dev-py-binding:
+      deps:
+        - test
+      cmds:
+        - maturin develop --release --manifest-path crates/chili-py/Cargo.toml
+
+
   release-py-binding:
     deps:
       - test

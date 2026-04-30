@@ -1,4 +1,25 @@
 //! Python bindings for [`chili_core::EngineState`].
+//!
+//! This module exposes the Chili evaluation engine to Python via PyO3.
+//! It handles bidirectional conversion between Python and Chili types:
+//!
+//! | Python type            | Chili type        |
+//! |------------------------|-------------------|
+//! | `bool`                 | `Boolean`         |
+//! | `int`                  | `I64`             |
+//! | `float`                | `F64`             |
+//! | `str`                  | `Symbol`          |
+//! | `bytes`                | `String`          |
+//! | `datetime.date`        | `Date`            |
+//! | `datetime.time`        | `Time`            |
+//! | `datetime.datetime`    | `Timestamp`       |
+//! | `datetime.timedelta`   | `Duration`        |
+//! | `dict`                 | `Dict`            |
+//! | `list` / `tuple`       | `MixedList`       |
+//! | `polars.Series`        | `Series`          |
+//! | `polars.DataFrame`     | `DataFrame`       |
+//! | `polars.LazyFrame`     | `LazyFrame`       |
+//! | `None`                 | `Null`            |
 
 use std::process;
 use std::sync::Arc;
@@ -18,6 +39,9 @@ use pyo3::types::{
 use pyo3::{create_exception, intern};
 use pyo3_polars::{PyDataFrame, PyLazyFrame, PySeries};
 
+// ---------------------------------------------------------------------------
+// Exception hierarchy (all inherit from `ChiliError` → `RuntimeError`)
+// ---------------------------------------------------------------------------
 create_exception!(chili, ChiliError, PyRuntimeError);
 create_exception!(chili, ChiliParseError, ChiliError);
 create_exception!(chili, ChiliEvalError, ChiliError);
@@ -26,6 +50,7 @@ create_exception!(chili, TypeMismatchError, ChiliError);
 create_exception!(chili, NameError, ChiliError);
 create_exception!(chili, SerializationError, ChiliError);
 
+/// Convert a [`chili_core::SpicyError`] into the most specific Python exception.
 fn spicy_error_to_pyerr(err: &chili_core::SpicyError) -> PyErr {
     use chili_core::SpicyError;
     match err {
@@ -44,10 +69,12 @@ fn spicy_error_to_pyerr(err: &chili_core::SpicyError) -> PyErr {
     }
 }
 
+/// Convenience wrapper: map a `SpicyResult<T>` to a `PyResult<T>`.
 fn map_spicy_error<T>(r: Result<T, chili_core::SpicyError>) -> PyResult<T> {
     r.map_err(|e| spicy_error_to_pyerr(&e))
 }
 
+/// Recursively strip `Return` wrappers so the inner value can be converted.
 fn unwrap_return(mut o: SpicyObj) -> SpicyObj {
     while let SpicyObj::Return(inner) = o {
         o = *inner;
@@ -55,6 +82,10 @@ fn unwrap_return(mut o: SpicyObj) -> SpicyObj {
     o
 }
 
+/// Convert a Python object into the equivalent [`SpicyObj`].
+///
+/// Order matters: `PyBool` must be checked before `PyInt` (bool is a
+/// subclass of int in Python), and `PyDateTime` before `PyDate`.
 fn spicy_from_py_bound(any: &Bound<'_, PyAny>) -> PyResult<SpicyObj> {
     if any.is_instance_of::<PyBool>() {
         Ok(SpicyObj::Boolean(any.extract::<bool>()?))
@@ -139,6 +170,7 @@ fn spicy_from_py_bound(any: &Bound<'_, PyAny>) -> PyResult<SpicyObj> {
     }
 }
 
+/// Convert a [`SpicyObj`] into the equivalent Python object.
 fn spicy_to_py(py: Python<'_>, obj: SpicyObj) -> PyResult<Py<PyAny>> {
     let obj = unwrap_return(obj);
     match obj {
@@ -239,6 +271,11 @@ struct PyEngineState {
 }
 
 impl PyEngineState {
+    /// Guard against use in a forked child process.
+    ///
+    /// Rust mutexes / rwlocks are **not** fork-safe.  If the PID has
+    /// changed since construction we refuse to operate and suggest
+    /// `multiprocessing.get_context('spawn')`.
     fn check_fork(&self) -> PyResult<()> {
         let current_pid = process::id();
         if self.init_pid != current_pid {
@@ -256,6 +293,11 @@ impl PyEngineState {
 
 #[pymethods]
 impl PyEngineState {
+    /// Create a new engine.
+    ///
+    /// * `debug`  – enable debug-level logging.
+    /// * `lazy`   – enable lazy evaluation mode.
+    /// * `pepper` – use Pepper syntax instead of Chili.
     #[new]
     #[pyo3(signature = (debug=false, lazy=false, pepper=false))]
     fn new(debug: bool, lazy: bool, pepper: bool) -> PyResult<Self> {
@@ -285,29 +327,36 @@ impl PyEngineState {
         spicy_to_py(py, obj?)
     }
 
+    /// Retrieve a variable by name, converted to a Python object.
     fn get_var(&self, py: Python<'_>, id: &str) -> PyResult<Py<PyAny>> {
         self.check_fork()?;
         let obj = py.detach(move || map_spicy_error(self.inner.get_var(id)));
         spicy_to_py(py, obj?)
     }
 
+    /// Set or overwrite a variable in the engine.
     fn set_var(&self, id: &str, value: Bound<'_, PyAny>) -> PyResult<()> {
         self.check_fork()?;
         let obj = spicy_from_py_bound(&value)?;
         map_spicy_error(self.inner.set_var(id, obj))
     }
 
+    /// Return `True` if the variable exists.
     fn has_var(&self, id: &str) -> PyResult<bool> {
         self.check_fork()?;
         map_spicy_error(self.inner.has_var(id))
     }
 
+    /// Delete a variable and return its last value.
     fn del_var(&self, py: Python<'_>, id: &str) -> PyResult<Py<PyAny>> {
         self.check_fork()?;
         let obj = map_spicy_error(self.inner.del_var(id))?;
         spicy_to_py(py, obj)
     }
 
+    /// Append rows to an existing DataFrame variable, or create it.
+    ///
+    /// Returns the number of rows appended.
     fn upsert(&self, id: &str, value: Bound<'_, PyAny>) -> PyResult<i64> {
         self.check_fork()?;
         let obj = spicy_from_py_bound(&value)?;
@@ -315,6 +364,9 @@ impl PyEngineState {
         Ok(obj.map(|o| *o.i64().unwrap_or(&0i64))?)
     }
 
+    /// Insert rows into a DataFrame variable, deduplicating by `by` columns.
+    ///
+    /// Returns the net change in row count.
     fn insert(&self, id: &str, value: Bound<'_, PyAny>, by: Vec<String>) -> PyResult<i64> {
         self.check_fork()?;
         let obj = spicy_from_py_bound(&value)?;
@@ -323,12 +375,14 @@ impl PyEngineState {
         Ok(obj.map(|o| *o.i64().unwrap_or(&0i64))?)
     }
 
+    /// Return engine statistics as a Python dict.
     fn stats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.check_fork()?;
         let stats = map_spicy_error(self.inner.stats())?;
         spicy_to_py(py, stats)
     }
 
+    /// Import and evaluate a source file from the filesystem.
     fn import_source_path(
         &self,
         py: Python<'_>,
@@ -340,21 +394,25 @@ impl PyEngineState {
         spicy_to_py(py, obj?)
     }
 
+    /// Register an in-memory source string under the given logical path.
     fn set_source(&self, path: &str, src: &str) -> PyResult<usize> {
         self.check_fork()?;
         map_spicy_error(self.inner.set_source(path, src))
     }
 
+    /// Retrieve a registered source by index as a `(path, source)` tuple.
     fn get_source(&self, index: usize) -> PyResult<(String, String)> {
         self.check_fork()?;
         map_spicy_error(self.inner.get_source(index))
     }
 
+    /// Shut down the engine and release all IPC handles.
     fn shutdown(&self) {
         // Don't error on shutdown in forked children; just attempt cleanup.
         self.inner.shutdown();
     }
 
+    /// Return a `{name: display_string}` dict for all variables.
     fn get_displayed_vars(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.check_fork()?;
         let m = map_spicy_error(self.inner.get_displayed_vars())?;
@@ -365,63 +423,88 @@ impl PyEngineState {
         Ok(d.into_any().unbind())
     }
 
+    /// List variables as a `polars.DataFrame` filtered by name prefix.
     fn list_vars(&self, py: Python<'_>, pattern: &str) -> PyResult<Py<PyAny>> {
         self.check_fork()?;
         let df: DataFrame = map_spicy_error(self.inner.list_vars(pattern))?;
         Ok(PyDataFrame(df).into_pyobject(py)?.into_any().unbind())
     }
 
+    /// Return the number of entries in the LRU parse cache.
     fn parse_cache_len(&self) -> usize {
         // Safe to read, but keep behavior consistent.
         let _ = self.check_fork();
         self.inner.parse_cache_len()
     }
 
+    /// Return the current tick counter.
     fn get_tick_count(&self) -> i64 {
         let _ = self.check_fork();
         self.inner.get_tick_count()
     }
 
+    /// Increment the tick counter by `inc` and return the updated value.
     fn tick(&self, py: Python<'_>, inc: i64) -> PyResult<Py<PyAny>> {
         self.check_fork()?;
         let obj = map_spicy_error(self.inner.tick(inc))?;
         spicy_to_py(py, obj)
     }
 
+    /// Return `True` if lazy evaluation mode is enabled.
     fn is_lazy_mode(&self) -> bool {
         let _ = self.check_fork();
         self.inner.is_lazy_mode()
     }
 
+    /// Return `True` if the engine uses Chili syntax (not Pepper).
     fn is_repl_use_chili_syntax(&self) -> bool {
         let _ = self.check_fork();
         self.inner.is_repl_use_chili_syntax()
     }
 
+    /// Call a registered engine function by name with positional arguments.
     fn fn_call(&self, py: Python<'_>, func: &str, args: Bound<'_, PyList>) -> PyResult<Py<PyAny>> {
         self.check_fork()?;
         let args = args
             .iter()
             .map(|a| spicy_from_py_bound(&a))
             .collect::<Result<Vec<SpicyObj>, PyErr>>()?;
-        let args = args.iter().map(|a| a).collect::<Vec<&SpicyObj>>();
+        let args = args.iter().collect::<Vec<&SpicyObj>>();
         let obj = py.detach(move || map_spicy_error(self.inner.fn_call(func, &args)));
         spicy_to_py(py, obj?)
     }
 
+    /// Load a partitioned database from the given directory.
     fn load_par_df(&self, hdb_path: &str) -> PyResult<()> {
         self.check_fork()?;
         map_spicy_error(self.inner.load_par_df(hdb_path))?;
         Ok(())
     }
 
+    /// Remove all loaded partitioned DataFrames from memory.
     fn clear_par_df(&self) -> PyResult<()> {
         self.check_fork()?;
         map_spicy_error(self.inner.clear_par_df())?;
         Ok(())
     }
+
+    /// Start a TCP listener on the given port in a background thread.
+    ///
+    /// The listener runs until the process exits.  The GIL is released so
+    /// the calling Python thread is not blocked.
+    #[pyo3(signature = (port, remote=false, users=vec![]))]
+    fn start_tcp_listener(&self, port: i32, remote: bool, users: Vec<String>) -> PyResult<()> {
+        self.check_fork()?;
+        let state = Arc::clone(&self.inner);
+        std::thread::spawn(move || {
+            state.start_tcp_listener(port, remote, users);
+        });
+        Ok(())
+    }
 }
 
+/// PyO3 module entry point — registers the `EngineState` class and
+/// all custom exception types.
 #[pymodule]
 fn engine_state(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ChiliError", m.py().get_type::<ChiliError>())?;

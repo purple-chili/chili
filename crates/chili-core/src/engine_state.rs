@@ -4,7 +4,7 @@ use std::{
     fmt::Display,
     fs::{self, DirEntry, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     num::NonZeroUsize,
     path::PathBuf,
     sync::{Arc, LazyLock, Mutex, RwLock},
@@ -1942,6 +1942,93 @@ impl EngineState {
             )),
         );
         Ok(SpicyObj::Dict(status))
+    }
+
+    /// Start a TCP listener on the given port and spawn a thread per
+    /// incoming connection. Handles authentication, IPC version
+    /// negotiation, and connection dispatch.
+    ///
+    /// This method blocks the **calling thread** (it should be spawned
+    /// on a dedicated thread from `main`).
+    pub fn start_tcp_listener(self: &Arc<Self>, port: i32, remote: bool, users: Vec<String>) {
+        let addr = if remote {
+            format!("0.0.0.0:{}", port)
+        } else {
+            format!("127.0.0.1:{}", port)
+        };
+
+        let listener = match TcpListener::bind(&addr) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("{} - {}", e, port);
+                std::process::exit(1)
+            }
+        };
+
+        info!("listening at port {}", port);
+
+        for stream in listener.incoming() {
+            let state_tcp = Arc::clone(self);
+            let mut stream = stream.unwrap();
+            let auth_info = state_tcp.validate_auth_token(&mut stream, &users);
+            if !auth_info.is_authenticated {
+                info!(
+                    "{}@{} failed to authenticate, disconnecting...",
+                    auth_info.username,
+                    stream.peer_addr().unwrap()
+                );
+                stream.shutdown(std::net::Shutdown::Both).unwrap();
+                continue;
+            }
+            info!(
+                "{}@{} connected",
+                auth_info.username,
+                stream.peer_addr().unwrap()
+            );
+            if auth_info.version <= 6 {
+                stream.write_all(&[6]).unwrap();
+            } else {
+                stream.write_all(&[9]).unwrap();
+            }
+            // if not set, small package will be pending for 40ms
+            stream.set_nodelay(true).unwrap();
+            let peer_addr = stream.peer_addr().unwrap().to_string();
+            let ipc_type = IpcType::from_u8(auth_info.version)
+                .unwrap_or_else(|| panic!("unsupported ipc version: {}", auth_info.version));
+            let h = state_tcp
+                .set_handle(
+                    Some(Box::new(stream.try_clone().unwrap())),
+                    &peer_addr,
+                    &format!("{}://{}", ipc_type, peer_addr,),
+                    false,
+                    ipc_type,
+                    ConnType::Incoming,
+                    0,
+                )
+                .unwrap();
+            if auth_info.version <= 6 {
+                let mut stream = Box::new(stream);
+                thread::spawn(move || {
+                    utils::handle_q_conn(
+                        &mut stream,
+                        peer_addr.starts_with("127.0.0.1"),
+                        h.to_i64().unwrap(),
+                        state_tcp,
+                        &auth_info.username,
+                    )
+                });
+            } else {
+                thread::spawn(move || {
+                    utils::handle_chili_conn(
+                        &mut stream,
+                        peer_addr.starts_with("127.0.0.1"),
+                        h.to_i64().unwrap(),
+                        state_tcp,
+                        &auth_info.username,
+                    )
+                });
+            }
+        }
     }
 }
 
