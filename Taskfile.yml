@@ -96,14 +96,14 @@ tasks:
     cmds:
       - uv pip install dist/chili_pie*.whl
 
-  dev-py-binding:
-      deps:
-        - test
-      cmds:
-        - maturin develop --release --manifest-path crates/chili-py/Cargo.toml
+  dev-py-sauce:
+    deps:
+      - test
+    cmds:
+      - maturin develop --release --manifest-path crates/chili-py/Cargo.toml
 
 
-  release-py-binding:
+  release-py-sauce:
     deps:
       - test
     cmds:
@@ -111,8 +111,8 @@ tasks:
       - maturin build --release --locked --out dist --manifest-path
         crates/chili-py/Cargo.toml
 
-  install-py-binding:
+  install-py-sauce:
     deps:
-      - release-py-binding
+      - release-py-sauce
     cmds:
       - uv pip install dist/chili_sauce*.whl

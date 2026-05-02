@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !log_dir.exists()
             && let Err(e) = std::fs::create_dir_all(&log_dir)
         {
-            println!("failed to create log directory: {}", e);
+            eprintln!("failed to create log directory: {}", e);
             exit(1);
         }
         let log_file = log_dir.join(format!(
@@ -119,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match File::create(log_file) {
             Ok(file) => Target::Pipe(Box::new(file)),
             Err(e) => {
-                println!("failed to create log file: {}", e);
+                eprintln!("failed to create log file: {}", e);
                 exit(1);
             }
         }
@@ -187,7 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.memory_limit
         } else {
             info!(
-                "Memory limit is set to {:>6.2} MB, which is less than 1024 MB, rounding up to 1024 MB",
+                "memory limit {:>6.2} MB is below minimum 1024 MB, rounding up to 1024 MB",
                 args.memory_limit
             );
             1024.0
@@ -409,8 +409,8 @@ fn check_memory_usage(memory_limit: f64, pid: Pid) {
                 // only quit if already over the limit last check
                 if is_over_limit {
                     eprintln!(
-                        "Memory usage exceeded the limit: {:>6.2} MB, usage: {:>6.2} MB, exiting...",
-                        memory_limit, memory_usage_mb
+                        "memory usage {:>6.2} MB exceeded limit {:>6.2} MB, exiting",
+                        memory_usage_mb, memory_limit
                     );
                     let mut stdout = stdout();
                     // Perform the standard cleanup sequence
@@ -420,16 +420,16 @@ fn check_memory_usage(memory_limit: f64, pid: Pid) {
                     exit(1);
                 } else {
                     warn!(
-                        "Memory usage exceeded the limit: {:>6.2} MB, usage: {:>6.2} MB, will exit if the next check also exceeds the limit",
-                        memory_limit, memory_usage_mb
+                        "memory usage {:>6.2} MB exceeded limit {:>6.2} MB, will exit if next check still exceeds",
+                        memory_usage_mb, memory_limit
                     );
                     is_over_limit = true;
                 }
             } else {
                 if memory_usage_mb > memory_limit * 0.9 {
                     warn!(
-                        "Memory usage is reaching the 90% limit: {:>6.2} MB, usage: {:>6.2} MB",
-                        memory_limit, memory_usage_mb
+                        "memory usage {:>6.2} MB approaching 90%% of limit {:>6.2} MB",
+                        memory_usage_mb, memory_limit
                     );
                 }
                 is_over_limit = false;
