@@ -56,6 +56,15 @@ fn close_handle(
     state.close_handle(&handle_num)
 }
 
+fn exists_handle(
+    state: &EngineState,
+    _stack: &mut Stack,
+    args: &[&SpicyObj],
+) -> SpicyResult<SpicyObj> {
+    let handle_num = args[0].to_i64()?;
+    state.exists_handle(&handle_num)
+}
+
 fn exit(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let exit_code = args[0].to_i64()?;
     state.shutdown();
@@ -287,7 +296,10 @@ fn set(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResu
 
 fn get(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let id = args[0].str()?;
-    state.get_var(id)
+    match state.get_var(id) {
+        Ok(obj) => Ok(obj),
+        Err(_) => Ok(SpicyObj::Null),
+    }
 }
 
 fn tables(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
@@ -322,7 +334,7 @@ fn each(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResu
             }
             Ok(SpicyObj::MixedList(result))
         }
-        SpicyObj::Series(_) => {
+        SpicyObj::Series(_) | SpicyObj::MixedList(_) => {
             let mut result = vec![];
             let list = collection.as_vec()?;
             for obj in list {
@@ -660,6 +672,15 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 1,
                 ".handle.subscribing",
                 &["handle"],
+            ),
+        ),
+        (
+            ".handle.exists".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(exists_handle)),
+                1,
+                ".handle.exists",
+                &["handle_num"],
             ),
         ),
         (

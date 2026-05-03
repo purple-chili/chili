@@ -298,13 +298,29 @@ impl PyEngineState {
     /// * `debug`  – enable debug-level logging.
     /// * `lazy`   – enable lazy evaluation mode.
     /// * `pepper` – use Pepper syntax instead of Chili.
+    /// * `job_interval` – job scheduler polling interval in milliseconds (0 = disabled).
+    /// * `memory_limit` – memory limit in MB (0 = unlimited).
     #[new]
-    #[pyo3(signature = (debug=false, lazy=false, pepper=false))]
-    fn new(debug: bool, lazy: bool, pepper: bool) -> PyResult<Self> {
-        let state = EngineState::new(debug, lazy, pepper);
+    #[pyo3(signature = (debug=false, lazy=false, pepper=false, job_interval=0, memory_limit=0.0))]
+    fn new(
+        debug: bool,
+        lazy: bool,
+        pepper: bool,
+        job_interval: u64,
+        memory_limit: f64,
+    ) -> PyResult<Self> {
+        let mut state = EngineState::new(debug, lazy, pepper);
+        if job_interval > 0 {
+            state.set_interval(job_interval);
+        }
+        if memory_limit > 0.0 {
+            state.set_memory_limit(memory_limit);
+        }
         state.register_fn(&BUILT_IN_FN);
         let arc = Arc::new(state);
         map_spicy_error(arc.set_arc_self(Arc::clone(&arc)))?;
+        arc.start_job_scheduler();
+        arc.start_memory_monitor();
         Ok(Self {
             inner: arc,
             init_pid: process::id(),
@@ -312,16 +328,11 @@ impl PyEngineState {
     }
 
     /// Evaluate a Chili or Pepper expression string (same as the REPL).
-    fn eval(&self, py: Python<'_>, source: &str) -> PyResult<Py<PyAny>> {
+    fn eval(&self, py: Python<'_>, source: &str, src_path: &str) -> PyResult<Py<PyAny>> {
         self.check_fork()?;
         let obj = py.detach(move || {
             let mut stack = Stack::new(None, 0, 0, "");
             let args = SpicyObj::String(source.to_string());
-            let src_path = if self.inner.is_repl_use_chili_syntax() {
-                "repl.chi"
-            } else {
-                "repl.pep"
-            };
             map_spicy_error(self.inner.eval(&mut stack, &args, src_path))
         });
         spicy_to_py(py, obj?)
@@ -502,6 +513,14 @@ impl PyEngineState {
             state.start_tcp_listener(port, remote, users);
         });
         Ok(())
+    }
+
+    /// Return a DataFrame listing all active handles.
+    fn list_handle(&self) -> PyResult<PyDataFrame> {
+        self.check_fork()?;
+        let df = map_spicy_error(self.inner.list_handle())?;
+        let pydf = PyDataFrame(df);
+        Ok(pydf)
     }
 }
 

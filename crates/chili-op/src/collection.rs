@@ -1440,11 +1440,17 @@ pub fn in_op(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     }
     let c0 = arg0.get_type_code();
     let c1 = arg1.get_type_code();
-    let err = || SpicyError::UnsupportedUnaryOpErr("in".to_owned(), arg0.get_type_name());
+    let err = || {
+        SpicyError::UnsupportedBinaryOpErr(
+            "in".to_owned(),
+            arg0.get_type_name(),
+            arg1.get_type_name(),
+        )
+    };
 
     if c0 <= 0 && c1 <= 0 {
         eq(args)
-    } else if (arg0.is_series() && c1 <= 0) || (c0 <= 0 && arg1.is_series()) {
+    } else if (arg0.is_series() && c1 <= 0 && c1 > 14) || (c0 <= 0 && c1 < 14 && arg1.is_series()) {
         let mut s0 = arg0.as_series().unwrap();
         let mut s1 = arg1.as_series().unwrap();
         if c1 == 0 {
@@ -1492,9 +1498,13 @@ pub fn in_op(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                     _ => unreachable!(),
                 }
             }
-            polars_ops::series::is_in(&s0, &s1, true)
-                .map(|s| SpicyObj::Series(s.into()))
-                .map_err(|_| err())
+            let res = polars_ops::series::is_in(&s0, &s1, true)
+                .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
+            if c0 < 0 {
+                Ok(SpicyObj::Boolean(res.first().unwrap_or(false)))
+            } else {
+                Ok(SpicyObj::Series(res.into()))
+            }
         }
     } else if (-14..=0).contains(&c0) && c1 > 0 {
         let v1;
@@ -1517,7 +1527,7 @@ pub fn in_op(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         let v0;
         let v0 = match arg0 {
             SpicyObj::Series(_) => {
-                v0 = arg1.as_vec().map_err(|_| err())?;
+                v0 = arg0.as_vec().map_err(|_| err())?;
                 v0.iter().collect()
             }
             SpicyObj::MixedList(l) => l.iter().collect(),
@@ -1545,7 +1555,7 @@ pub fn in_op(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         let v0;
         let v0 = match arg0 {
             SpicyObj::Series(_) => {
-                v0 = arg1.as_vec().map_err(|_| err())?;
+                v0 = arg0.as_vec().map_err(|_| err())?;
                 v0.iter().collect()
             }
             SpicyObj::MixedList(l) => l.iter().collect(),

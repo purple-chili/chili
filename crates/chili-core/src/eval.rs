@@ -421,8 +421,9 @@ pub fn eval_op(
     stack: &mut Stack,
     args: &[&SpicyObj],
 ) -> SpicyResult<SpicyObj> {
+    // args contains only 1 item, which is a mixed list, symbol, or string
     let arg0 = args[0];
-    let args = match arg0 {
+    let list = match arg0 {
         SpicyObj::MixedList(list) => list,
         SpicyObj::Symbol(s) | SpicyObj::String(s) => {
             let any = stack.get_var(s);
@@ -434,7 +435,8 @@ pub fn eval_op(
         }
         _ => return Err(SpicyError::EvalErr(format!("Not able to eval '{}'", arg0))),
     };
-    let f = &args[0];
+    // must be a mixed list >= 2 items
+    let f = &list[0];
     let f = match f {
         SpicyObj::Symbol(s) | SpicyObj::String(s) => {
             let any = stack.get_var(s);
@@ -446,10 +448,10 @@ pub fn eval_op(
         }
         _ => f.clone(),
     };
-    let args = &args[1..].iter().collect();
+    let args = &list[1..].iter().collect();
     match &f {
         SpicyObj::Fn(func) => eval_call(state, stack, &f, args, &Some(func.pos.clone()), ""),
-        SpicyObj::I64(h) => state.sync(h, args[0]),
+        SpicyObj::I64(h) => state.sync(h, arg0),
         _ => Err(SpicyError::EvalErr(format!(
             "Not able to eval a list with first item '{}'",
             f

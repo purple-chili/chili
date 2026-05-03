@@ -88,7 +88,7 @@ tasks:
       - test
     cmds:
       - rm -rf dist
-      - maturin build --release --locked --out dist
+      - maturin build --release --out dist
 
   install-py:
     deps:
@@ -108,7 +108,7 @@ tasks:
       - test
     cmds:
       - rm -rf dist
-      - maturin build --release --locked --out dist --manifest-path
+      - maturin build --release --out dist --manifest-path
         crates/chili-py/Cargo.toml
 
   install-py-sauce:

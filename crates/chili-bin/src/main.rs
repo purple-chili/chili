@@ -9,13 +9,9 @@ use crate::validator::ChiliValidator;
 use chili_core::EngineState;
 use chili_op::BUILT_IN_FN;
 use clap::Parser;
-use crossterm::cursor::Show;
-use crossterm::execute;
-use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use env_logger::Target;
 use home::home_dir;
-use log::{debug, error, info, warn};
-use sysinfo::Pid;
+use log::{debug, error, info};
 
 use crate::completer::ChiliCompleter;
 use nu_ansi_term::{Color, Style};
@@ -25,14 +21,14 @@ use reedline::{
     Signal, default_emacs_keybindings,
 };
 use std::fs::File;
-use std::io::{IsTerminal, Write, stdout};
+use std::io::IsTerminal;
 
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "an implementation of runtime for chili language", long_about = None, name = "chili")]
@@ -182,26 +178,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     unsafe { std::env::set_var("CHILI_SYNTAX", if args.pepper { "pepper" } else { "chili" }) };
 
+    let mut state = EngineState::new(debug, args.lazy, args.pepper);
+
     if args.memory_limit > 0.0 {
-        let memory_limit = if args.memory_limit > 1024.0 {
-            args.memory_limit
-        } else {
-            info!(
-                "memory limit {:>6.2} MB is below minimum 1024 MB, rounding up to 1024 MB",
-                args.memory_limit
-            );
-            1024.0
-        };
-        unsafe { std::env::set_var("CHILI_MEMORY_LIMIT", memory_limit.to_string()) };
-        thread::spawn(move || {
-            check_memory_usage(
-                memory_limit,
-                sysinfo::get_current_pid().expect("Failed to get current pid"),
-            )
-        });
+        state.set_memory_limit(args.memory_limit);
     }
 
-    let state = EngineState::new(debug, args.lazy, args.pepper);
+    if args.interval > 0 {
+        state.set_interval(args.interval);
+    }
 
     if debug {
         info!("Debug mode is enabled");
@@ -255,17 +240,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let job_state = Arc::clone(&arc_state);
-
-    if args.interval > 0 {
-        thread::spawn(move || {
-            loop {
-                debug!("executing jobs");
-                job_state.execute_jobs();
-                thread::sleep(Duration::from_millis(args.interval));
-            }
-        });
-    }
+    arc_state.start_job_scheduler();
+    arc_state.start_memory_monitor();
 
     if is_headless {
         info!(
@@ -395,49 +371,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
-}
-
-fn check_memory_usage(memory_limit: f64, pid: Pid) {
-    let mut is_over_limit = false;
-    loop {
-        let sys = sysinfo::System::new_all();
-        let process = sys.process(pid);
-        if let Some(process) = process {
-            let memory_usage = process.memory();
-            let memory_usage_mb = memory_usage as f64 / 1048576.0;
-            if memory_usage_mb > memory_limit {
-                // only quit if already over the limit last check
-                if is_over_limit {
-                    eprintln!(
-                        "memory usage {:>6.2} MB exceeded limit {:>6.2} MB, exiting",
-                        memory_usage_mb, memory_limit
-                    );
-                    let mut stdout = stdout();
-                    // Perform the standard cleanup sequence
-                    let _ = disable_raw_mode();
-                    let _ = execute!(stdout, LeaveAlternateScreen, Show);
-                    let _ = stdout.flush();
-                    exit(1);
-                } else {
-                    warn!(
-                        "memory usage {:>6.2} MB exceeded limit {:>6.2} MB, will exit if next check still exceeds",
-                        memory_usage_mb, memory_limit
-                    );
-                    is_over_limit = true;
-                }
-            } else {
-                if memory_usage_mb > memory_limit * 0.9 {
-                    warn!(
-                        "memory usage {:>6.2} MB approaching 90%% of limit {:>6.2} MB",
-                        memory_usage_mb, memory_limit
-                    );
-                }
-                is_over_limit = false;
-            }
-        } else {
-            warn!("Process {} not found, stopping memory limit check", pid);
-            break;
-        }
-        thread::sleep(Duration::from_secs(3));
-    }
 }

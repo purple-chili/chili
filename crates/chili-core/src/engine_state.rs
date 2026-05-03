@@ -7,9 +7,10 @@ use std::{
     net::{TcpListener, TcpStream},
     num::NonZeroUsize,
     path::PathBuf,
+    process,
     sync::{Arc, LazyLock},
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use lru::LruCache;
@@ -103,6 +104,10 @@ pub struct EngineState {
     user: String,
     lazy_mode: bool,
     repl_lang: Language,
+    /// Job scheduler polling interval in milliseconds. 0 means disabled.
+    interval: u64,
+    /// Memory limit in MB. 0.0 means unlimited.
+    memory_limit: f64,
 }
 
 impl Default for EngineState {
@@ -158,6 +163,8 @@ impl EngineState {
             user: whoami::username().unwrap_or_default(),
             lazy_mode: false,
             repl_lang: Language::Chili,
+            interval: 0,
+            memory_limit: 0.0,
         }
     }
 
@@ -181,6 +188,30 @@ impl EngineState {
             state.enable_pepper();
         }
         state
+    }
+
+    pub fn set_interval(&mut self, interval: u64) {
+        self.interval = interval;
+    }
+
+    pub fn get_interval(&self) -> u64 {
+        self.interval
+    }
+
+    pub fn set_memory_limit(&mut self, memory_limit: f64) {
+        self.memory_limit = if memory_limit > 0.0 && memory_limit < 1024.0 {
+            info!(
+                "memory limit {:>6.2} MB is below minimum 1024 MB, rounding up to 1024 MB",
+                memory_limit
+            );
+            1024.0
+        } else {
+            memory_limit
+        };
+    }
+
+    pub fn get_memory_limit(&self) -> f64 {
+        self.memory_limit
     }
 
     pub fn register_fn(&self, map: &LazyLock<HashMap<String, Func>>) {
@@ -740,6 +771,12 @@ impl EngineState {
         let mut handle = self.handle.write();
         handle.shift_remove(handle_num);
         Ok(SpicyObj::Null)
+    }
+
+    pub fn exists_handle(&self, handle_num: &i64) -> SpicyResult<SpicyObj> {
+        Ok(SpicyObj::Boolean(
+            self.handle.read().contains_key(handle_num),
+        ))
     }
 
     pub fn list_handle(&self) -> SpicyResult<DataFrame> {
@@ -1376,7 +1413,7 @@ impl EngineState {
         match args {
             SpicyObj::String(source) => {
                 let nodes = self
-                    .parse("", source)
+                    .parse(src_path, source)
                     .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
                 self.eval_ast(nodes, src_path, source)
             }
@@ -1477,8 +1514,8 @@ impl EngineState {
         prefix: &[String],
         out: &mut Vec<(PathBuf, String, bool)>,
     ) -> SpicyResult<()> {
-        let read_dir = fs::read_dir(dir)
-            .map_err(|e| SpicyError::EvalErr(format!("OS err: {}", e)))?;
+        let read_dir =
+            fs::read_dir(dir).map_err(|e| SpicyError::EvalErr(format!("OS err: {}", e)))?;
 
         let children: Vec<(PathBuf, String, bool)> = read_dir
             .filter_map(|e| match e {
@@ -1687,7 +1724,10 @@ impl EngineState {
 
     pub fn tick(&self, index: usize, inc: i64) -> SpicyResult<SpicyObj> {
         if index >= MAX_HANDLE_NUM {
-            return Err(SpicyError::HandleOutOfRangeErr(index as i64, MAX_HANDLE_NUM));
+            return Err(SpicyError::HandleOutOfRangeErr(
+                index as i64,
+                MAX_HANDLE_NUM,
+            ));
         }
         let mut tick_count = self.tick_count.write();
         tick_count[index] += inc;
@@ -1696,7 +1736,10 @@ impl EngineState {
 
     pub fn get_tick_count(&self, index: usize) -> SpicyResult<i64> {
         if index >= MAX_HANDLE_NUM {
-            return Err(SpicyError::HandleOutOfRangeErr(index as i64, MAX_HANDLE_NUM));
+            return Err(SpicyError::HandleOutOfRangeErr(
+                index as i64,
+                MAX_HANDLE_NUM,
+            ));
         }
         Ok(self.tick_count.read()[index])
     }
@@ -2008,6 +2051,74 @@ impl EngineState {
                 });
             }
         }
+    }
+
+    /// Spawn a background thread that polls the job scheduler at the
+    /// configured `interval` (in milliseconds). Does nothing if
+    /// `interval` is 0.
+    pub fn start_job_scheduler(self: &Arc<Self>) {
+        if self.interval == 0 {
+            return;
+        }
+        let state = Arc::clone(self);
+        let interval = self.interval;
+        thread::spawn(move || {
+            loop {
+                debug!("executing jobs");
+                state.execute_jobs();
+                thread::sleep(Duration::from_millis(interval));
+            }
+        });
+    }
+
+    /// Spawn a background thread that monitors process memory usage
+    /// against the configured `memory_limit` (in MB). Does nothing if
+    /// `memory_limit` is 0.0.
+    ///
+    /// The monitor checks every 3 seconds. If memory exceeds the limit
+    /// for two consecutive checks, the process exits.
+    pub fn start_memory_monitor(&self) {
+        if self.memory_limit <= 0.0 {
+            return;
+        }
+        let memory_limit = self.memory_limit;
+        let pid = sysinfo::get_current_pid().expect("Failed to get current pid");
+        thread::spawn(move || {
+            let mut is_over_limit = false;
+            loop {
+                let sys = sysinfo::System::new_all();
+                if let Some(proc) = sys.process(pid) {
+                    let memory_usage_mb = proc.memory() as f64 / 1_048_576.0;
+                    if memory_usage_mb > memory_limit {
+                        if is_over_limit {
+                            eprintln!(
+                                "memory usage {:>6.2} MB exceeded limit {:>6.2} MB, exiting",
+                                memory_usage_mb, memory_limit
+                            );
+                            process::exit(1);
+                        } else {
+                            warn!(
+                                "memory usage {:>6.2} MB exceeded limit {:>6.2} MB, will exit if next check still exceeds",
+                                memory_usage_mb, memory_limit
+                            );
+                            is_over_limit = true;
+                        }
+                    } else {
+                        if memory_usage_mb > memory_limit * 0.9 {
+                            warn!(
+                                "memory usage {:>6.2} MB approaching 90%% of limit {:>6.2} MB",
+                                memory_usage_mb, memory_limit
+                            );
+                        }
+                        is_over_limit = false;
+                    }
+                } else {
+                    warn!("Process {:?} not found, stopping memory limit check", pid);
+                    break;
+                }
+                thread::sleep(Duration::from_secs(3));
+            }
+        });
     }
 }
 

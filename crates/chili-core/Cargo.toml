@@ -76,6 +76,7 @@ chumsky = { workspace = true }
 ariadne = { workspace = true }
 lru = "0.18.0"
 parking_lot = "0.12"
+sysinfo = "0.38.2"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }

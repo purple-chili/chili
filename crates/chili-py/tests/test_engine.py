@@ -190,16 +190,16 @@ class TestImportSource:
 
 class TestTick:
     def test_initial_tick(self, engine: ChiliEngine):
-        assert engine.get_tick_count() == 0
+        assert engine.get_tick_count(0) == 0
 
     def test_tick_increment(self, engine: ChiliEngine):
-        engine.tick(5)
-        assert engine.get_tick_count() == 5
+        engine.tick(0, 5)
+        assert engine.get_tick_count(0) == 5
 
     def test_tick_multiple(self, engine: ChiliEngine):
-        engine.tick(3)
-        engine.tick(7)
-        assert engine.get_tick_count() == 10
+        engine.tick(0, 3)
+        engine.tick(0, 7)
+        assert engine.get_tick_count(0) == 10
 
 
 # ---------------------------------------------------------------------------

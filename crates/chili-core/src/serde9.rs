@@ -331,7 +331,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
             if list_len > 0 {
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let mut v_pos = 16;
+                let mut v_pos = *pos;
                 for _ in 0..list_len {
                     list.push(deserialize(vec, &mut v_pos)?)
                 }
@@ -844,7 +844,7 @@ pub fn serialize(args: &SpicyObj, compress: bool) -> SpicyResult<Vec<Vec<u8>>> {
             if !l.is_empty() {
                 let v = l
                     .iter()
-                    .map(|args| serialize(args, compress))
+                    .map(|arg| serialize(arg, compress))
                     .collect::<SpicyResult<Vec<Vec<Vec<u8>>>>>()?;
                 let mut v = v.into_iter().flatten().collect::<Vec<Vec<u8>>>();
                 // length of list size
@@ -1367,6 +1367,21 @@ mod tests {
             0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0,
+        ];
+        assert_eq!(serialize_as_v8(&obj), v8);
+        assert_eq!(deserialize(v8, &mut 0).unwrap(), obj);
+    }
+
+    #[test]
+    fn serde_mixed_list() {
+        let obj = SpicyObj::MixedList(vec![
+            SpicyObj::Symbol("subscribe".to_owned()),
+            SpicyObj::MixedList(vec![SpicyObj::Symbol("topics".to_owned())]),
+        ]);
+        let v8: &[u8] = &vec![
+            90, 0, 0, 0, 2, 0, 0, 0, 56, 0, 0, 0, 0, 0, 0, 0, 242, 0, 0, 0, 9, 0, 0, 0, 115, 117,
+            98, 115, 99, 114, 105, 98, 101, 0, 0, 0, 0, 0, 0, 0, 90, 0, 0, 0, 1, 0, 0, 0, 16, 0, 0,
+            0, 0, 0, 0, 0, 242, 0, 0, 0, 6, 0, 0, 0, 116, 111, 112, 105, 99, 115, 0, 0,
         ];
         assert_eq!(serialize_as_v8(&obj), v8);
         assert_eq!(deserialize(v8, &mut 0).unwrap(), obj);

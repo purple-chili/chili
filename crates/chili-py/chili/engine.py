@@ -1,6 +1,8 @@
 """Python bindings for Chili's ``EngineState`` (Rust ``chili-core``)."""
 
-from typing import Any, Optional, Tuple
+from datetime import date
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import polars as pl
 
@@ -18,21 +20,37 @@ class ChiliEngine:
         debug: Enable debug-level logging inside the engine.
         lazy: Enable lazy evaluation mode.
         pepper: Use Pepper syntax instead of the default Chili syntax.
+        job_interval: Job scheduler polling interval in milliseconds (0 = disabled).
+        memory_limit: Memory limit in MB (0 = unlimited, minimum 1024 MB).
     """
 
-    def __init__(self, debug: bool = False, lazy: bool = False, pepper: bool = False):
-        self.engine = EngineState(debug, lazy, pepper)
+    def __init__(
+        self,
+        debug: bool = False,
+        lazy: bool = False,
+        pepper: bool = False,
+        job_interval: int = 0,
+        memory_limit: float = 0,
+    ):
+        self.is_tick_loaded = False
+        self.is_sub_loaded = False
+        self.engine = EngineState(debug, lazy, pepper, job_interval, memory_limit)
 
-    def eval(self, source: str) -> Any:
+    def eval(self, source: str, src_path: Optional[str] = None) -> Any:
         """Evaluate a Chili or Pepper expression string.
 
         Args:
             source: The expression to evaluate (same syntax as the REPL).
+            src_path: Optional logical source path for error messages.
+                      Defaults to ``"repl.pep"`` or ``"repl.chi"``
+                      depending on the engine's syntax mode.
 
         Returns:
             The result of the evaluation, converted to a Python type.
         """
-        return self.engine.eval(source)
+        if src_path is None:
+            src_path = "repl.chi" if self.is_repl_use_chili_syntax() else "repl.pep"
+        return self.engine.eval(source, src_path)
 
     def get_var(self, id: str) -> Any:
         """Retrieve the value of a variable by name.
@@ -144,11 +162,11 @@ class ChiliEngine:
         """Return the current number of entries in the LRU parse cache."""
         return self.engine.parse_cache_len()
 
-    def get_tick_count(self) -> int:
+    def get_tick_count(self, index: int) -> int:
         """Return the current tick counter value."""
-        return self.engine.get_tick_count()
+        return self.engine.get_tick_count(index)
 
-    def tick(self, inc: int) -> Any:
+    def tick(self, index: int,  inc: int) -> Any:
         """Increment the tick counter.
 
         Args:
@@ -157,7 +175,7 @@ class ChiliEngine:
         Returns:
             The updated tick count.
         """
-        return self.engine.tick(inc)
+        return self.engine.tick(index, inc)
 
     def is_lazy_mode(self) -> bool:
         """Return ``True`` if lazy evaluation mode is enabled."""
@@ -242,6 +260,10 @@ class ChiliEngine:
         """
         self.engine.start_tcp_listener(port, remote, users or [])
 
+    def list_handle(self) -> pl.DataFrame:
+        """Return a DataFrame listing all active handles."""
+        return self.engine.list_handle()
+
     def stats(self) -> dict[str, Any]:
         """Return engine statistics as a dictionary.
 
@@ -249,3 +271,45 @@ class ChiliEngine:
         count, parse cache size, and partition paths.
         """
         return self.engine.stats()
+
+    def load_tick(self) -> None:
+        """Load the built-in tick plant source (``src/tick.pep``).
+
+        Evaluates the bundled Pepper script that defines ``.tick.*``
+        functions (``createLog``, ``upd``, ``subscribe``, ``unsubscribe``,
+        ``eod``).
+        """
+        if not self.is_tick_loaded:
+            tick_path = Path(__file__).parent / "src" / "tick.pep"
+            source = tick_path.read_text()
+            self.engine.eval(source, "tick.pep")
+            self.is_tick_loaded = True
+
+    # Tick functions
+    # Feed handler should call .tick.upd
+    # Subscriber should call .tick.subscribe and .tick.unsubscribe on tick process
+    def init_tick(
+        self, schema: Dict[str, pl.DataFrame], log_dir: str, date: date
+    ) -> None:
+        self.load_tick()
+        self.set_var(".tick.schema", schema)
+        self.fn_call(".tick.createLog", [log_dir, date])
+
+    def publish(self, table: str, data: Any) -> None:
+        self.fn_call(".tick.upd", [table, data])
+
+    def eod(self, date: date) -> None:
+        self.fn_call(".tick.eod", [date])
+
+    # Subscriber functions
+    def load_sub(self) -> None:
+        if not self.is_sub_loaded:
+            sub_path = Path(__file__).parent / "src" / "sub.pep"
+            source = sub_path.read_text()
+            self.engine.eval(source, "sub.pep")
+            self.is_sub_loaded = True
+
+    # The socket should start with chili://hostname:port
+    def subscribe(self, tick_socket: str, topics: Optional[list[str]] = None) -> None:
+        self.load_sub()
+        self.fn_call(".sub.init", [tick_socket, topics or []])

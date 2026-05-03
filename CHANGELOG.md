@@ -2,18 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.8.0] - 2026-04-26
+## [0.8.0] - 2026-05-03
 
 ### Added
 
-- Python bindings "chili-sauce" for the Chili engine
-- Modified `write_partition` and related functions to support an `overwrite` option, allowing existing partitions to be replaced.
-- `HandleOutOfRangeErr` error variant for handle numbers outside 0..1024
+- Python bindings package "chili-sauce" for the Chili engine via PyO3
 - `load_par_df` now recursively traverses subdirectories to discover tables, producing dot-separated qualified names (e.g. `load("/path/sub")` loads `sub.trade`, `sub.order`)
-- Support for multiple subscribers and recovery
+- `HandleOutOfRangeErr` error variant for handle numbers outside 0..1024
+- Tick/Sub publish-subscribe system for Python bindings:
+  - `init_tick(schema, log_dir, date)` — initialize the tick engine with table schemas
+  - `publish(table, data)` — publish data to subscribers
+  - `subscribe(tick_socket, topics)` — subscribe to a tick engine and replay log
+  - Bundled `tick.pep` and `sub.pep` scripts for tick and subscriber logic
+- `list_handle()` — return a DataFrame listing all active handles (num, socket, conn_type, ipc_type, is_local, on_disconnected)
+- `.handle.exists` built-in function to check if a handle exists
+- `job_interval` and `memory_limit` parameters to `EngineState` constructor (Python and Rust)
+- `start_job_scheduler()` and `start_memory_monitor()` methods on `EngineState`
+- `src_path` parameter to `eval()` in the Python binding for source location in error traces
+- `tick(index, inc)` and `get_tick_count(index)` now accept an index parameter for multiple tick counters
+
+### Changed
+
+- Moved `check_memory_usage`, job scheduler, and memory monitor logic from `chili-bin` into `chili-core::EngineState` methods
+- `sysinfo` dependency moved from `chili-bin` to `chili-core`
+- `upsert` now supports `MixedList` in addition to `Series` for the collection argument
 
 ### Fixed
 
+- **serde9 nested mixed list deserialization** — fixed a critical bug where nested `MixedList` items were deserialized from a hardcoded buffer offset (byte 16) instead of the current position, causing inner list elements to be read as the parent list's data. This was the root cause of broker topic misregistration in IPC pub/sub.
 - Added bounds guard on `tick_count` access — handle numbers outside 0..1024 now return an error instead of panicking
 
 ## [0.7.5] - 2026-04-15
