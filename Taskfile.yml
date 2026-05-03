@@ -79,16 +79,20 @@ tasks:
 
   update-py-version:
     cmds:
-      - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/" pyproject.toml
+      - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/"
+        crates/chili-bin/pyproject.toml
       - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/"
         crates/chili-py/pyproject.toml
+      - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/"
+        crates/chili-py/Cargo.toml
 
   release-py:
     deps:
       - test
     cmds:
       - rm -rf dist
-      - maturin build --release --out dist
+      - maturin build --release --out dist --manifest-path
+        crates/chili-bin/Cargo.toml
 
   install-py:
     deps:
@@ -101,7 +105,6 @@ tasks:
       - test
     cmds:
       - maturin develop --release --manifest-path crates/chili-py/Cargo.toml
-
 
   release-py-sauce:
     deps:

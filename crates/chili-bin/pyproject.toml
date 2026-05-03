@@ -10,14 +10,7 @@ authors = [{ name = "hinmeru", email = "purple-chili@hotmail.com" }]
 readme = "README.md"
 requires-python = ">=3.7"
 license = { file = "LICENSE" }
-keywords = [
-    "automation",
-    "flake8",
-    "pycodestyle",
-    "pyflakes",
-    "pylint",
-    "clippy",
-]
+keywords = ["chili"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
@@ -40,7 +33,5 @@ Changelog = "https://github.com/purple-chili/chili/blob/main/CHANGELOG.md"
 
 [tool.maturin]
 bindings = "bin"
-manifest-path = "crates/chili-bin/Cargo.toml"
-module-name = "chili-pie"
 strip = true
 exclude = []

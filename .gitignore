@@ -8,3 +8,4 @@ polars-core
 *.so
 .mypy_cache
 .venv
+.pytest_cache

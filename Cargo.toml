@@ -7,6 +7,7 @@ description = "chili"
 [workspace]
 resolver = "2"
 members = ["crates/chili-*"]
+exclude = ["crates/chili-py"]
 
 [workspace.dependencies.polars-arrow]
 version = "0.53.0"
