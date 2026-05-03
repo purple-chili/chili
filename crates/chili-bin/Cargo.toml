@@ -15,7 +15,7 @@ chili-parser = { path = "../chili-parser" }
 clap = { version = "4.5", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11.8"
-reedline = { version = "0.45.0", features = ["external_printer"] }
+reedline = { version = "0.47.0", features = ["external_printer"] }
 nu-ansi-term = "0.50.3"
 chrono = { workspace = true }
 sysinfo = "0.38.2"

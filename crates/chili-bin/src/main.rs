@@ -352,6 +352,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("CTRL-D");
                         break;
                     }
+                    Ok(Signal::ExternalBreak(_)) => {
+                        println!("External break");
+                        break;
+                    }
+                    Ok(s) => {
+                        println!("Unknown signal: {:?}", s);
+                        break;
+                    }
                     Err(err) => {
                         println!("Error: {:?}", err);
                         break;
