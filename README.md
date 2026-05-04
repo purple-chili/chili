@@ -61,7 +61,7 @@ chili -P
 Evaluate a script:
 
 ```bash
-chili script.chili
+chili script.chi
 ```
 
 ## Architecture
