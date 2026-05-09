@@ -32,6 +32,7 @@ Documentation = "https://purple-chili.github.io/"
 Changelog = "https://github.com/purple-chili/chili/blob/main/CHANGELOG.md"
 
 [tool.maturin]
+manifest-path = "Cargo.toml"
 bindings = "bin"
 strip = true
 exclude = []
