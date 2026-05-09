@@ -124,9 +124,12 @@ impl SpicyError {
 }
 
 pub fn trace(source: &str, path: &str, pos: usize, msg: &str) -> String {
+    if pos >= source.len() {
+        return msg.to_string();
+    }
     let mut start = 0;
     let mut r = 1;
-    let mut c = 1;
+    let mut display_col = 0;
     let mut chars = source.chars().peekable();
     let mut i = 0;
     while i < pos {
@@ -135,33 +138,32 @@ pub fn trace(source: &str, path: &str, pos: usize, msg: &str) -> String {
                 if let Some(&'\n') = chars.peek() {
                     chars.next();
                     i += 2;
-                    r += 1;
-                    c = 1;
-                    start = i;
                 } else {
                     i += 1;
-                    c += 1;
                 }
+                r += 1;
+                display_col = 0;
+                start = i;
             }
             Some('\n') => {
                 i += 1;
                 r += 1;
-                c = 1;
+                display_col = 0;
                 start = i;
             }
             Some(ch) => {
                 i += ch.len_utf8();
-                c += 1;
+                display_col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
             }
             None => return msg.to_string(),
         }
     }
-    let end = match &source[pos..].chars().position(|c| c == '\n' || c == '\r') {
-        Some(i) => pos + i,
-        None => source.len(),
-    };
+    let c = display_col + 1;
+    let end = source[pos..]
+        .find(|c: char| c == '\n' || c == '\r')
+        .map_or(source.len(), |i| pos + i);
     let line = &source[start..end];
-    let underline = " ".repeat(c - 1) + "^";
+    let underline = " ".repeat(display_col) + "^";
 
     format!(
         "--> {path}:{r}:{c}\n\
@@ -178,6 +180,16 @@ fn display_trace() {
 
     assert_eq!(
         trace(input, "", 12, "type"),
+        ["--> :3:4", "", "`a + 1;", "   ^", "type"].join("\n")
+    );
+}
+
+#[test]
+fn display_trace_standalone_cr() {
+    let input = "1+1;\r1;\r`a + 1;";
+
+    assert_eq!(
+        trace(input, "", 11, "type"),
         ["--> :3:4", "", "`a + 1;", "   ^", "type"].join("\n")
     );
 }

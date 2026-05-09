@@ -603,7 +603,7 @@ pub fn eval_call(
                             Err(SpicyError::Err(trace(
                                 &current_fn.fn_body,
                                 "",
-                                p.pos - current_fn.pos.pos,
+                                p.pos.saturating_sub(current_fn.pos.pos),
                                 &e.to_string(),
                             )))
                         } else if p.source_id == 0 {
