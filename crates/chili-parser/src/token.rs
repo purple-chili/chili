@@ -604,7 +604,7 @@ impl Token {
             .boxed();
 
         // parse operators
-        let op = one_of("+*-/!<>=:.$?@!~_&|#^%~")
+        let op = one_of("+*-/!<>=:.$?@~_&|#^%")
             .repeated()
             .at_least(1)
             .to_slice()
@@ -665,6 +665,15 @@ impl Token {
     }
 }
 
+/// Builds a byte-offset → (line, column) mapping for every token boundary.
+///
+/// We iterate through source characters tracking the current (line, col) position,
+/// and record the position at each token's `start` and `end` byte offset.
+///
+/// The index `j` walks through all token boundaries (both starts and ends) in order.
+/// Since each token has two boundaries, `j / 2` gives the token index and we check
+/// both `.start` and `.end` of that token. When a boundary matches the current byte
+/// offset `i`, we record it and advance `j`.
 pub fn calculate_line_col(tokens: &[(Token, Span)], src: &str) -> IndexMap<usize, (usize, usize)> {
     let mut line_col_map = IndexMap::new();
 
@@ -673,10 +682,12 @@ pub fn calculate_line_col(tokens: &[(Token, Span)], src: &str) -> IndexMap<usize
     // language server line and column start from 0
     let mut line_col = (0, 0);
 
+    // current byte offset in source
     let mut i = 0;
 
     line_col_map.insert(0, (line_col.0, line_col.1));
 
+    // j indexes into token boundaries: j/2 = token index, checking both start and end
     let mut j = 1;
 
     while let Some(c) = chars.next() {

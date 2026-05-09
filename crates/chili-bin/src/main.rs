@@ -135,45 +135,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .target(target)
         .init();
 
-    if args.pepper {
-        println!(
-            "\x1b[1;32m\
-            *                                                             \n\
-            *   ████████   ██████  ████████  ████████   ██████  ████████  \n\
-            *  ▒▒███▒▒███ ███▒▒███▒▒███▒▒███▒▒███▒▒███ ███▒▒███▒▒███▒▒███ \n\
-            *   ▒███ ▒███▒███████  ▒███ ▒███ ▒███ ▒███▒███████  ▒███ ▒▒▒  \n\
-            *   ▒███ ▒███▒███▒▒▒   ▒███ ▒███ ▒███ ▒███▒███▒▒▒   ▒███      \n\
-            *   ▒███████ ▒▒██████  ▒███████  ▒███████ ▒▒██████  █████     \n\
-            *   ▒███▒▒▒   ▒▒▒▒▒▒   ▒███▒▒▒   ▒███▒▒▒   ▒▒▒▒▒▒  ▒▒▒▒▒      \n\
-            *   ▒███               ▒███      ▒███                         \n\
-            *   █████              █████     █████                        \n\
-            *  ▒▒▒▒▒              ▒▒▒▒▒     ▒▒▒▒▒                         \n\
-            *                                                             \n\
-            *                                                 ver {:>6 }  \n\
-            *                                                 pid {:>6 }  \n\
-            *                                                             \x1b[0m",
-            env!("CARGO_PKG_VERSION"),
-            std::process::id()
-        );
-    } else {
-        println!(
-            "\x1b[1;32m\
-            *                                         \n\
-            *            █████       ███  ████   ███  \n\
-            *           ▒▒███       ▒▒▒  ▒▒███  ▒▒▒   \n\
-            *    ██████  ▒███████   ████  ▒███  ████  \n\
-            *   ███▒▒███ ▒███▒▒███ ▒▒███  ▒███ ▒▒███  \n\
-            *  ▒███ ▒▒▒  ▒███ ▒███  ▒███  ▒███  ▒███  \n\
-            *  ▒███  ███ ▒███ ▒███  ▒███  ▒███  ▒███  \n\
-            *  ▒▒██████  ████ █████ █████ █████ █████ \n\
-            *   ▒▒▒▒▒▒  ▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒  \n\
-            *                                         \n\
-            *                             ver {:>6 }  \n\
-            *                             pid {:>6 }  \n\
-            *                                         \x1b[0m",
-            env!("CARGO_PKG_VERSION"),
-            std::process::id()
-        );
+    if !is_headless {
+        if args.pepper {
+            println!(
+                "\x1b[1;32m\
+                *                                                             \n\
+                *   ████████   ██████  ████████  ████████   ██████  ████████  \n\
+                *  ▒▒███▒▒███ ███▒▒███▒▒███▒▒███▒▒███▒▒███ ███▒▒███▒▒███▒▒███ \n\
+                *   ▒███ ▒███▒███████  ▒███ ▒███ ▒███ ▒███▒███████  ▒███ ▒▒▒  \n\
+                *   ▒███ ▒███▒███▒▒▒   ▒███ ▒███ ▒███ ▒███▒███▒▒▒   ▒███      \n\
+                *   ▒███████ ▒▒██████  ▒███████  ▒███████ ▒▒██████  █████     \n\
+                *   ▒███▒▒▒   ▒▒▒▒▒▒   ▒███▒▒▒   ▒███▒▒▒   ▒▒▒▒▒▒  ▒▒▒▒▒      \n\
+                *   ▒███               ▒███      ▒███                         \n\
+                *   █████              █████     █████                        \n\
+                *  ▒▒▒▒▒              ▒▒▒▒▒     ▒▒▒▒▒                         \n\
+                *                                                             \n\
+                *                                                 ver {:>6 }  \n\
+                *                                                 pid {:>6 }  \n\
+                *                                                             \x1b[0m",
+                env!("CARGO_PKG_VERSION"),
+                std::process::id()
+            );
+        } else {
+            println!(
+                "\x1b[1;32m\
+                *                                         \n\
+                *            █████       ███  ████   ███  \n\
+                *           ▒▒███       ▒▒▒  ▒▒███  ▒▒▒   \n\
+                *    ██████  ▒███████   ████  ▒███  ████  \n\
+                *   ███▒▒███ ▒███▒▒███ ▒▒███  ▒███ ▒▒███  \n\
+                *  ▒███ ▒▒▒  ▒███ ▒███  ▒███  ▒███  ▒███  \n\
+                *  ▒███  ███ ▒███ ▒███  ▒███  ▒███  ▒███  \n\
+                *  ▒▒██████  ████ █████ █████ █████ █████ \n\
+                *   ▒▒▒▒▒▒  ▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒  \n\
+                *                                         \n\
+                *                             ver {:>6 }  \n\
+                *                             pid {:>6 }  \n\
+                *                                         \x1b[0m",
+                env!("CARGO_PKG_VERSION"),
+                std::process::id()
+            );
+        }
     }
 
     unsafe { std::env::set_var("CHILI_SYNTAX", if args.pepper { "pepper" } else { "chili" }) };
@@ -231,12 +233,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    if args.src.is_some()
-        && let Err(e) = arc_state.import_source_path("", &args.src.unwrap())
-    {
-        eprintln!("\x1b[1;91m{}\x1b[0m", e);
-        if !debug {
-            exit(1);
+    if let Some(ref src) = args.src {
+        if let Err(e) = arc_state.import_source_path("", src) {
+            eprintln!("\x1b[1;91m{}\x1b[0m", e);
+            if !debug {
+                exit(1);
+            }
         }
     }
 
@@ -267,10 +269,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             DefaultPromptSegment::Empty,
         );
 
+        let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
         let history_path = if args.pepper {
-            home_dir().unwrap().join(".pepper_history")
+            home.join(".pepper_history")
         } else {
-            home_dir().unwrap().join(".chili_history")
+            home.join(".chili_history")
         };
 
         let history = Box::new(

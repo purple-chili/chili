@@ -28,4 +28,3 @@ impl Pipe {
     }
 }
 
-unsafe impl Send for Pipe {}

@@ -1097,7 +1097,7 @@ pub fn fby(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             .iter()
             .map(|args| args.as_expr())
             .collect::<SpicyResult<Vec<_>>>();
-        let by = by.map_err(|_| SpicyError::Err("Expect column names, got {}".to_owned()))?;
+        let by = by.map_err(|_| SpicyError::Err(format!("Expect column names, got {}", arg1)))?;
         let left = arg0.as_expr()?;
         Ok(SpicyObj::Expr(left.over(by)))
     }

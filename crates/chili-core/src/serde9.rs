@@ -417,7 +417,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
         // }
         // function
         154 => {
-            let lang = Language::from(vec[*pos]);
+            let lang = Language::try_from(vec[*pos]).map_err(SpicyError::Err)?;
             *pos += 4;
             let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
             *pos += 8;

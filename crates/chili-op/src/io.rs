@@ -279,6 +279,9 @@ pub fn write_parquet(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             "Invalid compression level: valid compression level 1-22".to_owned(),
         ))
     } else {
+        // NOTE: compress_level is validated but not yet passed through to the
+        // parquet writer because ZstdLevel is not re-exported by polars.
+        // Adding polars-parquet as a direct dependency would enable this.
         util::write_parquet_to_filepath(file, df).map(|size| SpicyObj::I64(size as i64))
     }
 }

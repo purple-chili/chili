@@ -79,6 +79,25 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Appends a `Nil` sentinel to the end of a block's expression list
+    /// when the last expression is not a statement. Used by both parsers
+    /// to mark blocks that have an implicit nil return value.
+    pub fn make_block(mut exprs: Vec<Self>, span: Span) -> Self {
+        let is_statement = exprs
+            .last()
+            .map(|expr| matches!(expr, Expr::Statement(_)))
+            .unwrap_or(false);
+
+        if !is_statement {
+            let span_end = span.end - 1;
+            exprs.push(Expr::Nil((span_end..span_end).into()));
+        }
+
+        Expr::Block((exprs, span))
+    }
+}
+
+impl Expr {
     pub fn parser_chili<'a, I>()
     -> impl Parser<'a, I, Expr, extra::Err<Rich<'a, Token, Span>>> + Clone
     where
@@ -97,20 +116,7 @@ impl Expr {
                 let block = just(Token::Punc('{'))
                     .ignore_then(statement.clone().repeated().collect::<Vec<_>>())
                     .then_ignore(just(Token::Punc('}')))
-                    .map_with(|mut exprs, e| {
-                        let is_statement = exprs
-                            .last()
-                            .map(|expr| matches!(expr, Expr::Statement(_)))
-                            .unwrap_or(false);
-
-                        let span: Span = e.span();
-                        if !is_statement {
-                            let span_end = span.end - 1;
-                            exprs.push(Expr::Nil((span_end..span_end).into()));
-                        }
-
-                        Expr::Block((exprs, span))
-                    })
+                    .map_with(|exprs, e| Expr::make_block(exprs, e.span()))
                     .boxed();
 
                 let lit = select! {
@@ -447,20 +453,7 @@ impl Expr {
             let block = just(Token::Punc('{'))
                 .ignore_then(statement.clone().repeated().collect::<Vec<_>>())
                 .then_ignore(just(Token::Punc('}')))
-                .map_with(|mut exprs, e| {
-                    let is_statement = exprs
-                        .last()
-                        .map(|expr| matches!(expr, Expr::Statement(_)))
-                        .unwrap_or(false);
-
-                    let span: Span = e.span();
-                    if !is_statement {
-                        let span_end = span.end - 1;
-                        exprs.push(Expr::Nil((span_end..span_end).into()));
-                    }
-
-                    Expr::Block((exprs, span))
-                })
+                .map_with(|exprs, e| Expr::make_block(exprs, e.span()))
                 .boxed();
 
             let if_ = recursive(|if_| {
@@ -1129,7 +1122,7 @@ impl Expr {
                 .into_iter()
                 .chain(statement.0.pretty_print(indent + 2))
                 .collect(),
-            Expr::Error(_) => vec![format!("error")],
+            Expr::Error(_) => vec![format!("{}error", indent_str)],
             Expr::Unary { op, rhs, .. } => vec![format!("{}unary", indent_str)]
                 .into_iter()
                 .chain(op.pretty_print(indent + 2))
@@ -1341,62 +1334,13 @@ impl Expr {
     }
 
     pub fn span_end(&self) -> usize {
-        match self {
-            Expr::Id(id) => id.1.end,
-            Expr::Block(block) => block.1.end,
-            Expr::Statement(statement) => statement.1.end,
-            Expr::Error(error) => error.end,
-            Expr::Unary { span, .. } => span.end,
-            Expr::Binary { span, .. } => span.end,
-            Expr::Assign { span, .. } => span.end,
-            Expr::Call { span, .. } => span.end,
-            Expr::If { span, .. } => span.end,
-            Expr::While { span, .. } => span.end,
-            Expr::IfElse(if_else) => if_else.1.end,
-            Expr::Try { span, .. } => span.end,
-            Expr::Return(return_) => return_.1.end,
-            Expr::Raise(raise) => raise.1.end,
-            Expr::Bracket(bracket) => bracket.1.end,
-            Expr::DataFrame(data_frame) => data_frame.1.end,
-            Expr::Matrix(matrix) => matrix.1.end,
-            Expr::Dict(dict) => dict.1.end,
-            Expr::List(list) => list.1.end,
-            Expr::Pair { value, .. } => value.1.end,
-            Expr::Query { span, .. } => span.end,
-            Expr::Fn { span, .. } => span.end,
-            Expr::Lit(lit) => lit.1.end,
-            Expr::Nil(span) => span.end,
-            Expr::DelayedArg(span) => span.end,
-        }
+        self.span().end
     }
 
     pub fn span_start(&self) -> usize {
         match self {
-            Expr::Id(id) => id.1.start,
-            Expr::Block(block) => block.1.start,
-            Expr::Statement(statement) => statement.1.start,
-            Expr::Error(error) => error.start,
-            Expr::Unary { span, .. } => span.start,
-            Expr::Binary { span, .. } => span.start,
-            Expr::Assign { span, .. } => span.start,
-            Expr::Call { span, .. } => span.start,
-            Expr::If { span, .. } => span.start,
-            Expr::While { span, .. } => span.start,
-            Expr::IfElse(if_else) => if_else.1.start,
-            Expr::Try { span, .. } => span.start,
-            Expr::Return(return_) => return_.1.start,
-            Expr::Raise(raise) => raise.1.start,
-            Expr::Bracket(bracket) => bracket.1.start,
-            Expr::DataFrame(data_frame) => data_frame.1.start,
-            Expr::Matrix(matrix) => matrix.1.start,
-            Expr::Dict(dict) => dict.1.start,
-            Expr::List(list) => list.1.start,
             Expr::Pair { name, .. } => name.span_start(),
-            Expr::Query { span, .. } => span.start,
-            Expr::Fn { span, .. } => span.start,
-            Expr::Lit(lit) => lit.1.start,
-            Expr::Nil(span) => span.start,
-            Expr::DelayedArg(span) => span.start,
+            _ => self.span().start,
         }
     }
 }

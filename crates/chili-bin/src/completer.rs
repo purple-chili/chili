@@ -1,16 +1,17 @@
-use std::collections::HashMap;
+use std::sync::Arc;
 
 use chili_core::EngineState;
 use reedline::{Completer, Span, Suggestion};
 
 pub(crate) struct ChiliCompleter {
-    suggestions: HashMap<String, String>,
+    state: Arc<EngineState>,
 }
 
 impl ChiliCompleter {
-    pub fn new(state: &EngineState) -> Self {
-        let suggestions = state.get_displayed_vars().unwrap();
-        Self { suggestions }
+    pub fn new(state: &Arc<EngineState>) -> Self {
+        Self {
+            state: Arc::clone(state),
+        }
     }
 }
 
@@ -21,7 +22,11 @@ impl Completer for ChiliCompleter {
         if trimmed_line.len() < line.len() || last_word.is_empty() {
             return vec![];
         }
-        self.suggestions
+        let suggestions = match self.state.get_displayed_vars() {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        suggestions
             .iter()
             .filter(|(s, _)| s.starts_with(last_word))
             .map(|(_, d)| Suggestion {

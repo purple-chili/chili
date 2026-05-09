@@ -25,12 +25,14 @@ impl Language {
     }
 }
 
-impl From<u8> for Language {
-    fn from(value: u8) -> Self {
+impl TryFrom<u8> for Language {
+    type Error = String;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Self::Chili,
-            1 => Self::Pepper,
-            _ => panic!("invalid language value: {}", value),
+            0 => Ok(Self::Chili),
+            1 => Ok(Self::Pepper),
+            _ => Err(format!("invalid language value: {}", value)),
         }
     }
 }

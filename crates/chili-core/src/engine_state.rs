@@ -434,15 +434,16 @@ impl EngineState {
                     vars.push(k.to_owned());
                     displays.push(v.to_string());
                     types.push("par_df".to_string());
-                    let lazy_df = v.scan_partition(0)?;
-                    let cols = match lazy_df.collect() {
-                        Ok(df) => df
-                            .get_column_names()
-                            .iter()
-                            .map(|c| c.as_str())
-                            .collect::<Vec<&str>>()
-                            .join("|"),
-                        Err(_) => "".to_string(),
+                    let cols = {
+                        let mut tmp_lf = v.scan_partition(0)?;
+                        match tmp_lf.collect_schema() {
+                            Ok(schema) => schema
+                                .iter_names()
+                                .map(|n| n.as_str())
+                                .collect::<Vec<&str>>()
+                                .join("|"),
+                            Err(_) => "".to_string(),
+                        }
                     };
                     columns.push(cols);
                     is_built_in.push(false);
@@ -528,6 +529,7 @@ impl EngineState {
         pb.set_style(style);
 
         let mut count = start as usize;
+        let mut pb_counter: u64 = 0;
         for i in msgs_size.iter().take(end as usize).skip(start as usize) {
             let size = *i;
             let mut msg = vec![0u8; size as usize];
@@ -550,7 +552,8 @@ impl EngineState {
                 }
                 count += 1;
             }
-            if i % 100 == 0 {
+            pb_counter += 1;
+            if pb_counter % 100 == 0 {
                 pb.inc(100);
             }
         }
@@ -751,7 +754,7 @@ impl EngineState {
             )));
         }
 
-        let is_local = host.starts_with("localhost") | host.starts_with("127.0.0.1");
+        let is_local = host.starts_with("localhost") || host.starts_with("127.0.0.1");
         let h = self.set_handle(
             Some(Box::new(stream)),
             &format!("{}://{}:{}", ipc_type, host, port),
@@ -812,7 +815,10 @@ impl EngineState {
 
     pub fn disconnect_handle(&self, handle_num: &i64) -> SpicyResult<SpicyObj> {
         let mut handle = self.handle.write();
-        handle.get_mut(handle_num).unwrap().conn_type = ConnType::Disconnected;
+        match handle.get_mut(handle_num) {
+            Some(h) => h.conn_type = ConnType::Disconnected,
+            None => return Err(SpicyError::InvalidHandleErr(*handle_num)),
+        }
         Ok(SpicyObj::Null)
     }
     #[allow(clippy::too_many_arguments)]
@@ -1858,7 +1864,9 @@ impl EngineState {
 
     pub fn set_job_status(&self, id: i64, is_active: bool) -> SpicyResult<i64> {
         let mut jobs = self.job.write();
-        let job = jobs.get_mut(&id).unwrap();
+        let job = jobs
+            .get_mut(&id)
+            .ok_or_else(|| SpicyError::Err(format!("job id {} not found", id)))?;
         job.is_active = is_active;
         Ok(id)
     }
@@ -1892,6 +1900,10 @@ impl EngineState {
 
         match stream.read(&mut buffer) {
             Ok(n) => {
+                if n < 2 {
+                    error!("auth token too short ({} bytes)", n);
+                    return default_auth;
+                }
                 let credentials = String::from_utf8_lossy(&buffer[..n - 2]).trim().to_string();
                 let version = buffer[n - 2];
                 if version < 3 {
@@ -2084,9 +2096,10 @@ impl EngineState {
         let memory_limit = self.memory_limit;
         let pid = sysinfo::get_current_pid().expect("Failed to get current pid");
         thread::spawn(move || {
+            let mut sys = sysinfo::System::new();
             let mut is_over_limit = false;
             loop {
-                let sys = sysinfo::System::new_all();
+                sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
                 if let Some(proc) = sys.process(pid) {
                     let memory_usage_mb = proc.memory() as f64 / 1_048_576.0;
                     if memory_usage_mb > memory_limit {

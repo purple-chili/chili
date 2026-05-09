@@ -221,7 +221,7 @@ pub(crate) fn arccosh(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         let left = arg0.as_expr()?;
         return Ok(SpicyObj::Expr(left.arccosh()));
     }
-    let err = || SpicyError::UnsupportedUnaryOpErr("arccos".to_owned(), arg0.get_type_name());
+    let err = || SpicyError::UnsupportedUnaryOpErr("arccosh".to_owned(), arg0.get_type_name());
     float_op(args, f32::acosh, f64::acosh, &err)
 }
 
@@ -231,7 +231,7 @@ pub(crate) fn arcsin(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         let left = arg0.as_expr()?;
         return Ok(SpicyObj::Expr(left.arcsin()));
     }
-    let err = || SpicyError::UnsupportedUnaryOpErr("arccos".to_owned(), arg0.get_type_name());
+    let err = || SpicyError::UnsupportedUnaryOpErr("arcsin".to_owned(), arg0.get_type_name());
     float_op(args, f32::asin, f64::asin, &err)
 }
 
@@ -241,7 +241,7 @@ pub(crate) fn arcsinh(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         let left = arg0.as_expr()?;
         return Ok(SpicyObj::Expr(left.arcsinh()));
     }
-    let err = || SpicyError::UnsupportedUnaryOpErr("arccos".to_owned(), arg0.get_type_name());
+    let err = || SpicyError::UnsupportedUnaryOpErr("arcsinh".to_owned(), arg0.get_type_name());
     float_op(args, f32::asinh, f64::asinh, &err)
 }
 
@@ -251,7 +251,7 @@ pub(crate) fn arctan(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         let left = arg0.as_expr()?;
         return Ok(SpicyObj::Expr(left.arctan()));
     }
-    let err = || SpicyError::UnsupportedUnaryOpErr("arccos".to_owned(), arg0.get_type_name());
+    let err = || SpicyError::UnsupportedUnaryOpErr("arctan".to_owned(), arg0.get_type_name());
     float_op(args, f32::atan, f64::atan, &err)
 }
 
@@ -261,7 +261,7 @@ pub(crate) fn arctanh(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         let left = arg0.as_expr()?;
         return Ok(SpicyObj::Expr(left.arctanh()));
     }
-    let err = || SpicyError::UnsupportedUnaryOpErr("arccos".to_owned(), arg0.get_type_name());
+    let err = || SpicyError::UnsupportedUnaryOpErr("arctanh".to_owned(), arg0.get_type_name());
     float_op(args, f32::atanh, f64::atanh, &err)
 }
 
@@ -683,7 +683,11 @@ pub fn rolling_median(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             window_size: windows_size as usize,
             ..Default::default()
         };
-        return Ok(SpicyObj::Expr(s1.rolling_mean(options)));
+        return Ok(SpicyObj::Expr(s1.rolling_quantile(
+            QuantileMethod::Midpoint,
+            0.5,
+            options,
+        )));
     }
     validate_args(args, &[ArgType::Int, ArgType::NumericLike])?;
     let windows_size = args[0].to_i64().unwrap();
@@ -771,6 +775,7 @@ pub fn rolling_std0(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let s1 = args[1].series().unwrap();
     let options = RollingOptionsFixedWindow {
         window_size: windows_size as usize,
+        fn_params: Some(RollingFnParams::Var(RollingVarParams { ddof: 0u8 })),
         ..Default::default()
     };
     Ok(SpicyObj::Series(
@@ -843,6 +848,7 @@ pub fn rolling_var0(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let s1 = args[1].series().unwrap();
     let options = RollingOptionsFixedWindow {
         window_size: windows_size as usize,
+        fn_params: Some(RollingFnParams::Var(RollingVarParams { ddof: 0u8 })),
         ..Default::default()
     };
     Ok(SpicyObj::Series(

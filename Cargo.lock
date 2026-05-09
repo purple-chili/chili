@@ -466,13 +466,11 @@ dependencies = [
  "chrono",
  "chumsky",
  "clap",
- "crossterm",
  "env_logger",
  "home",
  "log",
  "nu-ansi-term",
  "reedline",
- "sysinfo",
 ]
 
 [[package]]

@@ -91,10 +91,9 @@ pub fn desc(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     }
     validate_args(args, &[ArgType::Series])?;
     let s = args[0].series().unwrap();
-    let options = SortOptions::default();
-    options.with_order_descending(true);
+    let options = SortOptions::default().with_order_descending(true);
     s.sort(options)
-        .map_err(|_| SpicyError::UnsupportedUnaryOpErr("asc".to_owned(), args[0].get_type_name()))
+        .map_err(|_| SpicyError::UnsupportedUnaryOpErr("desc".to_owned(), args[0].get_type_name()))
         .map(SpicyObj::Series)
 }
 
@@ -1374,7 +1373,7 @@ pub fn unique_count(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg0 = args[0];
     if arg0.is_expr() {
         let left = arg0.as_expr()?;
-        return Ok(SpicyObj::Expr(left.unique_stable()));
+        return Ok(SpicyObj::Expr(left.n_unique()));
     }
     let err = || SpicyError::UnsupportedUnaryOpErr("uc".to_owned(), arg0.get_type_name());
     match arg0 {

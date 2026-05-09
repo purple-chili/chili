@@ -967,7 +967,7 @@ impl SpicyObj {
                             })
                             .collect();
                         let s = Series::new("".into(), v);
-                        if *min_code == 21 {
+                        if *min_code == -11 {
                             return Ok(SpicyObj::Series(s.cast(&DataType::Float32).unwrap()));
                         } else {
                             return Ok(SpicyObj::Series(s));
@@ -1141,7 +1141,7 @@ impl SpicyObj {
 
     pub fn as_exprs(&self) -> Result<Vec<Expr>, SpicyError> {
         match self {
-            SpicyObj::MixedList(l) => Ok(l.iter().map(|args| args.as_expr().unwrap()).collect()),
+            SpicyObj::MixedList(l) => l.iter().map(|args| args.as_expr()).collect(),
             _ => Ok(vec![self.as_expr()?]),
         }
     }
@@ -1445,15 +1445,21 @@ impl Display for SpicyObj {
                 }
             }
             SpicyObj::Timestamp(v) => {
-                match DateTime::from_timestamp(v / 1_000_000_000, (v % 1_000_000_000) as u32) {
+                match DateTime::from_timestamp(
+                    v.div_euclid(1_000_000_000),
+                    v.rem_euclid(1_000_000_000) as u32,
+                ) {
                     Some(t) => t.format("%Y.%m.%dD%H:%M:%S%.9f").to_string(),
                     None => "****.**.**D**:**:**.*********".to_string(),
                 }
             }
             SpicyObj::Datetime(v) => {
-                match DateTime::from_timestamp(v / 1000, (v % 1000 * NS_IN_MS) as u32) {
+                match DateTime::from_timestamp(
+                    v.div_euclid(1000),
+                    v.rem_euclid(1000) as u32 * NS_IN_MS as u32,
+                ) {
                     Some(t) => t.format("%Y.%m.%dT%H:%M:%S%.3f").to_string(),
-                    None => "****.**.**D**:**:**.***".to_string(),
+                    None => "****.**.**T**:**:**.***".to_string(),
                 }
             }
             SpicyObj::Time(v) => {
@@ -1619,7 +1625,7 @@ pub fn get_series_len(series: &Series) -> Result<usize, SpicyError> {
         PolarsDataType::Int16 => Ok(length * 2 + 6),
         PolarsDataType::Int32 => Ok(length * 4 + 6),
         PolarsDataType::Int64 => Ok(length * 8 + 6),
-        PolarsDataType::UInt8 => Ok(length * 2 + 6),
+        PolarsDataType::UInt8 => Ok(length + 6),
         PolarsDataType::UInt16 => Ok(length * 4 + 6),
         PolarsDataType::UInt32 => Ok(length * 8 + 6),
         PolarsDataType::Float32 => Ok(length * 4 + 6),
