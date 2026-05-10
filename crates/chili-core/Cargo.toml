@@ -77,10 +77,13 @@ ariadne = { workspace = true }
 lru = "0.18.0"
 parking_lot = "0.12"
 sysinfo = "0.39"
+serde_json = "1.0"
 unicode-width = "0.2"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+tempfile = "3"
+serial_test = "3"
 
 [[bench]]
 name = "parse_cache"

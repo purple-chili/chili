@@ -1322,68 +1322,88 @@ impl EngineState {
     pub fn import_source_path(&self, relative_src_path: &str, path: &str) -> SpicyResult<SpicyObj> {
         #[cfg(target_os = "windows")]
         let full_path = {
-            let is_windows_full_path = path.chars().nth(1).unwrap_or(' ') == ':';
-            if !path.starts_with(".") && !is_windows_full_path {
-                return Err(SpicyError::EvalErr(format!(
-                    "invalid path '{}', expected absolute or relative path, start with '/' or '.'",
-                    path
-                )));
-            }
-            let path = &path.replace("/", "\\");
-            if relative_src_path.is_empty() {
-                fs::canonicalize(path).map_err(|e| {
-                    SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
-                })?
+            let is_pkg_import = path.starts_with('@')
+                || path
+                    .chars()
+                    .next()
+                    .map(|c| c.is_alphabetic())
+                    .unwrap_or(false);
+            if is_pkg_import {
+                self.resolve_package_import(path)?
             } else {
-                let relative_path = PathBuf::from(relative_src_path);
-                match relative_path.parent() {
-                    Some(base_path) if path.starts_with(".") => {
-                        let full_path = base_path.join(path);
-                        fs::canonicalize(&full_path).map_err(|e| {
-                            SpicyError::EvalErr(format!(
-                                "failed to locate '{}', {}",
-                                full_path.display(),
-                                e
-                            ))
-                        })?
-                    }
-                    _ => fs::canonicalize(path).map_err(|e| {
-                        SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
-                    })?,
+                let is_windows_full_path = path.chars().nth(1).unwrap_or(' ') == ':';
+                if !path.starts_with(".") && !is_windows_full_path {
+                    return Err(SpicyError::EvalErr(format!(
+                        "invalid path '{}', expected absolute or relative path, start with '/' or '.'",
+                        path
+                    )));
                 }
-            }
+                let path = &path.replace("/", "\\");
+                if relative_src_path.is_empty() {
+                    fs::canonicalize(path).map_err(|e| {
+                        SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
+                    })?
+                } else {
+                    let relative_path = PathBuf::from(relative_src_path);
+                    match relative_path.parent() {
+                        Some(base_path) if path.starts_with(".") => {
+                            let full_path = base_path.join(path);
+                            fs::canonicalize(&full_path).map_err(|e| {
+                                SpicyError::EvalErr(format!(
+                                    "failed to locate '{}', {}",
+                                    full_path.display(),
+                                    e
+                                ))
+                            })?
+                        }
+                        _ => fs::canonicalize(path).map_err(|e| {
+                            SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
+                        })?,
+                    }
+                }
+            } // else (non-package path)
         };
 
         #[cfg(not(target_os = "windows"))]
         let full_path = {
-            if !path.starts_with("/") && !path.starts_with(".") {
-                return Err(SpicyError::EvalErr(format!(
-                    "invalid path '{}', expected absolute or relative path, start with '/' or '.'",
-                    path
-                )));
-            }
-            if relative_src_path.is_empty() {
-                fs::canonicalize(path).map_err(|e| {
-                    SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
-                })?
+            let is_pkg_import = path.starts_with('@')
+                || path
+                    .chars()
+                    .next()
+                    .map(|c| c.is_alphabetic())
+                    .unwrap_or(false);
+            if is_pkg_import {
+                self.resolve_package_import(path)?
             } else {
-                let relative_path = PathBuf::from(relative_src_path);
-                match relative_path.parent() {
-                    Some(base_path) if path.starts_with(".") => {
-                        let full_path = base_path.join(path);
-                        fs::canonicalize(&full_path).map_err(|e| {
-                            SpicyError::EvalErr(format!(
-                                "failed to locate '{}', {}",
-                                full_path.display(),
-                                e
-                            ))
-                        })?
-                    }
-                    _ => fs::canonicalize(path).map_err(|e| {
-                        SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
-                    })?,
+                if !path.starts_with("/") && !path.starts_with(".") {
+                    return Err(SpicyError::EvalErr(format!(
+                        "invalid path '{}', expected absolute or relative path, start with '/' or '.'",
+                        path
+                    )));
                 }
-            }
+                if relative_src_path.is_empty() {
+                    fs::canonicalize(path).map_err(|e| {
+                        SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
+                    })?
+                } else {
+                    let relative_path = PathBuf::from(relative_src_path);
+                    match relative_path.parent() {
+                        Some(base_path) if path.starts_with(".") => {
+                            let full_path = base_path.join(path);
+                            fs::canonicalize(&full_path).map_err(|e| {
+                                SpicyError::EvalErr(format!(
+                                    "failed to locate '{}', {}",
+                                    full_path.display(),
+                                    e
+                                ))
+                            })?
+                        }
+                        _ => fs::canonicalize(path).map_err(|e| {
+                            SpicyError::EvalErr(format!("failed to locate '{}', {}", path, e))
+                        })?,
+                    }
+                }
+            } // else (non-package path)
         };
 
         let full_path = full_path.to_string_lossy().to_string();
@@ -1408,6 +1428,121 @@ impl EngineState {
 
         self.eval_ast(nodes, &full_path, &src)
             .map_err(|e| SpicyError::EvalErr(format!("'{}'\n{}", full_path, e)))
+    }
+
+    /// Resolve a package import path to an absolute file path.
+    ///
+    /// Package imports start with `@` (scoped) or an alphabetic character (unscoped):
+    ///   - `@scope/dep-name/module` → `$CHIZPATH/@scope/dep-name/<version>/src/module.{chi,pep}`
+    ///   - `dep-name/module`        → `$CHIZPATH/dep-name/<version>/src/module.{chi,pep}`
+    ///
+    /// The version is determined from `chiz_index.json` (local) or `$CHIZPATH/.index` (global).
+    /// File extension order is determined by the current language setting.
+    pub fn resolve_package_import(&self, path: &str) -> SpicyResult<PathBuf> {
+        // Parse package name and module path
+        let (pkg_name, module_path) = if path.starts_with('@') {
+            // Scoped: @scope/dep-name/module/path
+            let parts: Vec<&str> = path.splitn(3, '/').collect();
+            if parts.len() < 3 {
+                return Err(SpicyError::EvalErr(format!(
+                    "invalid package import '{}', expected '@scope/pkg-name/module'",
+                    path
+                )));
+            }
+            (format!("{}/{}", parts[0], parts[1]), parts[2].to_string())
+        } else {
+            // Unscoped: dep-name/module/path
+            let parts: Vec<&str> = path.splitn(2, '/').collect();
+            if parts.len() < 2 {
+                return Err(SpicyError::EvalErr(format!(
+                    "invalid package import '{}', expected 'pkg-name/module'",
+                    path
+                )));
+            }
+            (parts[0].to_string(), parts[1].to_string())
+        };
+
+        // Resolve CHIZPATH (env var or ~/chiz)
+        let chiz_root = env::var("CHIZPATH").map(PathBuf::from).unwrap_or_else(|_| {
+            PathBuf::from(env::var("HOME").unwrap_or_else(|_| "/root".to_string())).join("chiz")
+        });
+
+        // Look up version from local chiz_index.json or global index
+        let version = self.resolve_package_version(&pkg_name, &chiz_root)?;
+
+        // Build candidate paths based on current language setting
+        let base = chiz_root.join(&pkg_name).join(&version).join("src");
+        let (primary_ext, secondary_ext) = match self.repl_lang {
+            Language::Chili => ("chi", "pep"),
+            Language::Pepper => ("pep", "chi"),
+        };
+
+        let primary_path = base.join(format!("{}.{}", module_path, primary_ext));
+        let secondary_path = base.join(format!("{}.{}", module_path, secondary_ext));
+
+        if primary_path.exists() {
+            Ok(primary_path)
+        } else if secondary_path.exists() {
+            Ok(secondary_path)
+        } else {
+            Err(SpicyError::EvalErr(format!(
+                "package module not found: '{}'\n  tried: {}\n  tried: {}",
+                path,
+                primary_path.display(),
+                secondary_path.display()
+            )))
+        }
+    }
+
+    /// Resolve the installed version of a package by checking:
+    /// 1. Local `chiz_index.json` in the current working directory
+    /// 2. Global `$CHIZPATH/.index`
+    ///
+    /// Returns the version string, or "latest" as a fallback.
+    pub fn resolve_package_version(
+        &self,
+        pkg_name: &str,
+        chiz_root: &PathBuf,
+    ) -> SpicyResult<String> {
+        // Try local chiz_index.json first
+        let local_index_path = PathBuf::from("chiz_index.json");
+        if local_index_path.exists() {
+            if let Ok(content) = fs::read_to_string(&local_index_path) {
+                if let Ok(index) =
+                    serde_json::from_str::<HashMap<String, serde_json::Value>>(&content)
+                {
+                    if let Some(entry) = index.get(pkg_name) {
+                        if let Some(version) = entry["version"].as_str() {
+                            return Ok(version.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try global index at $CHIZPATH/.index
+        let global_index_path = chiz_root.join(".index");
+        if global_index_path.exists() {
+            if let Ok(content) = fs::read_to_string(&global_index_path) {
+                if let Ok(index) =
+                    serde_json::from_str::<HashMap<String, serde_json::Value>>(&content)
+                {
+                    // Global index keys are "pkg-name@version"
+                    for (key, value) in &index {
+                        if key.starts_with(pkg_name) && key[pkg_name.len()..].starts_with('@') {
+                            if let Some(version) = value["version"].as_str() {
+                                return Ok(version.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(SpicyError::EvalErr(format!(
+            "package '{}' not found in chiz_index.json or global index",
+            pkg_name
+        )))
     }
 
     pub fn eval(
