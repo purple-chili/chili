@@ -85,8 +85,6 @@ tasks:
         crates/chili-py/pyproject.toml
       - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/"
         crates/chili-py/Cargo.toml
-      - git add -A
-      - 'git commit -m "chore: update py version to {{.VERSION}}"'
 
   release-py:
     deps:

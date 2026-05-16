@@ -166,7 +166,7 @@ class ChiliEngine:
         """Return the current tick counter value."""
         return self.engine.get_tick_count(index)
 
-    def tick(self, index: int,  inc: int) -> Any:
+    def tick(self, index: int, inc: int) -> Any:
         """Increment the tick counter.
 
         Args:
@@ -313,3 +313,10 @@ class ChiliEngine:
     def subscribe(self, tick_socket: str, topics: Optional[list[str]] = None) -> None:
         self.load_sub()
         self.fn_call(".sub.init", [tick_socket, topics or []])
+
+    def open_handle(self, socket: str) -> int:
+        return self.fn_call(".handle.open", [socket])
+
+    def sync(self, handle_num: int, query: str) -> Any:
+        self.fn_call("set", ["pyHandle", handle_num])
+        return self.eval("pyHandle", [query])

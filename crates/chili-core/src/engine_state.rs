@@ -40,7 +40,7 @@ use crate::{
     Stack,
     authinfo::AuthInfo,
     broker::BROKER_FN,
-    eval::{eval_by_node, eval_fn_call, eval_op},
+    eval::{eval_by_node, eval_call, eval_fn_call, eval_op},
     io::IO_FN,
     job::{self, Job},
     obj::SpicyObj,
@@ -1576,6 +1576,7 @@ impl EngineState {
         let mut stack = Stack::new(None, 0, 0, "");
         match func {
             SpicyObj::Fn(f) => eval_fn_call(self, &mut stack, &f, &args.to_vec()),
+            SpicyObj::I64(_) => eval_call(self, &mut stack, &func, &args.to_vec(), &None, ""),
             _ => Err(SpicyError::EvalErr(format!(
                 "Not able to call '{}'",
                 func.get_type_name()

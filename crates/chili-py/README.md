@@ -32,6 +32,17 @@ engine.set_var("df", df)
 engine.get_var("df")
 ```
 
+## IPC / Remote Queries
+
+```python
+# Open a handle to a remote Chili process
+h = engine.open_handle("chili://:1800")
+
+# Send synchronous queries
+engine.sync(h, b"1+1")                # bytes  — sent as a raw string query
+engine.sync(h, ["set", "a", 2])       # list   — sent as a function call (func, args…)
+```
+
 ## Features
 
 - **Evaluate** Chili or Pepper expressions from Python
@@ -43,20 +54,20 @@ engine.get_var("df")
 
 ## Type Mapping
 
-| Python type        | Chili type        |
-|--------------------|-------------------|
-| `int`              | `Int`             |
-| `float`            | `Float`           |
-| `bool`             | `Bool`            |
-| `str`              | `Symbol`          |
-| `bytes`            | `String`          |
-| `None`             | `Null`            |
-| `list`             | `MixedList`       |
-| `dict`             | `Dict`            |
-| `datetime.date`    | `Date`            |
-| `datetime.time`    | `Time`            |
-| `datetime.datetime`| `Datetime`        |
-| `polars.DataFrame` | `DataFrame`       |
+| Python type         | Chili type  |
+| ------------------- | ----------- |
+| `int`               | `Int`       |
+| `float`             | `Float`     |
+| `bool`              | `Bool`      |
+| `str`               | `Symbol`    |
+| `bytes`             | `String`    |
+| `None`              | `Null`      |
+| `list`              | `MixedList` |
+| `dict`              | `Dict`      |
+| `datetime.date`     | `Date`      |
+| `datetime.time`     | `Time`      |
+| `datetime.datetime` | `Datetime`  |
+| `polars.DataFrame`  | `DataFrame` |
 
 ## Development
 
