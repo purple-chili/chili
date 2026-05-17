@@ -1,13 +1,19 @@
 .tick.schema: {};
 
-.tick.createLog: {[logDir; date]
-  .tick.msgLog: logDir + date;
+.tick.createLog: {[logDir; filename]
+  .tick.msgLog: logDir + filename;
   .tick.logFile: "file://" + .tick.msgLog;
   // tick is using handle 0 for internal tick count
   tick[0; .broker.validateSeq[.tick.msgLog; 0b]];
   // close existing handle
   if[not null get[`.tick.msgHandle];.handle.close get[`.tick.msgHandle]];
   .tick.msgHandle: .handle.open .tick.logFile;
+};
+
+.tick.rollLog: {[logDir; filename]
+  .tick.msgLog: logDir + filename;
+  .tick.logFile: "file://" + .tick.msgLog;
+  .handle.rotate[.tick.msgHandle; .tick.logFile];
 };
 
 .tick.upd: {[table; data]

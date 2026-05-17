@@ -397,11 +397,14 @@ class ChiliEngine:
     # Feed handler should call .tick.upd
     # Subscriber should call .tick.subscribe and .tick.unsubscribe on tick process
     def init_tick(
-        self, schema: Dict[str, pl.DataFrame], log_dir: str, date: date
+        self, schema: Dict[str, pl.DataFrame], log_dir: str, filename: date | str
     ) -> None:
         self.load_tick()
         self.set_var(".tick.schema", schema)
-        self.fn_call(".tick.createLog", [log_dir, date])
+        self.fn_call(".tick.createLog", [log_dir, filename])
+
+    def roll_tick_log(self, log_dir: str, filename: date | str) -> None:
+        self.fn_call(".tick.rollLog", [log_dir, filename])
 
     def publish(self, table: str, data: Any) -> None:
         self.fn_call(".tick.upd", [table, data])
