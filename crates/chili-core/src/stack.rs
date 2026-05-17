@@ -31,9 +31,10 @@ impl<'a> Stack<'a> {
     }
 
     pub fn with_handle(handle: i64) -> Self {
-        let mut stack = Stack::default();
-        stack.h = handle;
-        stack
+        Stack {
+            h: handle,
+            ..Default::default()
+        }
     }
 
     pub fn set_handle(&mut self, handle: i64) {

@@ -771,7 +771,7 @@ pub fn serialize(args: &SpicyObj, compress: bool) -> SpicyResult<Vec<Vec<u8>>> {
                             cat.iter_str().enumerate().for_each(|(i, s)| {
                                 offsets[i + 1] = offsets[i] + s.unwrap().len();
                             });
-                            let total_str_len = *offsets.last().unwrap() as usize;
+                            let total_str_len = *offsets.last().unwrap();
                             let mut str_bytes = Vec::with_capacity(
                                 total_str_len + PADDING[total_str_len % 8].len(),
                             );
@@ -783,7 +783,7 @@ pub fn serialize(args: &SpicyObj, compress: bool) -> SpicyResult<Vec<Vec<u8>>> {
                             cat.iter_str().enumerate().for_each(|(i, s)| {
                                 offsets[i + 1] = offsets[i] + s.unwrap().len();
                             });
-                            let total_str_len = *offsets.last().unwrap() as usize;
+                            let total_str_len = *offsets.last().unwrap();
                             let mut str_bytes = Vec::with_capacity(
                                 total_str_len + PADDING[total_str_len % 8].len(),
                             );
@@ -796,7 +796,7 @@ pub fn serialize(args: &SpicyObj, compress: bool) -> SpicyResult<Vec<Vec<u8>>> {
                             cat.iter_str().enumerate().for_each(|(i, s)| {
                                 offsets[i + 1] = offsets[i] + s.unwrap().len();
                             });
-                            let total_str_len = *offsets.last().unwrap() as usize;
+                            let total_str_len = *offsets.last().unwrap();
                             let mut str_bytes = Vec::with_capacity(
                                 total_str_len + PADDING[total_str_len % 8].len(),
                             );

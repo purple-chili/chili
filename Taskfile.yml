@@ -119,3 +119,9 @@ tasks:
       - release-py-sauce
     cmds:
       - uv pip install dist/chili_sauce*.whl
+
+  test-py:
+    deps:
+      - install-py-sauce
+    cmds:
+      - pytest crates/chili-py/tests/

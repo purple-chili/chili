@@ -95,7 +95,7 @@ fn parse_exp(expr: Expr, context: &Context) -> Result<AstNode, SpicyError> {
                 params,
                 nodes,
                 context.get_source_pos(span),
-                context.lang.clone(),
+                context.lang,
             ))))
         }
         Expr::Call { span, f, args } => {
@@ -109,7 +109,7 @@ fn parse_exp(expr: Expr, context: &Context) -> Result<AstNode, SpicyError> {
                 pos: context.get_source_pos(span),
                 f: Box::new(f),
                 args,
-                lang: context.lang.clone(),
+                lang: context.lang,
             })
         }
         Expr::If {

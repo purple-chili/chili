@@ -112,7 +112,7 @@ pub fn add_at_time(
         end_time: start_time,
         interval: 0,
         last_run_time: None,
-        next_run_time: 0,
+        next_run_time: start_time,
         is_active: true,
         description: description.to_owned(),
     };

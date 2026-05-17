@@ -247,7 +247,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
                     }
                     SpicyObj::MixedList(l) => {
                         let mut dict = IndexMap::with_capacity(keys.len());
-                        for (k, v) in keys.cat32().unwrap().iter_str().zip(l.into_iter()) {
+                        for (k, v) in keys.cat32().unwrap().iter_str().zip(l) {
                             dict.insert(k.unwrap().to_string(), v);
                         }
                         Ok(SpicyObj::Dict(dict))

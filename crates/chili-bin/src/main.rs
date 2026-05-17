@@ -1,13 +1,16 @@
 mod completer;
-mod logger;
 mod pipe;
 mod validator;
 
-use crate::logger::LOG_FN;
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use crate::pipe::Pipe;
 use crate::validator::ChiliValidator;
 use chili_core::EngineState;
-use chili_op::BUILT_IN_FN;
+use chili_op::{BUILT_IN_FN, LOG_FN};
 use clap::Parser;
 use env_logger::Target;
 use home::home_dir;
@@ -233,12 +236,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    if let Some(ref src) = args.src {
-        if let Err(e) = arc_state.import_source_path("", src) {
-            eprintln!("\x1b[1;91m{}\x1b[0m", e);
-            if !debug {
-                exit(1);
-            }
+    if let Some(ref src) = args.src
+        && let Err(e) = arc_state.import_source_path("", src)
+    {
+        eprintln!("\x1b[1;91m{}\x1b[0m", e);
+        if !debug {
+            exit(1);
         }
     }
 

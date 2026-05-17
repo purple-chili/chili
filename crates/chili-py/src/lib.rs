@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use chili_core::constant::{NS_IN_DAY, UNIX_EPOCH_DAY};
 use chili_core::{EngineState, SpicyObj, Stack};
-use chili_op::BUILT_IN_FN;
+use chili_op::{BUILT_IN_FN, LOG_FN};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Timelike, Utc};
 use indexmap::IndexMap;
 use polars::frame::DataFrame;
@@ -316,6 +316,7 @@ impl PyEngineState {
         if memory_limit > 0.0 {
             state.set_memory_limit(memory_limit);
         }
+        state.register_fn(&LOG_FN);
         state.register_fn(&BUILT_IN_FN);
         let arc = Arc::new(state);
         map_spicy_error(arc.set_arc_self(Arc::clone(&arc)))?;
@@ -371,8 +372,8 @@ impl PyEngineState {
     fn upsert(&self, id: &str, value: Bound<'_, PyAny>) -> PyResult<i64> {
         self.check_fork()?;
         let obj = spicy_from_py_bound(&value)?;
-        let obj = map_spicy_error(self.inner.upsert_var(id, &obj));
-        Ok(obj.map(|o| *o.i64().unwrap_or(&0i64))?)
+        let obj = map_spicy_error(self.inner.upsert_var(id, &obj))?;
+        Ok(*obj.i64().unwrap_or(&0i64))
     }
 
     /// Insert rows into a DataFrame variable, deduplicating by `by` columns.
@@ -382,8 +383,8 @@ impl PyEngineState {
         self.check_fork()?;
         let obj = spicy_from_py_bound(&value)?;
         let by = by.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
-        let obj = map_spicy_error(self.inner.insert_var(id, &obj, &by));
-        Ok(obj.map(|o| *o.i64().unwrap_or(&0i64))?)
+        let obj = map_spicy_error(self.inner.insert_var(id, &obj, &by))?;
+        Ok(*obj.i64().unwrap_or(&0i64))
     }
 
     /// Return engine statistics as a Python dict.
@@ -488,17 +489,93 @@ impl PyEngineState {
     }
 
     /// Load a partitioned database from the given directory.
-    fn load_par_df(&self, hdb_path: &str) -> PyResult<()> {
+    ///
+    /// The GIL is released around `EngineState::load_par_df` so concurrent
+    /// Python callers don't serialize on it. `EngineState` is `Send + Sync`;
+    /// the only shared-state access during the call is a bounded
+    /// `par_df.write()` window during Phase 2 extend.
+    fn load_par_df(&self, py: Python<'_>, hdb_path: &str) -> PyResult<()> {
         self.check_fork()?;
-        map_spicy_error(self.inner.load_par_df(hdb_path))?;
+        let path = hdb_path.to_owned();
+        py.detach(move || map_spicy_error(self.inner.load_par_df(&path)))?;
         Ok(())
     }
 
     /// Remove all loaded partitioned DataFrames from memory.
-    fn clear_par_df(&self) -> PyResult<()> {
+    ///
+    /// GIL released for the same reason as `load_par_df`; both methods
+    /// hold the same `par_df.write()` lock.
+    fn clear_par_df(&self, py: Python<'_>) -> PyResult<()> {
         self.check_fork()?;
-        map_spicy_error(self.inner.clear_par_df())?;
+        py.detach(move || map_spicy_error(self.inner.clear_par_df()))?;
         Ok(())
+    }
+
+    /// Return the number of partitioned tables currently loaded.
+    fn table_count(&self) -> usize {
+        let _ = self.check_fork();
+        self.inner.par_df_count()
+    }
+
+    /// Schedule a registered pepper function to fire at `start_time` on
+    /// the chili scheduler thread.
+    ///
+    /// Thin PyO3 binding around `.job.addAtTime`. Callers who prefer chili
+    /// to own the timer thread can use this instead of Python-side timers.
+    ///
+    /// Parameters
+    /// ----------
+    /// fn_name : str
+    ///     Name of a pepper function in the engine's global namespace.
+    ///     The scheduler will look it up by name at fire time, so the
+    ///     function must exist when the timer fires.
+    /// start_time : datetime.datetime
+    ///     When to fire. Coerced via `spicy_from_py_bound` →
+    ///     `SpicyObj::Timestamp` (nanoseconds since UNIX epoch).
+    /// description : str | None
+    ///     Free-text label, surfaced in the job-list output. Defaults to "".
+    ///
+    /// Returns
+    /// -------
+    /// int
+    ///     Job ID. Pass to `cancel_job` to revoke.
+    fn add_at_time(
+        &self,
+        py: Python<'_>,
+        fn_name: &str,
+        start_time: Bound<'_, PyAny>,
+        description: Option<&str>,
+    ) -> PyResult<i64> {
+        self.check_fork()?;
+        // The chili job scheduler compares jobs' next_run_time against
+        // `job::get_local_now_ns()`, which is local-wall-clock nanoseconds
+        // interpreted as UTC ns (i.e., UTC_ns + local_offset_seconds * 1e9).
+        // `spicy_from_py_bound` extracts tz-aware Python datetimes as
+        // `DateTime<Utc>` → real UTC ns. The two are off by the local-UTC
+        // offset, so without this conversion the scheduler would never see
+        // `now >= start_time` for any reasonable target time in a non-UTC
+        // host timezone. Add the local offset here so the scheduler's
+        // comparison lands at the correct wall-clock instant.
+        let ts_obj = spicy_from_py_bound(&start_time)?;
+        let ts_obj = match ts_obj {
+            SpicyObj::Timestamp(utc_ns) => {
+                let local_offset_sec = chrono::Local::now().offset().local_minus_utc() as i64;
+                SpicyObj::Timestamp(utc_ns + local_offset_sec * 1_000_000_000)
+            }
+            other => other,
+        };
+        let name_obj = SpicyObj::Symbol(fn_name.to_owned());
+        let desc_obj = SpicyObj::Symbol(description.unwrap_or("").to_owned());
+        let args: Vec<&SpicyObj> = vec![&name_obj, &ts_obj, &desc_obj];
+        let result =
+            py.detach(move || map_spicy_error(self.inner.fn_call(".job.addAtTime", &args)));
+        match result? {
+            SpicyObj::I64(id) => Ok(id),
+            other => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "add_at_time: expected i64 job id, got {}",
+                other.get_type_name()
+            ))),
+        }
     }
 
     /// Start a TCP listener on the given port in a background thread.
@@ -521,6 +598,46 @@ impl PyEngineState {
         let df = map_spicy_error(self.inner.list_handle())?;
         let pydf = PyDataFrame(df);
         Ok(pydf)
+    }
+
+    /// Return the polars query plan as a string, without executing the query.
+    ///
+    /// Spins up a temporary lazy-mode pepper engine, loads the HDB, evaluates
+    /// the query to a `LazyFrame`, and returns its `describe_plan()`. Useful
+    /// for query-tuning workflows. The current engine is unaffected.
+    fn query_plan(&self, py: Python<'_>, query: &str, hdb_path: &str) -> PyResult<String> {
+        self.check_fork()?;
+        let query = query.to_owned();
+        let hdb_path = hdb_path.to_owned();
+        py.detach(move || -> Result<String, String> {
+            let plan_state = EngineState::new(false, true, true);
+            plan_state.register_fn(&LOG_FN);
+            plan_state.register_fn(&BUILT_IN_FN);
+            plan_state
+                .load_par_df(&hdb_path)
+                .map_err(|e| e.to_string())?;
+            let query_obj = SpicyObj::String(query);
+            let mut stack = Stack::new(None, 0, 0, "");
+            let source = if self.inner.is_repl_use_chili_syntax() {
+                "plan.chi"
+            } else {
+                "plan.pep"
+            };
+            let obj = plan_state
+                .eval(&mut stack, &query_obj, source)
+                .map_err(|e| e.to_string())?;
+            match unwrap_return(obj) {
+                SpicyObj::LazyFrame(lf) => lf.describe_plan().map_err(|e| e.to_string()),
+                SpicyObj::DataFrame(_) => Err(
+                    "query collected eagerly — lazy plan not available for this query shape".into(),
+                ),
+                other => Err(format!(
+                    "query returned {}, expected LazyFrame",
+                    other.get_type_name()
+                )),
+            }
+        })
+        .map_err(PyRuntimeError::new_err)
     }
 }
 

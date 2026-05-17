@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.3] - 2026-05-17
+
+### Added
+
+- `rotate_handle(handle_num, uri)` built-in (`.handle.rotate`) — swap a file handle's writer to a new `file://` path and reset its tick counter, enabling log rotation without closing/reopening handles
+- `query_plan(query, hdb_path)` in Python bindings — returns the Polars logical plan string for a query without executing it, useful for query-tuning workflows
+- `add_at_time(fn_name, start_time, description)` in Python bindings — schedule a pepper function to fire once at a given time on the chili job scheduler thread
+- `publish_via_handle(h, table, df)` in Python bindings — publish a DataFrame to a remote tp via an open chili-IPC handle
+- `table_count()` in Python bindings — return the number of partitioned tables currently loaded
+- `overwrite_partition()` convenience method in Python bindings
+- `lazy` parameter on `ChiliEngine.eval()` — when `True`, DataFrame results are returned as `polars.LazyFrame`
+- `write_partitioned_df` now accepts `datetime.date` directly for the `date` parameter
+- Default arguments for `tick(index=0, inc=1)` and `get_tick_count(index=0)`
+- `test-py` task in Taskfile for running pytest on chili-py
+- Parse cache unit tests and log-rotation integration tests
+- Criterion benchmark for categorical eval in `chili-op`
+- Register `LOG_FN` in Python engine for logging support
+
+### Changed
+
+- Moved `prepare_file_writer` helper to `utils.rs`, shared between `open_handle` and `rotate_handle`
+- `LazyCell` → `LazyLock` for the regex style constant (thread-safe)
+- GIL released around `load_par_df`, `clear_par_df`, `add_at_time`, and `query_plan` in Python bindings
+- `eval()` in Rust binding simplified — lazy/eager normalization moved to the Python layer
+- Replaced `disconnect_handle` with `ConnType::Disconnected` flag on send errors to avoid killing subscriber handles
+- `signal_eod` refactored for robustness
+- Moved `logger.rs` from `chili-bin` to `chili-op`
+
+### Fixed
+
+- `upsert` / `insert` clippy lint fixes (unnecessary references)
+
 ## [0.8.2] - 2026-05-10
 
 ### Added

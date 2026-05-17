@@ -56,6 +56,17 @@ fn close_handle(
     state.close_handle(&handle_num)
 }
 
+fn rotate_handle(
+    state: &EngineState,
+    _stack: &mut Stack,
+    args: &[&SpicyObj],
+) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::Int, ArgType::Str])?;
+    let handle_num = args[0].to_i64()?;
+    let uri = args[1].str()?;
+    state.rotate_handle(&handle_num, uri)
+}
+
 fn exists_handle(
     state: &EngineState,
     _stack: &mut Stack,
@@ -83,12 +94,12 @@ fn upsert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyR
         match arg1 {
             SpicyObj::DataFrame(df1) => {
                 df.clone()
-                    .extend(&df1)
+                    .extend(df1)
                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                 Ok(SpicyObj::DataFrame(df))
             }
             SpicyObj::MixedList(list) => {
-                let df1 = convert_list_to_df(&list, &df)?;
+                let df1 = convert_list_to_df(list, &df)?;
                 df.extend(&df1)
                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                 Ok(SpicyObj::DataFrame(df))
@@ -118,12 +129,11 @@ fn insert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyR
         let mut df = arg0.df().unwrap().clone();
         let df = match value {
             SpicyObj::DataFrame(df1) => {
-                df.extend(&df1)
-                    .map_err(|e| SpicyError::Err(e.to_string()))?;
+                df.extend(df1).map_err(|e| SpicyError::Err(e.to_string()))?;
                 df
             }
             SpicyObj::MixedList(list) => {
-                let df1 = convert_list_to_df(&list, &df)?;
+                let df1 = convert_list_to_df(list, &df)?;
                 df.extend(&df1)
                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                 df
@@ -681,6 +691,15 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 1,
                 ".handle.exists",
                 &["handle_num"],
+            ),
+        ),
+        (
+            ".handle.rotate".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(rotate_handle)),
+                2,
+                ".handle.rotate",
+                &["handle_num", "uri"],
             ),
         ),
         (

@@ -238,6 +238,7 @@ impl Token {
     }
 
     // parse token
+    #[allow(clippy::type_complexity)]
     pub fn lexer<'a>() -> impl Parser<
         'a,
         &'a str,

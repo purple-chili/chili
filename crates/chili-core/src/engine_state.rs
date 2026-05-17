@@ -6,7 +6,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     net::{TcpListener, TcpStream},
     num::NonZeroUsize,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process,
     sync::{Arc, LazyLock},
     thread,
@@ -100,6 +100,7 @@ pub struct EngineState {
     /// distinct entries (the cached AST embeds source positions referencing
     /// the original source_id, which is preserved by NOT calling set_source
     /// on a cache hit).
+    #[allow(clippy::type_complexity)]
     parse_cache: Mutex<LruCache<(String, String), Arc<Vec<AstNode>>>>,
     user: String,
     lazy_mode: bool,
@@ -297,7 +298,7 @@ impl EngineState {
                     Ok(SpicyObj::I64(records.height() as i64))
                 }
                 SpicyObj::MixedList(list) => {
-                    let df1 = convert_list_to_df(&list, &df)?;
+                    let df1 = convert_list_to_df(list, df)?;
                     df.extend(&df1)
                         .map_err(|e| SpicyError::Err(e.to_string()))?;
                     Ok(SpicyObj::I64(df1.height() as i64))
@@ -349,7 +350,7 @@ impl EngineState {
                             df.clone()
                         }
                         SpicyObj::MixedList(list) => {
-                            let records = convert_list_to_df(&list, &df)?;
+                            let records = convert_list_to_df(list, df)?;
                             df.extend(&records)
                                 .map_err(|e| SpicyError::Err(e.to_string()))?;
                             df.clone()
@@ -553,7 +554,7 @@ impl EngineState {
                 count += 1;
             }
             pb_counter += 1;
-            if pb_counter % 100 == 0 {
+            if pb_counter.is_multiple_of(100) {
                 pb.inc(100);
             }
         }
@@ -563,6 +564,7 @@ impl EngineState {
         Ok(SpicyObj::I64(replayed_count as i64))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn replay_chili_msgs_log(
         &self,
         path: &str,
@@ -691,36 +693,9 @@ impl EngineState {
                 } else if schema == "chili" {
                     (IpcType::Chili, path, 9)
                 } else if schema == "file" {
-                    let mut file = fs::OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .create(true)
-                        .truncate(false)
-                        .open(path)
-                        .map_err(|e| SpicyError::Err(e.to_string()))?;
-                    let metadata = file
-                        .metadata()
-                        .map_err(|e| SpicyError::Err(e.to_string()))?;
-                    let conn_type = if metadata.len() == 0 {
-                        ConnType::New
-                    } else if metadata.len() < 8 {
-                        ConnType::File
-                    } else {
-                        let mut header = [0u8; 4];
-                        file.read_exact(&mut header).map_err(|e| {
-                            SpicyError::Err(format!("failed to read header, error: {}", e))
-                        })?;
-                        if [255, 0, 0, 0] == header {
-                            ConnType::Sequence
-                        } else {
-                            ConnType::File
-                        }
-                    };
-                    file.seek(SeekFrom::End(0)).map_err(|e| {
-                        SpicyError::Err(format!("failed to seek to end of file, error: {}", e))
-                    })?;
+                    let (rw, conn_type) = utils::prepare_file_writer(path)?;
                     let h = self.set_handle(
-                        Some(Box::new(file)),
+                        Some(rw),
                         &format!("file://{}", path),
                         &uri,
                         false,
@@ -774,6 +749,37 @@ impl EngineState {
         let mut handle = self.handle.write();
         handle.shift_remove(handle_num);
         Ok(SpicyObj::Null)
+    }
+
+    pub fn rotate_handle(&self, handle_num: &i64, uri: &str) -> SpicyResult<SpicyObj> {
+        match uri.split_once("://") {
+            Some(("file", path)) => {
+                let (rw, conn_type) = utils::prepare_file_writer(path)?;
+                if conn_type != ConnType::New {
+                    return Err(SpicyError::EvalErr(format!("file '{}' is not empty", path)));
+                }
+                let idx = *handle_num as usize;
+                if *handle_num < 0 || idx >= MAX_HANDLE_NUM {
+                    return Err(SpicyError::HandleOutOfRangeErr(*handle_num, MAX_HANDLE_NUM));
+                }
+                let mut tick_count = self.tick_count.write();
+                self.set_handle(
+                    Some(rw),
+                    &format!("file://{}", path),
+                    uri,
+                    false,
+                    IpcType::Chili,
+                    ConnType::New,
+                    *handle_num,
+                )?;
+                tick_count[idx] = 0;
+                Ok(SpicyObj::Null)
+            }
+            _ => Err(SpicyError::EvalErr(format!(
+                "invalid file uri format, expected 'file://path', got '{}'",
+                uri
+            ))),
+        }
     }
 
     pub fn exists_handle(&self, handle_num: &i64) -> SpicyResult<SpicyObj> {
@@ -944,7 +950,7 @@ impl EngineState {
                                 let v8 = serde6::serialize(msg)?;
                                 let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
                                 if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Sync) {
-                                    self.disconnect_handle(h)?;
+                                    *conn_type = ConnType::Disconnected;
                                     return Err(SpicyError::Err(e.to_string()));
                                 }
                                 // read response
@@ -967,7 +973,7 @@ impl EngineState {
                                 if let Err(e) =
                                     utils::write_chili_ipc_msg(rw, &v8, MessageType::Sync)
                                 {
-                                    self.disconnect_handle(h)?;
+                                    *conn_type = ConnType::Disconnected;
                                     return Err(SpicyError::Err(e.to_string()));
                                 }
                                 let mut header = [0u8; 16];
@@ -994,6 +1000,7 @@ impl EngineState {
                     match msg {
                         SpicyObj::Symbol(s) | SpicyObj::String(s) => {
                             writeln!(rw, "{}", s).map_err(|e| SpicyError::Err(e.to_string()))?;
+                            // s + '\n'
                             *conn_type = ConnType::File;
                             Ok(SpicyObj::I64(s.len() as i64))
                         }
@@ -1016,6 +1023,7 @@ impl EngineState {
                                 rw.write_all(&bytes)
                                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                             }
+                            // 8 (magic) + 8 (total_len) + 8 (timestamp) + payload
                             *conn_type = ConnType::Sequence;
                             Ok(SpicyObj::I64(total_len as i64))
                         }
@@ -1028,6 +1036,7 @@ impl EngineState {
                     match msg {
                         SpicyObj::Symbol(s) | SpicyObj::String(s) => {
                             writeln!(rw, "{}", s).map_err(|e| SpicyError::Err(e.to_string()))?;
+
                             Ok(SpicyObj::I64(s.len() as i64))
                         }
                         _ => Err(SpicyError::MismatchedTypeErr(
@@ -1054,6 +1063,7 @@ impl EngineState {
                                 rw.write_all(&bytes)
                                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                             }
+                            // 8 (total_len) + 8 (timestamp) + payload
                             *conn_type = ConnType::Sequence;
                             Ok(SpicyObj::I64(total_len as i64))
                         }
@@ -1140,21 +1150,45 @@ impl EngineState {
     }
 
     pub fn signal_eod(&self, args: &SpicyObj) -> SpicyResult<()> {
-        let handles: Vec<i64> = {
-            let handle = self.handle.read();
-            handle
-                .iter()
-                .filter(|(_, v)| v.conn_type == ConnType::Publishing)
-                .map(|(k, _)| *k)
-                .collect()
-        };
-        for h in handles {
-            if let Err(e) = self.sync(&h, args) {
-                warn!(
-                    "failed to signal EOD to handle {} - err {}, disconnecting...",
-                    h, e
-                );
-                self.disconnect_handle(&h)?;
+        // Sprint 17 — broadcast EOD via the same Async fire-and-forget
+        // path as `EngineState::publish` (the broker `upd` path).
+        //
+        // The previous implementation called `self.sync(&h, args)` which
+        // routed through `sync()`'s match on conn_type — and `sync()`'s
+        // match has no `Publishing` arm, so every `signal_eod` call
+        // returned `EvalErr("cannot sync for Publishing handle")` and
+        // immediately disconnected the subscriber, completely
+        // suppressing the EOD broadcast. Bug surfaced by mdata wishlist
+        // P1 + Sprint 17 Part A.2 acceptance test
+        // (`test_subscriber_eod_dispatch.py`).
+        //
+        // The fix: serialize the message once, then write it directly to
+        // each Publishing handle's TCP socket via
+        // `write_chili_ipc_msg(rw, &bytes, MessageType::Async)` — same
+        // contract as `state.publish`. The subscriber's
+        // `handle_chili_conn` loop reads it and dispatches via
+        // `state.eval` → `eval_op` → looks up the symbol head (`eod`)
+        // and invokes it as a function.
+        let bytes = serde9::serialize(args, false)?;
+        let mut handle = self.handle.write();
+        for (h, v) in handle.iter_mut() {
+            if v.conn_type != ConnType::Publishing {
+                continue;
+            }
+            match &mut v.rw {
+                Some(rw) => {
+                    if let Err(e) = utils::write_chili_ipc_msg(rw, &bytes, MessageType::Async) {
+                        warn!(
+                            "failed to signal EOD to handle {} - err {}, disconnecting...",
+                            h, e
+                        );
+                        v.conn_type = ConnType::Disconnected;
+                    }
+                }
+                None => {
+                    warn!("handle {} is disconnected (no rw), removing", h);
+                    v.conn_type = ConnType::Disconnected;
+                }
             }
         }
         Ok(())
@@ -1499,42 +1533,31 @@ impl EngineState {
     /// 2. Global `$CHIZPATH/.index`
     ///
     /// Returns the version string, or "latest" as a fallback.
-    pub fn resolve_package_version(
-        &self,
-        pkg_name: &str,
-        chiz_root: &PathBuf,
-    ) -> SpicyResult<String> {
+    pub fn resolve_package_version(&self, pkg_name: &str, chiz_root: &Path) -> SpicyResult<String> {
         // Try local chiz_index.json first
         let local_index_path = PathBuf::from("chiz_index.json");
-        if local_index_path.exists() {
-            if let Ok(content) = fs::read_to_string(&local_index_path) {
-                if let Ok(index) =
-                    serde_json::from_str::<HashMap<String, serde_json::Value>>(&content)
-                {
-                    if let Some(entry) = index.get(pkg_name) {
-                        if let Some(version) = entry["version"].as_str() {
-                            return Ok(version.to_string());
-                        }
-                    }
-                }
-            }
+        if local_index_path.exists()
+            && let Ok(content) = fs::read_to_string(&local_index_path)
+            && let Ok(index) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&content)
+            && let Some(entry) = index.get(pkg_name)
+            && let Some(version) = entry["version"].as_str()
+        {
+            return Ok(version.to_string());
         }
 
         // Try global index at $CHIZPATH/.index
         let global_index_path = chiz_root.join(".index");
-        if global_index_path.exists() {
-            if let Ok(content) = fs::read_to_string(&global_index_path) {
-                if let Ok(index) =
-                    serde_json::from_str::<HashMap<String, serde_json::Value>>(&content)
+        if global_index_path.exists()
+            && let Ok(content) = fs::read_to_string(&global_index_path)
+            && let Ok(index) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&content)
+        {
+            // Global index keys are "pkg-name@version"
+            for (key, value) in &index {
+                if key.starts_with(pkg_name)
+                    && key[pkg_name.len()..].starts_with('@')
+                    && let Some(version) = value["version"].as_str()
                 {
-                    // Global index keys are "pkg-name@version"
-                    for (key, value) in &index {
-                        if key.starts_with(pkg_name) && key[pkg_name.len()..].starts_with('@') {
-                            if let Some(version) = value["version"].as_str() {
-                                return Ok(version.to_string());
-                            }
-                        }
-                    }
+                    return Ok(version.to_string());
                 }
             }
         }
@@ -1599,6 +1622,10 @@ impl EngineState {
         let mut par_df = self.par_df.write();
         par_df.clear();
         Ok(())
+    }
+
+    pub fn par_df_count(&self) -> usize {
+        self.par_df.read().len()
     }
 
     pub fn load_par_df(&self, path: &str) -> SpicyResult<()> {
@@ -2106,8 +2133,8 @@ impl EngineState {
                 "path".into(),
                 self.par_df
                     .read()
-                    .iter()
-                    .map(|(_, p)| p.path.clone())
+                    .values()
+                    .map(|p| p.path.clone())
                     .collect::<Vec<String>>(),
             )),
         );

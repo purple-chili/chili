@@ -1,6 +1,6 @@
 """Python bindings for Chili's ``EngineState`` (Rust ``chili-core``)."""
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -35,8 +35,14 @@ class ChiliEngine:
         self.is_tick_loaded = False
         self.is_sub_loaded = False
         self.engine = EngineState(debug, lazy, pepper, job_interval, memory_limit)
+        self._hdb_path: Optional[str] = None
 
-    def eval(self, source: str, src_path: Optional[str] = None) -> Any:
+    def eval(
+        self,
+        source: str,
+        src_path: Optional[str] = None,
+        lazy: bool = False,
+    ) -> Any:
         """Evaluate a Chili or Pepper expression string.
 
         Args:
@@ -44,13 +50,20 @@ class ChiliEngine:
             src_path: Optional logical source path for error messages.
                       Defaults to ``"repl.pep"`` or ``"repl.chi"``
                       depending on the engine's syntax mode.
+            lazy: When False (default), DataFrame-shaped results are
+                  returned eagerly as ``polars.DataFrame``; when True,
+                  results are returned as ``polars.LazyFrame`` for
+                  further chained ops + ``.collect()``.
 
         Returns:
             The result of the evaluation, converted to a Python type.
         """
         if src_path is None:
             src_path = "repl.chi" if self.is_repl_use_chili_syntax() else "repl.pep"
-        return self.engine.eval(source, src_path)
+        res = self.engine.eval(source, src_path)
+        if lazy and isinstance(res, pl.DataFrame):
+            return res.lazy()
+        return res
 
     def get_var(self, id: str) -> Any:
         """Retrieve the value of a variable by name.
@@ -162,15 +175,16 @@ class ChiliEngine:
         """Return the current number of entries in the LRU parse cache."""
         return self.engine.parse_cache_len()
 
-    def get_tick_count(self, index: int) -> int:
-        """Return the current tick counter value."""
+    def get_tick_count(self, index: int = 0) -> int:
+        """Return the current tick counter value at *index* (default 0)."""
         return self.engine.get_tick_count(index)
 
-    def tick(self, index: int, inc: int) -> Any:
-        """Increment the tick counter.
+    def tick(self, index: int = 0, inc: int = 1) -> Any:
+        """Increment the tick counter at *index* by *inc*.
 
         Args:
-            inc: Amount to add to the counter.
+            index: Tick stream index (default 0).
+            inc: Amount to add to the counter (default 1).
 
         Returns:
             The updated tick count.
@@ -202,7 +216,7 @@ class ChiliEngine:
         df: pl.DataFrame,
         hdb_path: str,
         table: str,
-        date: str,
+        date: Any,
         sort_columns: Optional[list[str]] = None,
         rechunk: bool = False,
         overwrite: bool = False,
@@ -213,16 +227,47 @@ class ChiliEngine:
             df: The data to write.
             hdb_path: Root directory of the partitioned database.
             table: Table name (sub-directory under each date partition).
-            date: Partition date string (e.g. ``"2024.01.01"``).
+            date: Partition date — accepts ``datetime.date`` directly or
+                  a ``"YYYY.MM.DD"`` string.
             sort_columns: Optional columns to sort by before writing.
             rechunk: Re-chunk the data into a single contiguous allocation.
             overwrite: If ``True``, overwrite an existing partition.
+            compression: Optional Parquet compression codec name. One of
+                ``"snappy"`` (default if omitted), ``"zstd"``, ``"lz4_raw"``,
+                ``"uncompressed"``, ``"gzip"``, ``"brotli"``. Case-insensitive.
+                ``None`` preserves the default codec for byte-equivalence
+                with pre-Sprint-15 output (ADR 0005). Sprint 15 / 0.8.3.
+            row_group_size: Optional row group size override. ``None``
+                preserves chili's existing auto-sizing logic (auto-computed
+                clamp 1024..32768 when ``sort_columns`` is non-empty,
+                else polars default 262144). Sprint 15 / 0.8.3.
 
         Returns:
             The number of rows written.
         """
+        from datetime import date as _date_t
+        from datetime import datetime as _dt_t
+
+        if isinstance(date, str):
+            partition = _dt_t.strptime(date, "%Y.%m.%d").date()
+        elif isinstance(date, (_date_t, _dt_t)):
+            partition = date
+        else:
+            partition = date  # let the engine validate
+        sort_cols_arg: Any = pl.Series(
+            "sort_columns", sort_columns or [], dtype=pl.Categorical
+        )
         return self.fn_call(
-            "wpar", [df, hdb_path, table, date, sort_columns, rechunk, overwrite]
+            "wpar",
+            [
+                hdb_path,
+                partition,
+                table,
+                df,
+                sort_cols_arg,
+                rechunk,
+                overwrite,
+            ],
         )
 
     def load_partitioned_df(self, hdb_path: str) -> None:
@@ -234,10 +279,73 @@ class ChiliEngine:
             hdb_path: Root directory of the partitioned database.
         """
         self.fn_call("load", [hdb_path])
+        self._hdb_path = hdb_path
 
     def clear_partitioned_df(self) -> None:
         """Remove all loaded partitioned DataFrames from memory."""
         return self.engine.clear_par_df()
+
+    def table_count(self) -> int:
+        """Return the number of partitioned tables currently loaded."""
+        return self.engine.table_count()
+
+    def overwrite_partition(
+        self,
+        df: pl.DataFrame,
+        hdb_path: str,
+        table: str,
+        date: str,
+        sort_columns: Optional[list[str]] = None,
+        rechunk: bool = False,
+        *,
+        compression: Optional[str] = None,
+        row_group_size: Optional[int] = None,
+    ) -> int:
+        """Overwrite a date-partitioned table on disk with new data.
+
+        Deletes all existing shard files for the given date partition, then
+        writes ``df`` as the new content. Use this for replacing a partition
+        in place (e.g., bulk corrections, dedupe replays).
+
+        Distinct from ``write_partitioned_df(overwrite=True)`` only in
+        naming — preserves the API surface mdata depends on.
+
+        ``compression`` and ``row_group_size`` mirror
+        :meth:`write_partitioned_df` (Sprint 15 / ADR 0005).
+        """
+        return self.write_partitioned_df(
+            df,
+            hdb_path,
+            table,
+            date,
+            sort_columns,
+            rechunk,
+            overwrite=True,
+        )
+
+    def query_plan(self, query: str, hdb_path: Optional[str] = None) -> str:
+        """Return the polars query plan for *query* without executing it.
+
+        Internally spins up a temporary **pepper-syntax** lazy-mode engine,
+        loads the HDB, evaluates *query* to obtain a ``LazyFrame``, and
+        returns its ``describe_plan()`` string. The current engine state
+        is unaffected. **Pepper syntax only** — chili-syntax queries will
+        fail to parse here even if the calling engine is in chili mode;
+        this matches parked-claude's behavior.
+
+        Args:
+            query: A pepper-syntax query string (e.g.,
+                ``"select last close by sym from ohlcv_1d where date=..."``).
+            hdb_path: HDB root directory. Defaults to the most recently
+                loaded path on this engine (via ``load_partitioned_df``).
+        """
+        path = hdb_path if hdb_path is not None else self._hdb_path
+        if path is None:
+            raise RuntimeError(
+                "No HDB path provided and no prior load_partitioned_df() call. "
+                "Pass hdb_path= explicitly or call load_partitioned_df() first."
+            )
+        return self.engine.query_plan(query, path)
 
     def start_tcp_listener(
         self,
@@ -301,6 +409,45 @@ class ChiliEngine:
     def eod(self, date: date) -> None:
         self.fn_call(".tick.eod", [date])
 
+    def add_at_time(
+        self,
+        fn_name: str,
+        start_time: datetime,
+        description: str = "",
+    ) -> int:
+        """Schedule a pepper function to fire once at ``start_time``.
+
+        Thin wrapper over chili's ``.job.addAtTime`` registered builtin.
+        Backs mdata's PRD §3.2 Option A EOD timer path — replaces their
+        Python asyncio timer with a chili-scheduler-owned timer.
+
+        Parameters
+        ----------
+        fn_name : str
+            Name of a **nullary** pepper function in the engine's global
+            namespace (e.g., ``my_handler: {[] ...}``). The scheduler
+            invokes it as ``fn_name[]`` — passing args via the job spec
+            is not supported; use engine variables (``today[]``, ``now[]``,
+            or a pre-set global) inside the handler for time context.
+        start_time : datetime.datetime
+            When to fire. Must be timezone-aware; naive datetimes raise
+            ``TypeError``. Attach ``timezone.utc`` explicitly for UTC.
+        description : str, optional
+            Free-text label, returned by the job-list helpers.
+
+        Returns
+        -------
+        int
+            Job ID. Pass to :meth:`cancel_job` to revoke.
+
+        Notes
+        -----
+        The chili job scheduler must be running for the timer to fire.
+        Construct :class:`ChiliEngine` with ``job_interval > 0`` (in
+        milliseconds) to start the scheduler thread.
+        """
+        return self.engine.add_at_time(fn_name, start_time, description)
+
     # Subscriber functions
     def load_sub(self) -> None:
         if not self.is_sub_loaded:
@@ -314,9 +461,32 @@ class ChiliEngine:
         self.load_sub()
         self.fn_call(".sub.init", [tick_socket, topics or []])
 
-    def open_handle(self, socket: str) -> int:
-        return self.fn_call(".handle.open", [socket])
+    # Publisher functions (Sprint 17)
+    def publish_via_handle(self, h: int, table: str, df: pl.DataFrame) -> None:
+        """Publish a DataFrame to a remote tp via an open chili-IPC handle.
 
-    def sync(self, handle_num: int, query: str) -> Any:
-        self.fn_call("set", ["pyHandle", handle_num])
-        return self.eval("pyHandle", [query])
+        Thin one-shot wrapper — open the handle via
+        ``engine.open_handle("chili://host:port")``, cache it, call
+        ``publish_via_handle`` repeatedly, then close via
+        ``engine.close_handle``. Per Sprint 16 mdata-wishlist Q3
+        lock-in (Option B): chili owns the marshalling primitive;
+        callers (e.g. mdata's RemoteTpClient) own connection-manager
+        semantics on top.
+
+        Args:
+            h: Handle id from ``engine.open_handle("chili://...")``;
+                must still be ``Outgoing`` (not promoted to Subscribing).
+            table: Table name the remote tp will dispatch via ``.tick.upd``.
+            df: Rows to publish.
+
+        Raises:
+            RuntimeError: if ``df`` is not a DataFrame, ``h`` has no
+                live connection, or the handle is not ``Outgoing``.
+
+        Note:
+            ``sync()`` is a blocking send-and-receive on chili IPC;
+            this method does not return until the remote tp has
+            answered. The GIL is released around the network round-trip
+            so concurrent Python publishers don't serialize on it.
+        """
+        self.engine.publish_via_handle(h, table, df)

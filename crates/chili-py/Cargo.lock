@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "chili-core"
-version = "0.8.3"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -371,7 +371,7 @@ dependencies = [
  "rayon",
  "regex",
  "serde_json",
- "sysinfo 0.39.1",
+ "sysinfo",
  "thiserror 2.0.18",
  "unicode-width",
  "whoami",
@@ -379,13 +379,14 @@ dependencies = [
 
 [[package]]
 name = "chili-op"
-version = "0.8.3"
+version = "0.8.2"
 dependencies = [
  "chili-core",
  "chrono",
  "chrono-tz",
  "glob",
  "indexmap",
+ "log",
  "ndarray",
  "num",
  "polars",
@@ -395,12 +396,12 @@ dependencies = [
  "polars-ops",
  "rand 0.10.1",
  "regex",
- "sysinfo 0.38.4",
+ "sysinfo",
 ]
 
 [[package]]
 name = "chili-parser"
-version = "0.8.3"
+version = "0.8.2"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -409,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "chili-py"
-version = "0.8.3"
+version = "0.8.2"
 dependencies = [
  "chili-core",
  "chili-op",
@@ -3385,20 +3386,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "sysinfo"
-version = "0.38.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ab6a2f8bfe508deb3c6406578252e491d299cbbf3bc0529ecc3313aee4a52f"
-dependencies = [
- "libc",
- "memchr",
- "ntapi",
- "objc2-core-foundation",
- "objc2-io-kit",
- "windows",
 ]
 
 [[package]]

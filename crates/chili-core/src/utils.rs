@@ -1,9 +1,8 @@
 use std::{
-    cell::LazyCell,
     env,
     io::{Read, Write},
     net::TcpStream,
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -12,7 +11,44 @@ use log::{debug, error, info};
 use polars::{frame::DataFrame, prelude::IntoColumn, series::Series};
 use regex::Regex;
 
-use crate::{EngineState, Stack, engine_state::ReadWrite, serde6, serde9};
+use crate::{ConnType, EngineState, Stack, engine_state::ReadWrite, serde6, serde9};
+
+/// Open a `file://` path for writing: open (read+write+create, no truncate),
+/// detect `ConnType` from existing content (`New`/`File`/`Sequence`),
+/// then seek to EOF so subsequent writes append.
+pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType), SpicyError> {
+    use std::fs;
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| SpicyError::Err(e.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| SpicyError::Err(e.to_string()))?;
+    let conn_type = if metadata.len() == 0 {
+        ConnType::New
+    } else if metadata.len() < 8 {
+        ConnType::File
+    } else {
+        let mut header = [0u8; 4];
+        file.read_exact(&mut header)
+            .map_err(|e| SpicyError::Err(format!("failed to read header, error: {}", e)))?;
+        if [255, 0, 0, 0] == header {
+            ConnType::Sequence
+        } else {
+            ConnType::File
+        }
+    };
+    file.seek(SeekFrom::End(0))
+        .map_err(|e| SpicyError::Err(format!("failed to seek to end of file, error: {}", e)))?;
+    let rw: Box<dyn ReadWrite> = Box::new(file);
+    Ok((rw, conn_type))
+}
 
 pub fn unpack_socket(socket: &str) -> Result<(String, String, String, String), SpicyError> {
     let sockets = socket.splitn(4, ":").collect::<Vec<&str>>();
@@ -196,7 +232,7 @@ pub fn write_chili_ipc_msg(
     Ok(())
 }
 
-const RE_STYLE: LazyCell<Regex> = LazyCell::new(|| Regex::new(r"\x1B\[[0-9;]*m").unwrap());
+static RE_STYLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1B\[[0-9;]*m").unwrap());
 
 pub fn handle_q_conn(
     rw: &mut dyn ReadWrite,

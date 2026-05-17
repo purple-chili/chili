@@ -160,7 +160,7 @@ pub fn trace(source: &str, path: &str, pos: usize, msg: &str) -> String {
     }
     let c = display_col + 1;
     let end = source[pos..]
-        .find(|c: char| c == '\n' || c == '\r')
+        .find(['\n', '\r'])
         .map_or(source.len(), |i| pos + i);
     let line = &source[start..end];
     let underline = " ".repeat(display_col) + "^";

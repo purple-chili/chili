@@ -1,3 +1,11 @@
+// f32 literals in this file intentionally carry the full bit-precision of the
+// f32 value produced by the operator under test (e.g. `e + h` → exact bit
+// pattern of the f32 result). Truncating to clippy's "minimal-precision" form
+// would still pass (bit-equivalent) but would mask the corner-case signal —
+// the literals serve as documentation that the result is an imprecise f32,
+// not a clean rounded number.
+#![allow(clippy::excessive_precision)]
+
 use chili_core::SpicyObj;
 use chili_op::operator;
 use indexmap::IndexMap;
@@ -410,7 +418,7 @@ fn minus() {
         }
     }
 
-    for args in vec![vec![&c, &sd], vec![&c, &sz], vec![&c, &sp], vec![&sh, &sd]].iter() {
+    for args in [vec![&c, &sd], vec![&c, &sz], vec![&c, &sp], vec![&sh, &sd]].iter() {
         assert!(operator::minus(args).is_err(), "error case - {:?}", args)
     }
 }

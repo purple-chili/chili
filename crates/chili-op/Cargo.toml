@@ -76,7 +76,8 @@ regex = "1.11"
 ndarray-linalg = { version = "0.18", optional = true }
 chili-core = { path = "../chili-core" }
 num = "0.4"
-sysinfo = "0.38.2"
+sysinfo = "0.39"
+log = "0.4"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }

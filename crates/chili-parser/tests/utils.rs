@@ -18,7 +18,7 @@ pub fn assert_eq_chili_expr(src: &str, expected: Vec<&str>) {
         )
         .into_output_errors();
 
-    if errs.len() > 0 {
+    if !errs.is_empty() {
         print_errs(errs, "repl", src);
     }
 
@@ -41,15 +41,15 @@ pub fn should_fail_chili_expr(src: &str, msg: &str) {
         )
         .into_output_errors();
 
-    let has_err = errs.len() > 0;
+    let has_err = !errs.is_empty();
 
-    if errs.len() > 0 {
+    if !errs.is_empty() {
         print_errs(errs, "repl", src);
     }
 
-    if program.is_some() {
+    if let Some(p) = program {
         println!("Program:");
-        for stmt in program.unwrap().pretty_print(2) {
+        for stmt in p.pretty_print(2) {
             println!("{}", stmt);
         }
     }
@@ -73,7 +73,7 @@ pub fn assert_eq_pepper_expr(src: &str, expected: Vec<&str>) {
         )
         .into_output_errors();
 
-    if errs.len() > 0 {
+    if !errs.is_empty() {
         print_errs(errs, "repl", src);
     }
 
@@ -96,15 +96,15 @@ pub fn should_fail_pepper_expr(src: &str, msg: &str) {
         )
         .into_output_errors();
 
-    let has_err = errs.len() > 0;
+    let has_err = !errs.is_empty();
 
-    if errs.len() > 0 {
+    if !errs.is_empty() {
         print_errs(errs, "repl", src);
     }
 
-    if program.is_some() {
+    if let Some(p) = program {
         println!("Program:");
-        for stmt in program.unwrap().pretty_print(2) {
+        for stmt in p.pretty_print(2) {
             println!("{}", stmt);
         }
     }
@@ -114,12 +114,10 @@ pub fn should_fail_pepper_expr(src: &str, msg: &str) {
 
 #[track_caller]
 pub fn assert_eq_tokens(src: &str, src_path: &str, expected: Vec<&str>, include_punc: bool) {
-    let (tokens, errs) = chili_parser::Token::lexer()
-        .parse(&src)
-        .into_output_errors();
+    let (tokens, errs) = chili_parser::Token::lexer().parse(src).into_output_errors();
 
-    if errs.len() > 0 {
-        print_errs(errs, src_path, &src);
+    if !errs.is_empty() {
+        print_errs(errs, src_path, src);
     }
 
     let tokens = tokens

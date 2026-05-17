@@ -309,7 +309,7 @@ pub fn write_partition(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let rechunk = *args[5].bool().unwrap();
     let overwrite = *args[6].bool().unwrap();
     write_partition_native(
-        hdb_path, partition, table_name, &df, &columns, rechunk, overwrite,
+        hdb_path, partition, table_name, df, &columns, rechunk, overwrite,
     )
 }
 
@@ -345,7 +345,7 @@ pub fn write_partition_native(
     let row_group_size: Option<usize> = if !sort_columns.is_empty() {
         let n_rows = df.height();
         // Target ~16 row groups, with floor 1024 and ceiling 32768
-        let target = (n_rows / 16).max(1024).min(32768);
+        let target = (n_rows / 16).clamp(1024, 32768);
         Some(target)
     } else {
         None

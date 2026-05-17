@@ -740,7 +740,7 @@ pub fn dict(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             return Ok(SpicyObj::Dict(m));
         }
         let values = values.as_vec()?;
-        for (key, value) in keys.into_iter().zip(values.into_iter()) {
+        for (key, value) in keys.into_iter().zip(values) {
             m.insert(key.to_owned(), value);
         }
         Ok(SpicyObj::Dict(m))
@@ -2409,11 +2409,9 @@ pub fn apply(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let mut i_iter = indices.iter();
     let mut res = chili_core::at(&[arg0, i_iter.next().unwrap()])
         .map_err(|e| SpicyError::Err(format!("Failed to apply first index, '{}'", e)))?;
-    let mut i: usize = 2;
-    for idx in i_iter {
+    for (i, idx) in (2usize..).zip(i_iter) {
         res = chili_core::at(&[&res, idx])
             .map_err(|e| SpicyError::Err(format!("Failed to apply {} index, '{}'", i, e)))?;
-        i += 1;
     }
     Ok(res)
 }

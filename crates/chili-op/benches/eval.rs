@@ -1,11 +1,11 @@
-//! B7, B8 — Eval-path hot path benchmarks.
+//! Eval-path hot path benchmarks.
 //!
-//! - B7 `query_groupby_agg`: group-by + aggregation (tests filter fusion, with_capacity, collect_schema shortcut)
-//! - B8 `query_select_star`: raw select * to measure IPC + eval overhead unrelated to polars compute
-//! - B12 `query_select_one_col`, `query_select_three_cols`, `query_select_all_wide`:
-//!   projection benches against a 10-column wide-schema fixture mirroring mdata's
-//!   ohlcv shape. The pre/post diff between `select close` and `select *` measures
-//!   whether projection pushdown is doing anything for chili's query path.
+//! - `query_groupby_agg`: group-by + aggregation query.
+//! - `query_select_star`: raw `select *` to measure eval overhead unrelated to polars compute.
+//! - `query_select_one_col`, `query_select_three_cols`, `query_select_all_wide`:
+//!   projection benchmarks against a 10-column wide-schema fixture. The diff
+//!   between `select close` and `select *` measures whether projection pushdown
+//!   is effective in chili's query path.
 
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ use common::{TempHdb, build_hdb, build_wide_hdb, make_engine};
 fn eval(engine: &EngineState, query: &str) {
     let mut stack = Stack::new(None, 0, 0, "");
     let obj = engine
-        .eval(&mut stack, &SpicyObj::String(query.to_owned()), "bench.chi")
+        .eval(&mut stack, &SpicyObj::String(query.to_owned()), "bench.pep")
         .unwrap();
     black_box(obj);
 }

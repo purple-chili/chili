@@ -1,10 +1,8 @@
 """Tests for :class:`chili.engine.ChiliEngine`."""
 
-import pytest
 import polars as pl
-
+import pytest
 from chili import ChiliEngine
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -81,6 +79,54 @@ class TestEval:
     def test_eval_error_raises(self, engine: ChiliEngine):
         with pytest.raises(Exception):
             engine.eval("undefined_var_xyz")
+
+
+class TestEvalLazy:
+    """Opt-in lazy parameter on engine.eval.
+
+    Default `lazy=False` returns DataFrame; `lazy=True` returns LazyFrame.
+    """
+
+    def test_default_eval_returns_dataframe(self, pepper_engine: ChiliEngine):
+        out = pepper_engine.eval("([] x:1 2 3; y:4 5 6)")
+        assert isinstance(out, pl.DataFrame)
+        assert out.shape == (3, 2)
+
+    def test_eval_lazy_false_returns_dataframe(self, pepper_engine: ChiliEngine):
+        out = pepper_engine.eval("([] x:1 2 3; y:4 5 6)", lazy=False)
+        assert isinstance(out, pl.DataFrame)
+
+    def test_eval_lazy_true_returns_lazyframe(self, pepper_engine: ChiliEngine):
+        out = pepper_engine.eval("([] x:1 2 3; y:4 5 6)", lazy=True)
+        assert isinstance(out, pl.LazyFrame)
+
+    def test_eval_lazy_true_collect_round_trips_data(self, pepper_engine: ChiliEngine):
+        eager = pepper_engine.eval("([] x:1 2 3; y:4 5 6)")
+        lazy = pepper_engine.eval("([] x:1 2 3; y:4 5 6)", lazy=True)
+        collected = lazy.collect()
+        assert collected.shape == eager.shape
+        assert collected["x"].to_list() == eager["x"].to_list()
+        assert collected["y"].to_list() == eager["y"].to_list()
+
+    def test_eval_lazy_true_chains_filter(self, pepper_engine: ChiliEngine):
+        # Chained lazy op + collect executes without error and produces the
+        # filtered data correctly. Predicate pushdown is now in effect across
+        # the FFI boundary because Rust + Python polars share the same DSL.
+        out = (
+            pepper_engine.eval("([] x:1 2 3 4 5)", lazy=True)
+            .filter(pl.col("x") > 2)
+            .collect()
+        )
+        assert out["x"].to_list() == [3, 4, 5]
+
+    def test_eval_lazy_default_on_lazy_engine_still_lazy(
+        self, lazy_engine: ChiliEngine
+    ):
+        # When the engine is constructed lazy=True, default eval (lazy=False
+        # at the FFI boundary) collects the engine-internal LazyFrame to a
+        # DataFrame before returning. Explicit lazy=True keeps it lazy.
+        assert isinstance(lazy_engine.eval("([] x:1 2 3)"), pl.DataFrame)
+        assert isinstance(lazy_engine.eval("([] x:1 2 3)", lazy=True), pl.LazyFrame)
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +247,12 @@ class TestTick:
         engine.tick(0, 7)
         assert engine.get_tick_count(0) == 10
 
+    def test_get_tick_count_no_arg_defaults_to_index_zero(self, engine: ChiliEngine):
+        # engine.get_tick_count() (no arg) defaults to index=0. Pin that.
+        assert engine.get_tick_count() == 0
+        engine.tick()  # default index=0, inc=1
+        assert engine.get_tick_count() == 1
+
 
 # ---------------------------------------------------------------------------
 # Parse cache
@@ -313,3 +365,103 @@ class TestTcpListener:
             result = s.connect_ex(("127.0.0.1", port))
             assert result == 0, f"Nothing listening on port {port}"
         e.shutdown()
+
+
+class TestLogBuiltins:
+    """`.log.{info,warn,debug,error}` are registered via chili_op::LOG_FN."""
+
+    def test_log_info_returns_null(self, engine: ChiliEngine):
+        assert engine.eval('.log.info("hello")') is None
+
+    def test_log_warn_returns_null(self, engine: ChiliEngine):
+        assert engine.eval('.log.warn("warn-msg")') is None
+
+    def test_log_debug_returns_null(self, engine: ChiliEngine):
+        assert engine.eval('.log.debug("debug-msg")') is None
+
+    def test_log_error_returns_null(self, engine: ChiliEngine):
+        assert engine.eval('.log.error("error-msg")') is None
+
+
+class TestTableCount:
+    def test_table_count_zero_on_fresh_engine(self, engine: ChiliEngine):
+        assert engine.table_count() == 0
+
+
+@pytest.fixture()
+def tmp_hdb(tmp_path):
+    """Build a small HDB on disk: ohlcv_1d / 2024.01.01 with two rows."""
+    hdb_dir = tmp_path / "hdb"
+    hdb_dir.mkdir()
+    df = pl.DataFrame(
+        {
+            "sym": ["AAPL", "MSFT"],
+            "close": [19000, 38000],
+        }
+    )
+    e = ChiliEngine()
+    hdb = str(hdb_dir)
+    e.write_partitioned_df(df, hdb, "ohlcv_1d", "2024.01.01")
+    e.shutdown()
+    return hdb
+
+
+class TestOverwritePartition:
+    def test_overwrite_returns_positive(self, engine: ChiliEngine, tmp_hdb):
+        new_df = pl.DataFrame({"sym": ["AAPL"], "close": [20000]})
+        result = engine.overwrite_partition(new_df, tmp_hdb, "ohlcv_1d", "2024.01.01")
+        # wpar returns bytes-written or row-count depending on shard layout;
+        # the contract here is "did not error" + "returned a non-zero int."
+        assert isinstance(result, int)
+        assert result > 0
+
+    def test_overwrite_partition_with_zstd(
+        self, engine: ChiliEngine, tmp_hdb, tmp_path
+    ):
+        # overwrite_partition with explicit compression codec.
+        # Mirror coverage for asymmetry regression.
+        new_df = pl.DataFrame({"sym": ["AAPL", "MSFT"], "close": [21000, 39000]})
+        result = engine.overwrite_partition(
+            new_df,
+            tmp_hdb,
+            "ohlcv_1d",
+            "2024.01.01",
+            compression="zstd",
+        )
+        assert isinstance(result, int) and result > 0
+        # Read back through polars; chili's read path is codec-agnostic.
+        shard = sorted(__import__("glob").glob(f"{tmp_hdb}/ohlcv_1d/2024.01.01_*"))[0]
+        round_trip = pl.read_parquet(shard)
+        assert round_trip["sym"].to_list() == ["AAPL", "MSFT"]
+        assert round_trip["close"].to_list() == [21000, 39000]
+
+
+class TestQueryPlan:
+    def test_query_plan_returns_string(self, tmp_hdb):
+        # query_plan internally creates a temp pepper-syntax engine; the
+        # caller-visible engine just needs an HDB path passed.
+        e = ChiliEngine(pepper=True)
+        try:
+            plan = e.query_plan(
+                "select last close by sym from ohlcv_1d where date=2024.01.01", tmp_hdb
+            )
+            assert isinstance(plan, str)
+            assert len(plan) > 0
+        finally:
+            e.shutdown()
+
+    def test_query_plan_uses_cached_hdb_path(self, tmp_hdb):
+        e = ChiliEngine(pepper=True)
+        try:
+            e.load_partitioned_df(tmp_hdb)
+            plan = e.query_plan(
+                "select last close by sym from ohlcv_1d where date=2024.01.01"
+            )
+            assert isinstance(plan, str)
+            assert len(plan) > 0
+        finally:
+            e.shutdown()
+
+    def test_query_plan_raises_without_hdb(self, engine: ChiliEngine):
+        with pytest.raises(RuntimeError, match="No HDB path provided"):
+            engine.query_plan("select * from ohlcv_1d")

@@ -238,6 +238,7 @@ pub fn eval_query(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn eval_fn_query(
     mut lf: LazyFrame,
     query_op: &QueryOp,
