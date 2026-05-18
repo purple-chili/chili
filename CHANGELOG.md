@@ -9,9 +9,7 @@ All notable changes to this project will be documented in this file.
 - `rotate_handle(handle_num, uri)` built-in (`.handle.rotate`) — swap a file handle's writer to a new `file://` path and reset its tick counter, enabling log rotation without closing/reopening handles
 - `query_plan(query, hdb_path)` in Python bindings — returns the Polars logical plan string for a query without executing it, useful for query-tuning workflows
 - `add_at_time(fn_name, start_time, description)` in Python bindings — schedule a pepper function to fire once at a given time on the chili job scheduler thread
-- `publish_via_handle(h, table, df)` in Python bindings — publish a DataFrame to a remote tp via an open chili-IPC handle
 - `table_count()` in Python bindings — return the number of partitioned tables currently loaded
-- `overwrite_partition()` convenience method in Python bindings
 - `lazy` parameter on `ChiliEngine.eval()` — when `True`, DataFrame results are returned as `polars.LazyFrame`
 - `write_partitioned_df` now accepts `datetime.date` directly for the `date` parameter
 - Default arguments for `tick(index=0, inc=1)` and `get_tick_count(index=0)`

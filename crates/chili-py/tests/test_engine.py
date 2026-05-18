@@ -409,7 +409,9 @@ def tmp_hdb(tmp_path):
 class TestOverwritePartition:
     def test_overwrite_returns_positive(self, engine: ChiliEngine, tmp_hdb):
         new_df = pl.DataFrame({"sym": ["AAPL"], "close": [20000]})
-        result = engine.overwrite_partition(new_df, tmp_hdb, "ohlcv_1d", "2024.01.01")
+        result = engine.write_partitioned_df(
+            new_df, tmp_hdb, "ohlcv_1d", "2024.01.01", overwrite=True
+        )
         # wpar returns bytes-written or row-count depending on shard layout;
         # the contract here is "did not error" + "returned a non-zero int."
         assert isinstance(result, int)
@@ -418,15 +420,10 @@ class TestOverwritePartition:
     def test_overwrite_partition_with_zstd(
         self, engine: ChiliEngine, tmp_hdb, tmp_path
     ):
-        # overwrite_partition with explicit compression codec.
         # Mirror coverage for asymmetry regression.
         new_df = pl.DataFrame({"sym": ["AAPL", "MSFT"], "close": [21000, 39000]})
-        result = engine.overwrite_partition(
-            new_df,
-            tmp_hdb,
-            "ohlcv_1d",
-            "2024.01.01",
-            compression="zstd",
+        result = engine.write_partitioned_df(
+            new_df, tmp_hdb, "ohlcv_1d", "2024.01.01", overwrite=True
         )
         assert isinstance(result, int) and result > 0
         # Read back through polars; chili's read path is codec-agnostic.
