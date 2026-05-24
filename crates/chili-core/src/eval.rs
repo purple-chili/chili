@@ -462,7 +462,7 @@ pub fn eval_op(
     let args = &list[1..].iter().collect();
     match &f {
         SpicyObj::Fn(func) => eval_call(state, stack, &f, args, &Some(func.pos.clone()), ""),
-        SpicyObj::I64(h) => state.sync(h, arg0),
+        SpicyObj::I64(h) => state.execute(h, arg0),
         _ => Err(SpicyError::EvalErr(format!(
             "Not able to eval a list with first item '{}'",
             f
@@ -649,7 +649,7 @@ pub fn eval_call(
                 )))
             }
         }
-        SpicyObj::I64(h) => state.sync(h, args[0]),
+        SpicyObj::I64(h) => state.execute(h, args[0]),
         SpicyObj::MixedList(list) => {
             if args.len() == 1 {
                 let arg0 = args[0];

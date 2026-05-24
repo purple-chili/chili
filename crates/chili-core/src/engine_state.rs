@@ -1083,6 +1083,63 @@ impl EngineState {
         }
     }
 
+    pub fn async_(&self, h: &i64, msg: &SpicyObj) -> SpicyResult<SpicyObj> {
+        let mut handle = self.handle.write();
+        match handle.get_mut(h) {
+            Some(Handle {
+                rw: Some(rw),
+                is_local,
+                ipc_type,
+                conn_type,
+                ..
+            }) => {
+                if *conn_type == ConnType::Outgoing {
+                    match msg {
+                        SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
+                            if *ipc_type == IpcType::Q {
+                                let v8 = serde6::serialize(msg)?;
+                                let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
+                                if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Async)
+                                {
+                                    *conn_type = ConnType::Disconnected;
+                                    return Err(SpicyError::Err(e.to_string()));
+                                }
+                                return Ok(SpicyObj::Null);
+                            } else {
+                                let v8 = serde9::serialize(msg, !*is_local)?;
+                                if let Err(e) =
+                                    utils::write_chili_ipc_msg(rw, &v8, MessageType::Async)
+                                {
+                                    *conn_type = ConnType::Disconnected;
+                                    return Err(SpicyError::Err(e.to_string()));
+                                }
+                                return Ok(SpicyObj::Null);
+                            }
+                        }
+                        _ => Err(SpicyError::MismatchedTypeErr(
+                            "sym|str|mixedList".to_owned(),
+                            msg.get_type_name(),
+                        )),
+                    }
+                } else {
+                    Err(SpicyError::EvalErr(format!(
+                        "cannot async for {:?} handle",
+                        conn_type
+                    )))
+                }
+            }
+            _ => Err(SpicyError::InvalidHandleErr(*h)),
+        }
+    }
+
+    pub fn execute(&self, h: &i64, msg: &SpicyObj) -> SpicyResult<SpicyObj> {
+        if *h > 0 {
+            self.sync(h, msg)
+        } else {
+            self.async_(&-h, msg)
+        }
+    }
+
     pub fn add_subscriber(&self, topic: &str, h: i64) -> SpicyResult<()> {
         let mut topic_map = self.topic_map.write();
         topic_map.entry(topic.to_owned()).or_insert(vec![]).push(h);

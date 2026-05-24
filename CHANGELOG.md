@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2026-05-24
+
+### Added
+
+- `async_` and `execute` on `EngineState` — positive handle numbers use sync IPC/file writes; negative handle numbers send async IPC without waiting for a response
+- String literals in `eval_op` / `eval_call` are parsed and evaluated as Chili/Pepper query source (inline `eval_str` behavior)
+- `py.typed` marker in `chili-py` for PEP 561 type checkers
+
+### Changed
+
+- Handle sends in eval route through `execute` instead of always calling `sync`
+- TCP incoming listener logs and drops bad connections instead of panicking on accept, auth, or handle setup failures
+
+### Fixed
+
+- `sync` no longer deadlocks when marking a handle disconnected after a failed write (sets `ConnType::Disconnected` inline instead of re-acquiring the handle lock)
+
 ## [0.8.2] - 2026-05-24
 
 ### Added
