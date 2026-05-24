@@ -421,17 +421,28 @@ pub fn eval_op(
     stack: &mut Stack,
     args: &[&SpicyObj],
 ) -> SpicyResult<SpicyObj> {
-    // args contains only 1 item, which is a mixed list, symbol, or string
+    // args contains only 1 item, which is a mixed list, symbol, or string query
     let arg0 = args[0];
     let list = match arg0 {
         SpicyObj::MixedList(list) => list,
-        SpicyObj::Symbol(s) | SpicyObj::String(s) => {
+        SpicyObj::Symbol(s) => {
             let any = stack.get_var(s);
             if any.is_ok() {
                 return any;
             } else {
                 return state.get_var(s);
             }
+        }
+        SpicyObj::String(s) => {
+            let ast = state
+                .parse("", s)
+                .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
+            let src_path = if state.is_repl_use_chili_syntax() {
+                format!("eval_{}.chi", std::process::id())
+            } else {
+                format!("eval_{}.pep", std::process::id())
+            };
+            return state.eval_ast(ast, &src_path, s);
         }
         _ => return Err(SpicyError::EvalErr(format!("Not able to eval '{}'", arg0))),
     };

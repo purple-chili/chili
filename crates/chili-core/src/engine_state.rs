@@ -2072,7 +2072,10 @@ impl EngineState {
                 if version < 3 {
                     error!(
                         "{} with version {} is not supported",
-                        stream.peer_addr().unwrap(),
+                        stream
+                            .peer_addr()
+                            .map(|a| a.to_string())
+                            .unwrap_or_else(|_| "<unknown>".into()),
                         version
                     );
                     default_auth.version = version;
@@ -2080,7 +2083,10 @@ impl EngineState {
                 } else {
                     info!(
                         "{} with version {} connected",
-                        stream.peer_addr().unwrap(),
+                        stream
+                            .peer_addr()
+                            .map(|a| a.to_string())
+                            .unwrap_or_else(|_| "<unknown>".into()),
                         version
                     );
                 }
@@ -2106,7 +2112,7 @@ impl EngineState {
             }
             Err(e) => {
                 error!("error reading auth credentials: {}", e);
-                stream.shutdown(std::net::Shutdown::Both).unwrap();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
                 default_auth
             }
         }
@@ -2166,50 +2172,110 @@ impl EngineState {
 
         for stream in listener.incoming() {
             let state_tcp = Arc::clone(self);
-            let mut stream = stream.unwrap();
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(e) => {
+                    info!("accept failed, skipping: {}", e);
+                    continue;
+                }
+            };
             let auth_info = state_tcp.validate_auth_token(&mut stream, &users);
             if !auth_info.is_authenticated {
                 info!(
                     "{}@{} failed to authenticate, disconnecting...",
                     auth_info.username,
-                    stream.peer_addr().unwrap()
+                    stream
+                        .peer_addr()
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|_| "<unknown>".into())
                 );
-                stream.shutdown(std::net::Shutdown::Both).unwrap();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
                 continue;
             }
             info!(
                 "{}@{} connected",
                 auth_info.username,
-                stream.peer_addr().unwrap()
+                stream
+                    .peer_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|_| "<unknown>".into())
             );
-            if auth_info.version <= 6 {
-                stream.write_all(&[6]).unwrap();
-            } else {
-                stream.write_all(&[9]).unwrap();
+            let version_byte = if auth_info.version <= 6 { 6u8 } else { 9u8 };
+            if let Err(e) = stream.write_all(&[version_byte]) {
+                info!("version-byte write failed, dropping connection: {}", e);
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                continue;
             }
             // if not set, small package will be pending for 40ms
-            stream.set_nodelay(true).unwrap();
-            let peer_addr = stream.peer_addr().unwrap().to_string();
-            let ipc_type = IpcType::from_u8(auth_info.version)
-                .unwrap_or_else(|| panic!("unsupported ipc version: {}", auth_info.version));
-            let h = state_tcp
-                .set_handle(
-                    Some(Box::new(stream.try_clone().unwrap())),
-                    &peer_addr,
-                    &format!("{}://{}", ipc_type, peer_addr,),
-                    false,
-                    ipc_type,
-                    ConnType::Incoming,
-                    0,
-                )
-                .unwrap();
+            if let Err(e) = stream.set_nodelay(true) {
+                // Non-fatal — connection still usable, just slower.
+                info!("set_nodelay failed (continuing): {}", e);
+            }
+            let peer_addr = match stream.peer_addr() {
+                Ok(a) => a.to_string(),
+                Err(e) => {
+                    info!("peer_addr failed, dropping connection: {}", e);
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+            };
+            let ipc_type = match IpcType::from_u8(auth_info.version) {
+                Some(t) => t,
+                None => {
+                    // Defensive — validate_auth_token already gates `version < 3`,
+                    // so reaching here means the caller passed a value outside
+                    // the IpcType enum range. Log and drop rather than abort
+                    // the listener (Sprint 22 MC-1).
+                    info!(
+                        "unsupported ipc version {}, dropping connection from {}",
+                        auth_info.version, peer_addr
+                    );
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+            };
+            let cloned_stream = match stream.try_clone() {
+                Ok(s) => s,
+                Err(e) => {
+                    info!("stream try_clone failed, dropping connection: {}", e);
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+            };
+            let h = match state_tcp.set_handle(
+                Some(Box::new(cloned_stream)),
+                &peer_addr,
+                &format!("{}://{}", ipc_type, peer_addr,),
+                false,
+                ipc_type,
+                ConnType::Incoming,
+                0,
+            ) {
+                Ok(h) => h,
+                Err(e) => {
+                    info!("set_handle failed, dropping connection: {}", e);
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+            };
+            let h_i64 = match h.to_i64() {
+                Ok(i) => i,
+                Err(e) => {
+                    // set_handle returns a SpicyObj::I64 by contract; if this
+                    // ever fails it's a logic bug, not a network error. Log
+                    // and drop the connection rather than panicking the listener.
+                    info!("handle slot returned non-i64 (logic bug): {}", e);
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+            };
             if auth_info.version <= 6 {
                 let mut stream = Box::new(stream);
                 thread::spawn(move || {
                     utils::handle_q_conn(
                         &mut stream,
                         peer_addr.starts_with("127.0.0.1"),
-                        h.to_i64().unwrap(),
+                        h_i64,
                         state_tcp,
                         &auth_info.username,
                     )
@@ -2219,7 +2285,7 @@ impl EngineState {
                     utils::handle_chili_conn(
                         &mut stream,
                         peer_addr.starts_with("127.0.0.1"),
-                        h.to_i64().unwrap(),
+                        h_i64,
                         state_tcp,
                         &auth_info.username,
                     )
