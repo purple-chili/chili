@@ -12,3 +12,4 @@ readme = "README.md"
 [tool.maturin]
 module-name = "chili.engine_state"
 python-source = "."
+include = ["chili/py.typed"]
