@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.8.3] - 2026-05-17
+## [0.8.2] - 2026-05-24
 
 ### Added
 
@@ -17,6 +17,10 @@ All notable changes to this project will be documented in this file.
 - Parse cache unit tests and log-rotation integration tests
 - Criterion benchmark for categorical eval in `chili-op`
 - Register `LOG_FN` in Python engine for logging support
+- Package import support in `import` — paths starting with `@` or alphabetic characters are resolved as chiz package imports (e.g. `import "@scope/dep-name/util"` resolves to `$CHIZPATH/@scope/dep-name/<version>/src/util.chi`)
+- Version is resolved from local `chiz_index.json` or global `$CHIZPATH/.index`; import fails if the package is not found in either index
+- File extension order follows the current language setting (`.chi` first in Chili mode, `.pep` first in Pepper mode)
+- Supports deeper module paths (e.g. `import "@scope/pkg/sub/module"` → `src/sub/module.chi`)
 
 ### Changed
 
@@ -31,15 +35,6 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - `upsert` / `insert` clippy lint fixes (unnecessary references)
-
-## [0.8.2] - 2026-05-10
-
-### Added
-
-- Package import support in `import` — paths starting with `@` or alphabetic characters are resolved as chiz package imports (e.g. `import "@scope/dep-name/util"` resolves to `$CHIZPATH/@scope/dep-name/<version>/src/util.chi`)
-- Version is resolved from local `chiz_index.json` or global `$CHIZPATH/.index`; import fails if the package is not found in either index
-- File extension order follows the current language setting (`.chi` first in Chili mode, `.pep` first in Pepper mode)
-- Supports deeper module paths (e.g. `import "@scope/pkg/sub/module"` → `src/sub/module.chi`)
 
 ## [0.8.0] - 2026-05-03
 
