@@ -9,3 +9,4 @@ polars-core
 .mypy_cache
 .venv
 .pytest_cache
+.cursor
