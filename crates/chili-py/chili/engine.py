@@ -429,3 +429,15 @@ class ChiliEngine:
     def subscribe(self, tick_socket: str, topics: Optional[list[str]] = None) -> None:
         self.load_sub()
         self.fn_call(".sub.init", [tick_socket, topics or []])
+
+    def open_handle(self, socket: str) -> int:
+        return self.fn_call(".handle.open", [socket])
+
+    def sync(self, handle_num: int, query: str) -> Any:
+        self.fn_call("set", ["pyHandle", handle_num])
+        return self.fn_call("pyHandle", [query])
+
+    def async_(self, handle_num: int, query: str) -> Any:
+        neg_handle_num = handle_num if handle_num < 0 else -handle_num
+        self.fn_call("set", ["pyHandle", neg_handle_num])
+        return self.fn_call("pyHandle", [query])
