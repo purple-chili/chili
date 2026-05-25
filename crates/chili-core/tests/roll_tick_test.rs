@@ -107,7 +107,7 @@ fn rotate_handle_swaps_writer_to_new_file() {
 }
 
 #[test]
-fn rotate_handle_rejects_non_empty_file() {
+fn rotate_handle_accepts_non_empty_file() {
     let dir = tempfile::tempdir().unwrap();
     let seg0 = dir.path().join("seg_0000");
     let seg1 = dir.path().join("seg_0001");
@@ -118,21 +118,22 @@ fn rotate_handle_rejects_non_empty_file() {
     let h0 = open_seg(&engine, &seg0s);
     engine.sync(&h0, &msg(1)).unwrap();
 
-    // Write some content to seg1 to make it non-empty.
-    std::fs::write(&seg1s, b"non-empty").unwrap();
+    // Pre-populate seg1 as a valid sequence file via a separate handle.
+    let h1 = open_seg(&engine, &seg1s);
+    engine.sync(&h1, &msg(100)).unwrap();
+    engine.close_handle(&h1).unwrap();
 
-    let result = engine.rotate_handle(&h0, &format!("file://{seg1s}"));
-    assert!(
-        result.is_err(),
-        "rotate_handle must reject a non-empty target file, got {result:?}"
-    );
+    // Rotate h0 to the non-empty seg1 — should succeed and append.
+    engine
+        .rotate_handle(&h0, &format!("file://{seg1s}"))
+        .unwrap();
+    engine.sync(&h0, &msg(101)).unwrap();
 
-    // Original handle still works.
-    engine.sync(&h0, &msg(2)).unwrap();
+    let in_seg1 = read_tplog_ints(&seg1s);
     assert_eq!(
-        read_tplog_ints(&seg0s),
-        vec![1, 2],
-        "original handle remains writable after failed rotate"
+        in_seg1,
+        vec![100, 101],
+        "rotate to non-empty file should append"
     );
 }
 

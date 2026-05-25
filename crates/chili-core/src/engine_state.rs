@@ -768,9 +768,6 @@ impl EngineState {
         match uri.split_once("://") {
             Some(("file", path)) => {
                 let (rw, conn_type) = utils::prepare_file_writer(path)?;
-                if conn_type != ConnType::New {
-                    return Err(SpicyError::EvalErr(format!("file '{}' is not empty", path)));
-                }
                 let idx = *handle_num as usize;
                 if *handle_num < 0 || idx >= MAX_HANDLE_NUM {
                     return Err(SpicyError::HandleOutOfRangeErr(*handle_num, MAX_HANDLE_NUM));
@@ -780,8 +777,7 @@ impl EngineState {
                     let mut handles = self.handle.write();
                     if let Some(h) = handles.get_mut(handle_num) {
                         if let Some(ref mut rw) = h.rw {
-                            rw.flush()
-                                .map_err(|e| SpicyError::Err(e.to_string()))?;
+                            rw.flush().map_err(|e| SpicyError::Err(e.to_string()))?;
                         }
                     }
                 }
@@ -792,10 +788,12 @@ impl EngineState {
                     uri,
                     false,
                     IpcType::Chili,
-                    ConnType::New,
+                    conn_type,
                     *handle_num,
                 )?;
-                tick_count[idx] = 0;
+                if conn_type == ConnType::New {
+                    tick_count[idx] = 0;
+                }
                 Ok(SpicyObj::Null)
             }
             _ => Err(SpicyError::EvalErr(format!(
@@ -816,8 +814,7 @@ impl EngineState {
         match handles.get_mut(handle_num) {
             Some(h) => {
                 if let Some(ref mut rw) = h.rw {
-                    rw.flush()
-                        .map_err(|e| SpicyError::Err(e.to_string()))?;
+                    rw.flush().map_err(|e| SpicyError::Err(e.to_string()))?;
                 }
                 Ok(SpicyObj::Null)
             }
