@@ -8,6 +8,9 @@ All notable changes to this project will be documented in this file.
 
 - `.handle.fsync` built-in — explicitly flush a file handle's buffered data to disk (`fdatasync`), giving users on-demand durability control
 - `SyncFile` wrapper in `utils.rs` — makes `Write::flush` call `sync_data()` so that file handle flushes issue `fdatasync` instead of the default no-op
+- `detect_conn_type` utility in `utils.rs` — shared file-type detection (New/File/Sequence) from magic header bytes, used by `prepare_file_writer` and `validate_seq`
+- `count_seq_messages` utility in `utils.rs` — walks sequence file frames and returns `(msg_count, valid_byte_size)`, used by `prepare_file_writer` and `validate_seq`
+- `fsync_handle` method on Python `ChiliEngine` — exposes `.handle.fsync` via `fn_call`
 - `async_` and `execute` on `EngineState` — positive handle numbers use sync IPC/file writes; negative handle numbers send async IPC without waiting for a response
 - String literals in `eval_op` / `eval_call` are parsed and evaluated as Chili/Pepper query source (inline `eval_str` behavior)
 - `py.typed` marker in `chili-py` for PEP 561 type checkers
@@ -15,8 +18,11 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - `rotate_handle` skips rotation when the target URI already exists in the handle map, avoiding duplicate file handles for the same path
+- `rotate_handle` now accepts non-empty files and sets `tick_count` to the existing message count for sequence files
 - `close_handle` now flushes the writer (best-effort `fdatasync`) before dropping the handle
 - `rotate_handle` now flushes the old handle's writer before replacing it, ensuring all data is durable on disk before the new file is opened
+- `prepare_file_writer` returns `(writer, conn_type, msg_count)` — for sequence files, truncates to the last valid message boundary and reports the message count
+- `validate_seq` refactored to use `detect_conn_type` and `count_seq_messages` utilities
 - Handle sends in eval route through `execute` instead of always calling `sync`
 - TCP incoming listener logs and drops bad connections instead of panicking on accept, auth, or handle setup failures
 

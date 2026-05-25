@@ -693,7 +693,7 @@ impl EngineState {
                 } else if schema == "chili" {
                     (IpcType::Chili, path, 9)
                 } else if schema == "file" {
-                    let (rw, conn_type) = utils::prepare_file_writer(path)?;
+                    let (rw, conn_type, _msg_count) = utils::prepare_file_writer(path)?;
                     let h = self.set_handle(
                         Some(rw),
                         &format!("file://{}", path),
@@ -767,7 +767,7 @@ impl EngineState {
         }
         match uri.split_once("://") {
             Some(("file", path)) => {
-                let (rw, conn_type) = utils::prepare_file_writer(path)?;
+                let (rw, conn_type, msg_count) = utils::prepare_file_writer(path)?;
                 let idx = *handle_num as usize;
                 if *handle_num < 0 || idx >= MAX_HANDLE_NUM {
                     return Err(SpicyError::HandleOutOfRangeErr(*handle_num, MAX_HANDLE_NUM));
@@ -793,6 +793,8 @@ impl EngineState {
                 )?;
                 if conn_type == ConnType::New {
                     tick_count[idx] = 0;
+                } else {
+                    tick_count[idx] = msg_count;
                 }
                 Ok(SpicyObj::Null)
             }

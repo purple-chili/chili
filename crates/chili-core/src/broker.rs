@@ -1,14 +1,13 @@
 use std::{
     collections::HashMap,
     fs::{self},
-    io::{Read, Seek},
+    io::Read,
     sync::LazyLock,
 };
 
-use log::warn;
-
 use crate::{
-    ArgType, EngineState, Func, SpicyError, SpicyObj, SpicyResult, Stack, serde9, validate_args,
+    ArgType, ConnType, EngineState, Func, SpicyError, SpicyObj, SpicyResult, Stack, serde9, utils,
+    validate_args,
 };
 
 // message broker functions
@@ -62,64 +61,21 @@ fn validate_seq(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         .open(path)
         .map_err(|e| SpicyError::Err(format!("failed to open file '{}': {}", path, e)))?;
 
-    if file
-        .metadata()
-        .map_err(|e| SpicyError::Err(format!("failed to get file size '{}': {}", path, e)))?
-        .len()
-        == 0
-    {
-        return Ok(SpicyObj::I64(0));
-    }
-
-    let mut header = [0u8; 8];
-    file.read_exact(&mut header)
-        .map_err(|e| SpicyError::Err(format!("failed to read header '{}': {}", path, e)))?;
-    if header[..4] != [255, 0, 0, 0] {
-        return Err(SpicyError::Err(format!("not a sequence file '{}'", path)));
-    }
-    let mut i: i64 = 0;
-    let mut valid_size = 8;
-    let total_size = file
-        .metadata()
-        .map_err(|e| SpicyError::Err(format!("failed to get file size '{}': {}", path, e)))?
-        .len();
-    while valid_size < total_size {
-        let mut header = [0u8; 16];
-        let res = file.read_exact(&mut header);
-        if res.is_err() {
-            break;
+    let conn_type = utils::detect_conn_type(&mut file)?;
+    match conn_type {
+        ConnType::New => return Ok(SpicyObj::I64(0)),
+        ConnType::Sequence => {
+            // detect_conn_type read 4 bytes; skip the remaining 4 of the 8-byte magic header
+            let mut pad = [0u8; 4];
+            file.read_exact(&mut pad)
+                .map_err(|e| SpicyError::Err(format!("failed to read header '{}': {}", path, e)))?;
         }
-        let msg_size = u64::from_le_bytes(header[..8].try_into().unwrap());
-        if msg_size == 0 {
-            break;
-        }
-        if must_deserialize {
-            let mut buffer = vec![0u8; msg_size as usize];
-            file.read_exact(&mut buffer).map_err(|e| {
-                warn!("failed to read message at index {}: {}", i, e);
-                SpicyError::Err(e.to_string())
-            })?;
-            if serde9::deserialize(&buffer, &mut 0).is_err() {
-                break;
-            };
-            i += 1;
-            valid_size += msg_size + 16;
-        } else {
-            match file.seek_relative(msg_size as i64) {
-                Ok(_) => {
-                    i += 1;
-                    valid_size += msg_size + 16;
-                }
-                Err(e) => {
-                    warn!("failed to seek to next msg '{}': {}", path, e);
-                    break;
-                }
-            }
-        }
+        _ => return Err(SpicyError::Err(format!("not a sequence file '{}'", path))),
     }
+    let (count, valid_size) = utils::count_seq_messages(&mut file, must_deserialize)?;
     file.set_len(valid_size)
         .map_err(|e| SpicyError::Err(format!("failed to set valid size '{}': {}", path, e)))?;
-    Ok(SpicyObj::I64(i))
+    Ok(SpicyObj::I64(count))
 }
 
 fn eod(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {

@@ -34,13 +34,96 @@ impl Read for SyncFile {
     }
 }
 
+/// Detect the [`ConnType`] of an already-open file by inspecting its size
+/// and magic header bytes.
+///
+/// - Empty file → `ConnType::New`
+/// - Non-empty with `[255, 0, 0, 0]` magic prefix → `ConnType::Sequence`
+/// - Anything else → `ConnType::File`
+///
+/// The file cursor is left at the position right after the header read
+/// (byte 4 for `Sequence`/`File` with ≥ 8 bytes, unchanged for `New`).
+pub fn detect_conn_type(file: &mut std::fs::File) -> Result<ConnType, SpicyError> {
+    use std::io::Read;
+
+    let metadata = file
+        .metadata()
+        .map_err(|e| SpicyError::Err(e.to_string()))?;
+    if metadata.len() == 0 {
+        Ok(ConnType::New)
+    } else if metadata.len() < 8 {
+        Ok(ConnType::File)
+    } else {
+        let mut header = [0u8; 4];
+        file.read_exact(&mut header)
+            .map_err(|e| SpicyError::Err(format!("failed to read header, error: {}", e)))?;
+        if [255, 0, 0, 0] == header {
+            Ok(ConnType::Sequence)
+        } else {
+            Ok(ConnType::File)
+        }
+    }
+}
+
+/// Walk the frames of a sequence file and count valid messages.
+///
+/// The file must be positioned right after the 8-byte magic header (i.e.
+/// at byte 8). Each frame is `[8-byte size][8-byte timestamp][payload]`.
+///
+/// When `must_deserialize` is `true`, every payload is decoded with
+/// `serde9::deserialize`; a decode failure stops the walk (the frame is
+/// considered torn/corrupt). When `false`, payloads are skipped via seek.
+///
+/// Returns `(message_count, valid_byte_size)` where `valid_byte_size`
+/// includes the 8-byte magic header and all complete frames.
+pub fn count_seq_messages(
+    file: &mut std::fs::File,
+    must_deserialize: bool,
+) -> Result<(i64, u64), SpicyError> {
+    use std::io::{Read, Seek};
+
+    let total_size = file
+        .metadata()
+        .map_err(|e| SpicyError::Err(e.to_string()))?
+        .len();
+    let mut count: i64 = 0;
+    let mut valid_size: u64 = 8; // 8-byte magic header already consumed
+    while valid_size < total_size {
+        let mut header = [0u8; 16];
+        if file.read_exact(&mut header).is_err() {
+            break;
+        }
+        let msg_size = u64::from_le_bytes(header[..8].try_into().unwrap());
+        if msg_size == 0 {
+            break;
+        }
+        if must_deserialize {
+            let mut buffer = vec![0u8; msg_size as usize];
+            if file.read_exact(&mut buffer).is_err() {
+                break;
+            }
+            if crate::serde9::deserialize(&buffer, &mut 0).is_err() {
+                break;
+            }
+        } else if file.seek_relative(msg_size as i64).is_err() {
+            break;
+        }
+        count += 1;
+        valid_size += msg_size + 16;
+    }
+    Ok((count, valid_size))
+}
+
 /// Open a `file://` path for writing: open (read+write+create, no truncate),
 /// detect `ConnType` from existing content (`New`/`File`/`Sequence`),
 /// then seek to EOF so subsequent writes append.
 ///
 /// The returned writer is a [`SyncFile`], so calling `.flush()` on it will
 /// issue `fdatasync` to ensure data durability.
-pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType), SpicyError> {
+///
+/// Returns `(writer, conn_type, msg_count)` where `msg_count` is the
+/// number of valid messages in the file (only non-zero for `Sequence` files).
+pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType, i64), SpicyError> {
     use std::fs;
     use std::io::{Read, Seek, SeekFrom};
 
@@ -51,27 +134,29 @@ pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType),
         .truncate(false)
         .open(path)
         .map_err(|e| SpicyError::Err(e.to_string()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|e| SpicyError::Err(e.to_string()))?;
-    let conn_type = if metadata.len() == 0 {
-        ConnType::New
-    } else if metadata.len() < 8 {
-        ConnType::File
-    } else {
-        let mut header = [0u8; 4];
-        file.read_exact(&mut header)
+    let conn_type = detect_conn_type(&mut file)?;
+    let msg_count = if conn_type == ConnType::Sequence {
+        // detect_conn_type read 4 bytes; skip the remaining 4 of the 8-byte magic header
+        let mut pad = [0u8; 4];
+        file.read_exact(&mut pad)
             .map_err(|e| SpicyError::Err(format!("failed to read header, error: {}", e)))?;
-        if [255, 0, 0, 0] == header {
-            ConnType::Sequence
-        } else {
-            ConnType::File
-        }
+        let (count, valid_size) = count_seq_messages(&mut file, false)?;
+        // Truncate any torn/partial trailing frame so new writes start
+        // right after the last valid message.
+        file.set_len(valid_size)
+            .map_err(|e| SpicyError::Err(format!("failed to truncate file, error: {}", e)))?;
+        file.seek(SeekFrom::Start(valid_size))
+            .map_err(|e| SpicyError::Err(format!("failed to seek, error: {}", e)))?;
+        count
+    } else {
+        file.seek(SeekFrom::End(0))
+            .map_err(|e| {
+                SpicyError::Err(format!("failed to seek to end of file, error: {}", e))
+            })?;
+        0
     };
-    file.seek(SeekFrom::End(0))
-        .map_err(|e| SpicyError::Err(format!("failed to seek to end of file, error: {}", e)))?;
     let rw: Box<dyn ReadWrite> = Box::new(SyncFile(file));
-    Ok((rw, conn_type))
+    Ok((rw, conn_type, msg_count))
 }
 
 pub fn unpack_socket(socket: &str) -> Result<(String, String, String, String), SpicyError> {
