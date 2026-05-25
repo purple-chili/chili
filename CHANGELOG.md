@@ -2,16 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.9.0] - 2026-05-24
+## [0.9.0] - 2026-05-25
 
 ### Added
 
+- `.handle.fsync` built-in — explicitly flush a file handle's buffered data to disk (`fdatasync`), giving users on-demand durability control
+- `SyncFile` wrapper in `utils.rs` — makes `Write::flush` call `sync_data()` so that file handle flushes issue `fdatasync` instead of the default no-op
 - `async_` and `execute` on `EngineState` — positive handle numbers use sync IPC/file writes; negative handle numbers send async IPC without waiting for a response
 - String literals in `eval_op` / `eval_call` are parsed and evaluated as Chili/Pepper query source (inline `eval_str` behavior)
 - `py.typed` marker in `chili-py` for PEP 561 type checkers
 
 ### Changed
 
+- `rotate_handle` skips rotation when the target URI already exists in the handle map, avoiding duplicate file handles for the same path
+- `close_handle` now flushes the writer (best-effort `fdatasync`) before dropping the handle
+- `rotate_handle` now flushes the old handle's writer before replacing it, ensuring all data is durable on disk before the new file is opened
 - Handle sends in eval route through `execute` instead of always calling `sync`
 - TCP incoming listener logs and drops bad connections instead of panicking on accept, auth, or handle setup failures
 

@@ -747,11 +747,24 @@ impl EngineState {
 
     pub fn close_handle(&self, handle_num: &i64) -> SpicyResult<SpicyObj> {
         let mut handle = self.handle.write();
+        // Flush (fdatasync) the writer before dropping the handle
+        if let Some(h) = handle.get_mut(handle_num) {
+            if let Some(ref mut rw) = h.rw {
+                let _ = rw.flush();
+            }
+        }
         handle.shift_remove(handle_num);
         Ok(SpicyObj::Null)
     }
 
     pub fn rotate_handle(&self, handle_num: &i64, uri: &str) -> SpicyResult<SpicyObj> {
+        // If the uri already exists in handles, do nothing
+        {
+            let handles = self.handle.read();
+            if handles.values().any(|h| h.uri == uri) {
+                return Ok(SpicyObj::Null);
+            }
+        }
         match uri.split_once("://") {
             Some(("file", path)) => {
                 let (rw, conn_type) = utils::prepare_file_writer(path)?;
@@ -761,6 +774,16 @@ impl EngineState {
                 let idx = *handle_num as usize;
                 if *handle_num < 0 || idx >= MAX_HANDLE_NUM {
                     return Err(SpicyError::HandleOutOfRangeErr(*handle_num, MAX_HANDLE_NUM));
+                }
+                // Flush (fdatasync) the old handle before replacing it
+                {
+                    let mut handles = self.handle.write();
+                    if let Some(h) = handles.get_mut(handle_num) {
+                        if let Some(ref mut rw) = h.rw {
+                            rw.flush()
+                                .map_err(|e| SpicyError::Err(e.to_string()))?;
+                        }
+                    }
                 }
                 let mut tick_count = self.tick_count.write();
                 self.set_handle(
@@ -786,6 +809,20 @@ impl EngineState {
         Ok(SpicyObj::Boolean(
             self.handle.read().contains_key(handle_num),
         ))
+    }
+
+    pub fn fsync_handle(&self, handle_num: &i64) -> SpicyResult<SpicyObj> {
+        let mut handles = self.handle.write();
+        match handles.get_mut(handle_num) {
+            Some(h) => {
+                if let Some(ref mut rw) = h.rw {
+                    rw.flush()
+                        .map_err(|e| SpicyError::Err(e.to_string()))?;
+                }
+                Ok(SpicyObj::Null)
+            }
+            None => Err(SpicyError::InvalidHandleErr(*handle_num)),
+        }
     }
 
     pub fn list_handle(&self) -> SpicyResult<DataFrame> {

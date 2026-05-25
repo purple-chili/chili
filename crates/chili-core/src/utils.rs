@@ -13,9 +13,33 @@ use regex::Regex;
 
 use crate::{ConnType, EngineState, Stack, engine_state::ReadWrite, serde6, serde9};
 
+/// A thin wrapper around [`std::fs::File`] that makes [`Write::flush`] call
+/// [`File::sync_data`] (`fdatasync`), so that an explicit `.flush()` guarantees
+/// data durability on disk.  Normal `write()` calls pass straight through
+/// without any extra syscalls.
+struct SyncFile(std::fs::File);
+
+impl Write for SyncFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.sync_data()
+    }
+}
+
+impl Read for SyncFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
 /// Open a `file://` path for writing: open (read+write+create, no truncate),
 /// detect `ConnType` from existing content (`New`/`File`/`Sequence`),
 /// then seek to EOF so subsequent writes append.
+///
+/// The returned writer is a [`SyncFile`], so calling `.flush()` on it will
+/// issue `fdatasync` to ensure data durability.
 pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType), SpicyError> {
     use std::fs;
     use std::io::{Read, Seek, SeekFrom};
@@ -46,7 +70,7 @@ pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType),
     };
     file.seek(SeekFrom::End(0))
         .map_err(|e| SpicyError::Err(format!("failed to seek to end of file, error: {}", e)))?;
-    let rw: Box<dyn ReadWrite> = Box::new(file);
+    let rw: Box<dyn ReadWrite> = Box::new(SyncFile(file));
     Ok((rw, conn_type))
 }
 

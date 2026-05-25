@@ -61,7 +61,7 @@ fn rotate_handle(
     _stack: &mut Stack,
     args: &[&SpicyObj],
 ) -> SpicyResult<SpicyObj> {
-    validate_args(args, &[ArgType::Int, ArgType::Str])?;
+    validate_args(args, &[ArgType::Int, ArgType::StrOrSym])?;
     let handle_num = args[0].to_i64()?;
     let uri = args[1].str()?;
     state.rotate_handle(&handle_num, uri)
@@ -74,6 +74,15 @@ fn exists_handle(
 ) -> SpicyResult<SpicyObj> {
     let handle_num = args[0].to_i64()?;
     state.exists_handle(&handle_num)
+}
+
+fn fsync_handle(
+    state: &EngineState,
+    _stack: &mut Stack,
+    args: &[&SpicyObj],
+) -> SpicyResult<SpicyObj> {
+    let handle_num = args[0].to_i64()?;
+    state.fsync_handle(&handle_num)
 }
 
 fn exit(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
@@ -700,6 +709,15 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 2,
                 ".handle.rotate",
                 &["handle_num", "uri"],
+            ),
+        ),
+        (
+            ".handle.fsync".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(fsync_handle)),
+                1,
+                ".handle.fsync",
+                &["handle_num"],
             ),
         ),
         (
