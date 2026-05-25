@@ -127,6 +127,7 @@ fn rotate_handle_accepts_non_empty_file() {
     engine
         .rotate_handle(&h0, &format!("file://{seg1s}"))
         .unwrap();
+    assert_eq!(engine.get_tick_count(h0 as usize).unwrap(), 1);
     engine.sync(&h0, &msg(101)).unwrap();
 
     let in_seg1 = read_tplog_ints(&seg1s);

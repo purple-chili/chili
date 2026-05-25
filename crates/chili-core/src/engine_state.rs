@@ -693,7 +693,7 @@ impl EngineState {
                 } else if schema == "chili" {
                     (IpcType::Chili, path, 9)
                 } else if schema == "file" {
-                    let (rw, conn_type, _msg_count) = utils::prepare_file_writer(path)?;
+                    let (rw, conn_type, msg_count) = utils::prepare_file_writer(path)?;
                     let h = self.set_handle(
                         Some(rw),
                         &format!("file://{}", path),
@@ -703,6 +703,7 @@ impl EngineState {
                         conn_type,
                         0,
                     )?;
+                    self.tick(*h.i64().unwrap() as usize, msg_count)?;
                     return Ok(h);
                 } else {
                     return Err(err);

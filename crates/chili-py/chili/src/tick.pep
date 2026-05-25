@@ -14,6 +14,10 @@
   .tick.msgLog: logDir + filename;
   .tick.logFile: "file://" + .tick.msgLog;
   .handle.rotate[.tick.msgHandle; .tick.logFile];
+  // reset tick[0]
+  tick[0; neg[tick[0; 0]]];
+  // use validate message count for tick[0]
+  tick[0; tick[.tick.msgHandle; 0]];
 };
 
 .tick.upd: {[table; data]
