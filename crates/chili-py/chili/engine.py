@@ -433,6 +433,17 @@ class ChiliEngine:
     def open_handle(self, socket: str) -> int:
         return self.fn_call(".handle.open", [socket])
 
+    def fsync_handle(self, handle_num: int) -> None:
+        """Flush a file handle's buffered data to disk (``fdatasync``).
+
+        Forces all pending writes on the given handle to be persisted,
+        ensuring data durability without closing the handle.
+
+        Args:
+            handle_num: Handle number to sync.
+        """
+        self.fn_call(".handle.fsync", [handle_num])
+
     def sync(self, handle_num: int, query: str) -> Any:
         self.fn_call("set", ["pyHandle", handle_num])
         return self.fn_call("pyHandle", [query])
