@@ -47,7 +47,7 @@ def test_subscriber_eod_shim_triggered_by_publisher_eod():
         pub.init_tick(
             schema={"trade": trade_schema},
             log_dir=log_dir + "/",
-            date=date.today(),
+            filename=date.today(),
         )
         pub.start_tcp_listener(port)
         time.sleep(0.1)
@@ -112,7 +112,7 @@ def test_multi_message_subscriber_observes_upd_then_eod():
         pub.init_tick(
             schema={"trade": trade_schema},
             log_dir=log_dir + "/",
-            date=date.today(),
+            filename=date.today(),
         )
         pub.start_tcp_listener(port)
         time.sleep(0.1)

@@ -36,7 +36,7 @@ class TestTickSub:
             t.init_tick(
                 schema={"trade": trade_schema},
                 log_dir=log_dir + "/",
-                date=date.today(),
+                filename=date.today(),
             )
 
             # Start TCP listener so the subscriber can connect
