@@ -274,6 +274,30 @@ impl EngineState {
         Ok(vars.remove(id).unwrap_or(SpicyObj::Null))
     }
 
+    /// Atomically take the accumulated DataFrame for `id` and replace it with
+    /// a 0-row frame of the same schema (`DataFrame::clear()`).
+    ///
+    /// Because both the read and reset happen under a single
+    /// `self.vars.write()` guard, a concurrent `upsert_var` either lands
+    /// fully before the drain (included in the returned frame) or fully
+    /// after (accumulated into the next drain) — never split, never lost.
+    pub fn drain(&self, id: &str) -> SpicyResult<SpicyObj> {
+        let mut vars = self.vars.write();
+        match vars.get_mut(id) {
+            Some(obj) => match obj.mut_df() {
+                Ok(df) => {
+                    let empty = df.clear();
+                    let taken = std::mem::replace(df, empty);
+                    Ok(SpicyObj::DataFrame(taken))
+                }
+                Err(_) => Err(SpicyError::Err(
+                    "drain only supports dataframe variables".to_owned(),
+                )),
+            },
+            None => Err(SpicyError::NameErr(id.to_owned())),
+        }
+    }
+
     pub fn upsert_var(&self, id: &str, arg: &SpicyObj) -> SpicyResult<SpicyObj> {
         let mut vars = self.vars.write();
         let obj = match vars.get_mut(id) {

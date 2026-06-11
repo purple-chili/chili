@@ -110,6 +110,26 @@ class ChiliEngine:
         """
         return self.engine.del_var(id)
 
+    def drain(self, id: str) -> Any:
+        """Atomically take the accumulated DataFrame and reset the variable.
+
+        Returns all rows accumulated since the last drain (or since
+        subscribe) and replaces the variable with a 0-row frame of the
+        same schema.  The take and reset happen under a single write-lock,
+        so no rows can be lost or duplicated by a concurrent ``upsert``.
+
+        Args:
+            id: Variable name (must hold a DataFrame).
+
+        Returns:
+            A ``polars.DataFrame`` with the rows that were accumulated.
+
+        Raises:
+            NameError: If the variable does not exist.
+            RuntimeError: If the variable is not a DataFrame.
+        """
+        return self.engine.drain(id)
+
     def import_source_path(self, relative: str, path: str) -> Any:
         """Import and evaluate a Chili/Pepper source file.
 

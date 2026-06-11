@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.1] - 2026-06-11
+
+### Added
+
+- `drain(id)` built-in — atomically take the accumulated DataFrame for a subscriber topic variable and reset it to a 0-row frame with the same schema, all under a single write-lock; eliminates the O(rows-so-far) cost of polling `get_var` on high-throughput subscribers
+- `drain` method on Python `ChiliEngine` — `engine.drain(topic)` returns a `polars.DataFrame`
+
 ## [0.9.0] - 2026-05-25
 
 ### Added

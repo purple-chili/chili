@@ -300,6 +300,11 @@ fn del(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResu
     state.del_var(id)
 }
 
+fn drain(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    let id = args[0].str()?;
+    state.drain(id)
+}
+
 fn tick(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let index = args[0].to_i64()? as usize;
     let inc = args[1].to_i64()?;
@@ -592,6 +597,10 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         (
             "del".to_owned(),
             Func::new_side_effect_built_in_fn(Some(Box::new(del)), 1, "del", &["id"]),
+        ),
+        (
+            "drain".to_owned(),
+            Func::new_side_effect_built_in_fn(Some(Box::new(drain)), 1, "drain", &["id"]),
         ),
         (
             "tick".to_owned(),

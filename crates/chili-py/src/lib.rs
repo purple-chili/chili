@@ -366,6 +366,17 @@ impl PyEngineState {
         spicy_to_py(py, obj)
     }
 
+    /// Atomically take the accumulated DataFrame for a variable and reset it
+    /// to a 0-row frame with the same schema.
+    ///
+    /// Returns the DataFrame that was accumulated since the last drain (or
+    /// since subscribe). The variable remains defined with an empty frame.
+    fn drain(&self, py: Python<'_>, id: &str) -> PyResult<Py<PyAny>> {
+        self.check_fork()?;
+        let obj = py.detach(move || map_spicy_error(self.inner.drain(id)));
+        spicy_to_py(py, obj?)
+    }
+
     /// Append rows to an existing DataFrame variable, or create it.
     ///
     /// Returns the number of rows appended.
