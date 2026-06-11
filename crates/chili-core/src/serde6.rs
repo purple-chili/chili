@@ -292,7 +292,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
                 .map(|(v, t)| deserialize_series(v, t, true).unwrap().try_into().unwrap())
                 .collect();
 
-            columns.iter_mut().zip(symbols).for_each(|(c, n)| {
+            columns.iter_mut().zip(symbols.iter()).for_each(|(c, n)| {
                 c.rename(n.unwrap_or("").into());
             });
             let height = columns.first().map(|c| c.len()).unwrap_or(0);

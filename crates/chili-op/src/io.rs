@@ -180,7 +180,7 @@ pub fn read_parquet(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 DataType::String => series
                     .str()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|s| col(s.unwrap_or("")))
                     .collect(),
                 DataType::Categorical(_, _) => series

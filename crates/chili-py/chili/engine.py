@@ -130,6 +130,38 @@ class ChiliEngine:
         """
         return self.engine.drain(id)
 
+    def upsert(self, id: str, value: Any) -> int:
+        """Append rows to an existing DataFrame variable, or create it.
+
+        If the variable does not exist, it is created with the given
+        DataFrame.  If it already exists, the rows are appended via
+        ``DataFrame.extend``.
+
+        Args:
+            id: Variable name.
+            value: A ``polars.DataFrame`` (or list) to append.
+
+        Returns:
+            The number of rows appended.
+        """
+        return self.engine.upsert(id, value)
+
+    def insert(self, id: str, value: Any, by: list[str]) -> int:
+        """Insert rows into a DataFrame variable, deduplicating by key columns.
+
+        Rows are appended and then deduplicated using a ``group_by(by).last()``
+        aggregation, keeping only the latest row per unique key combination.
+
+        Args:
+            id: Variable name.
+            value: A ``polars.DataFrame`` (or list) to insert.
+            by: Column names to deduplicate on.
+
+        Returns:
+            The net change in row count (new unique keys added).
+        """
+        return self.engine.insert(id, value, by)
+
     def import_source_path(self, relative: str, path: str) -> Any:
         """Import and evaluate a Chili/Pepper source file.
 

@@ -1,6 +1,6 @@
 [package]
 name = "chili-py"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 authors = ["The Chili Authors <purple-chili@hotmail.com>"]
 description = "Python bindings for chili-core EngineState"
@@ -12,8 +12,8 @@ crate-type = ["cdylib"]
 [dependencies]
 chili-core = { path = "../chili-core" }
 chili-op = { path = "../chili-op" }
-indexmap = "2.12.0"
-polars = { version = "0.53.0" }
-pyo3 = { version = "0.27", features = ["abi3-py310", "chrono"] }
-pyo3-polars = { version = "0.26.0", features = ["lazy"] }
+indexmap = "2.14.0"
+polars = { version = "0.54.4" }
+pyo3 = { version = "0.28", features = ["abi3-py310", "chrono"] }
+pyo3-polars = { version = "0.27.0", features = ["lazy"] }
 chrono = { version = "0.4" }

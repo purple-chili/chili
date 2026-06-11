@@ -66,11 +66,11 @@ polars-lazy = { workspace = true, features = ["pivot"] }
 polars-compute = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = "0.10"
-indexmap = "2.10"
+indexmap = "2.14.0"
 glob = "0.3"
 polars-arrow = { workspace = true }
 polars-ops = { workspace = true, features = ["pivot"] }
-rand = "0.10.0"
+rand = "0.10.1"
 ndarray = "0.17"
 regex = "1.11"
 ndarray-linalg = { version = "0.18", optional = true }

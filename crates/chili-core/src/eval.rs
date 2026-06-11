@@ -662,7 +662,7 @@ pub fn eval_call(
                             let res = indices
                                 .i64()
                                 .unwrap()
-                                .into_iter()
+                                .iter()
                                 .map(|i| match i {
                                     Some(i) => {
                                         list.get(i as usize).unwrap_or(&SpicyObj::Null).clone()
@@ -714,7 +714,9 @@ pub fn at(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg1 = args[1];
     if arg0.is_expr() || arg1.is_expr() {
         return Ok(SpicyObj::Expr(
-            arg0.as_expr().unwrap().gather(arg1.as_expr().unwrap()),
+            arg0.as_expr()
+                .unwrap()
+                .gather(arg1.as_expr().unwrap(), true),
         ));
     }
     let c0 = arg0.get_type_code();

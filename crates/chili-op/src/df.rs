@@ -5,7 +5,7 @@ use std::sync::Arc;
 use polars::{
     datatypes::DataType,
     error::PolarsError,
-    frame::{DataFrame, UniqueKeepStrategy},
+    frame::{DataFrame, PivotColumnNaming, UniqueKeepStrategy},
     lazy::dsl::{col, lit, when},
     prelude::{
         AggExpr, AsofStrategy, Categories, Column, DataTypeExpr, ExplodeOptions, Expr, IntoColumn,
@@ -121,6 +121,7 @@ pub fn pivot(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         pivot_expr,
         true,
         PlSmallStr::from("_"),
+        PivotColumnNaming::Auto,
     );
     let df = lf.collect().map_err(|e| SpicyError::Err(e.to_string()))?;
     Ok(SpicyObj::DataFrame(df))

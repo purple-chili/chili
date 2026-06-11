@@ -377,8 +377,8 @@ fn each(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResu
                 // contains, count_matches,
                 match func.fn_body.as_str() {
                     "sum" => Ok(SpicyObj::Expr(expr.list().sum())),
-                    "any" => Ok(SpicyObj::Expr(expr.list().any())),
-                    "all" => Ok(SpicyObj::Expr(expr.list().all())),
+                    "any" => Ok(SpicyObj::Expr(expr.list().0.any(true))),
+                    "all" => Ok(SpicyObj::Expr(expr.list().0.all(true))),
                     "count" => Ok(SpicyObj::Expr(expr.list().len())),
                     "max" => Ok(SpicyObj::Expr(expr.list().max())),
                     "min" => Ok(SpicyObj::Expr(expr.list().min())),
@@ -393,8 +393,8 @@ fn each(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResu
                         expr.list()
                             .sort(SortOptions::default().with_order_descending(true)),
                     )),
-                    "unique" => Ok(SpicyObj::Expr(expr.list().unique_stable())),
-                    "uc" => Ok(SpicyObj::Expr(expr.list().n_unique())),
+                    "unique" => Ok(SpicyObj::Expr(expr.list().0.unique_stable())),
+                    "uc" => Ok(SpicyObj::Expr(expr.list().0.n_unique())),
                     "first" => Ok(SpicyObj::Expr(expr.list().first())),
                     "last" => Ok(SpicyObj::Expr(expr.list().last())),
                     "diff" => Ok(SpicyObj::Expr(expr.list().diff(1, NullBehavior::Ignore))),

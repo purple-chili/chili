@@ -199,6 +199,58 @@ class TestVariables:
 
 
 # ---------------------------------------------------------------------------
+# drain – atomic take-and-reset for DataFrame variables
+# ---------------------------------------------------------------------------
+
+
+class TestDrain:
+    def test_drain_returns_accumulated_rows(self, engine: ChiliEngine):
+        df = pl.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]})
+        engine.set_var("t", df)
+        result = engine.drain("t")
+        assert isinstance(result, pl.DataFrame)
+        assert result.shape == (3, 2)
+        assert result["x"].to_list() == [1, 2, 3]
+
+    def test_drain_resets_var_to_empty(self, engine: ChiliEngine):
+        df = pl.DataFrame({"x": [1, 2], "y": [3, 4]})
+        engine.set_var("t", df)
+        engine.drain("t")
+        remaining = engine.get_var("t")
+        assert isinstance(remaining, pl.DataFrame)
+        assert remaining.shape == (0, 2)
+        assert remaining.columns == ["x", "y"]
+
+    def test_drain_preserves_schema(self, engine: ChiliEngine):
+        df = pl.DataFrame({"a": [1], "b": [2.0], "c": ["hello"]})
+        engine.set_var("t", df)
+        engine.drain("t")
+        empty = engine.get_var("t")
+        assert empty.schema == df.schema
+
+    def test_drain_then_upsert_then_drain(self, engine: ChiliEngine):
+        """Second drain returns only the rows added after the first drain."""
+        df1 = pl.DataFrame({"x": [1, 2]})
+        engine.set_var("t", df1)
+        first = engine.drain("t")
+        assert first["x"].to_list() == [1, 2]
+
+        df2 = pl.DataFrame({"x": [3, 4]})
+        engine.upsert("t", df2)
+        second = engine.drain("t")
+        assert second["x"].to_list() == [3, 4]
+
+    def test_drain_missing_var_raises(self, engine: ChiliEngine):
+        with pytest.raises(Exception):
+            engine.drain("no_such_var")
+
+    def test_drain_non_dataframe_raises(self, engine: ChiliEngine):
+        engine.set_var("scalar", 42)
+        with pytest.raises(Exception):
+            engine.drain("scalar")
+
+
+# ---------------------------------------------------------------------------
 # Source management
 # ---------------------------------------------------------------------------
 

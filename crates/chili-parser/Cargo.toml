@@ -8,4 +8,4 @@ description.workspace = true
 [dependencies]
 chumsky = { workspace = true }
 ariadne = { workspace = true }
-indexmap = "2.13.0"
+indexmap = "2.14.0"

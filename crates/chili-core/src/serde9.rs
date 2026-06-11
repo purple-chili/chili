@@ -759,7 +759,7 @@ pub fn serialize(args: &SpicyObj, compress: bool) -> SpicyResult<Vec<Vec<u8>>> {
                         vec.write_all(offsets_slice).unwrap();
 
                         let arr = s.str().unwrap();
-                        for str in arr {
+                        for str in arr.iter() {
                             vec.write_all(str.unwrap().as_bytes()).unwrap();
                         }
                         vec.write_all(PADDING[vec.len() % 8]).unwrap();

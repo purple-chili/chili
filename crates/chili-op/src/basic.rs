@@ -1090,7 +1090,11 @@ pub fn fby(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if arg1.is_expr() {
         let left = arg0.as_expr()?;
         let right = vec![arg1.as_expr()?];
-        Ok(SpicyObj::Expr(left.over(right)))
+        Ok(SpicyObj::Expr(
+            left.over(right)
+                .map_err(|e| SpicyError::Err(e.to_string()))
+                .unwrap(),
+        ))
     } else {
         let by = arg1.as_vec()?;
         let by = by
@@ -1099,7 +1103,11 @@ pub fn fby(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             .collect::<SpicyResult<Vec<_>>>();
         let by = by.map_err(|_| SpicyError::Err(format!("Expect column names, got {}", arg1)))?;
         let left = arg0.as_expr()?;
-        Ok(SpicyObj::Expr(left.over(by)))
+        Ok(SpicyObj::Expr(
+            left.over(by)
+                .map_err(|e| SpicyError::Err(e.to_string()))
+                .unwrap(),
+        ))
     }
 }
 

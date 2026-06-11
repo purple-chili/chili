@@ -437,12 +437,9 @@ impl SpicyObj {
     pub fn to_handles(&self) -> Result<Vec<i64>, SpicyError> {
         match self {
             SpicyObj::I64(v) => Ok(vec![*v]),
-            SpicyObj::Series(s) if s.dtype().eq(&DataType::Int64) => Ok(s
-                .i64()
-                .unwrap()
-                .into_iter()
-                .map(|i| i.unwrap_or(0))
-                .collect()),
+            SpicyObj::Series(s) if s.dtype().eq(&DataType::Int64) => {
+                Ok(s.i64().unwrap().iter().map(|i| i.unwrap_or(0)).collect())
+            }
             _ => Err(SpicyError::MismatchedTypeErr(
                 "requires i64 or series of i64 for handles".to_owned(),
                 self.get_type_name(),
@@ -472,20 +469,20 @@ impl SpicyObj {
                 DataType::Int32 => Ok(s
                     .i32()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| i.unwrap_or(i32::MIN))
                     .collect()),
                 DataType::Int64 => Ok(s
                     .i64()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| i.unwrap_or(i32::MIN as i64) as i32)
                     .collect()),
                 DataType::Date => Ok(s
                     .to_physical_repr()
                     .i32()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| i.unwrap_or(i32::MIN))
                     .collect()),
                 _ => Err(SpicyError::Err(format!("{} is not valid partition", self))),
@@ -540,12 +537,7 @@ impl SpicyObj {
             SpicyObj::String(s) => Ok(vec![s.as_str()]),
             SpicyObj::Symbol(s) => Ok(vec![s]),
             SpicyObj::Series(s) => match s.dtype() {
-                DataType::String => Ok(s
-                    .str()
-                    .unwrap()
-                    .into_iter()
-                    .map(|s| s.unwrap_or(""))
-                    .collect()),
+                DataType::String => Ok(s.str().unwrap().iter().map(|s| s.unwrap_or("")).collect()),
                 DataType::Categorical(_, _) => Ok(s
                     .cat32()
                     .unwrap()
@@ -641,19 +633,19 @@ impl SpicyObj {
                 DataType::Boolean => s
                     .bool()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|b| SpicyObj::Boolean(b.unwrap_or(false)))
                     .collect(),
                 DataType::UInt8 => s
                     .u8()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| SpicyObj::U8(i.unwrap_or(0)))
                     .collect(),
                 DataType::Int16 => s
                     .i16()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::I16(i)
@@ -665,7 +657,7 @@ impl SpicyObj {
                 DataType::Int32 => s
                     .i32()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::I32(i)
@@ -677,7 +669,7 @@ impl SpicyObj {
                 DataType::Int64 => s
                     .i64()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::I64(i)
@@ -689,7 +681,7 @@ impl SpicyObj {
                 DataType::Float32 => s
                     .f32()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::F32(i)
@@ -701,7 +693,7 @@ impl SpicyObj {
                 DataType::Float64 => s
                     .f64()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::F64(i)
@@ -713,7 +705,7 @@ impl SpicyObj {
                 DataType::String => s
                     .str()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::String(i.to_owned())
@@ -726,7 +718,7 @@ impl SpicyObj {
                     .to_physical_repr()
                     .i32()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::Date(i)
@@ -739,7 +731,7 @@ impl SpicyObj {
                     .to_physical_repr()
                     .i64()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::Datetime(i)
@@ -752,7 +744,7 @@ impl SpicyObj {
                     .to_physical_repr()
                     .i64()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::Timestamp(i)
@@ -765,7 +757,7 @@ impl SpicyObj {
                     .to_physical_repr()
                     .i64()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::Duration(i)
@@ -778,7 +770,7 @@ impl SpicyObj {
                     .to_physical_repr()
                     .i64()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|i| {
                         if let Some(i) = i {
                             SpicyObj::Time(i)
@@ -790,9 +782,13 @@ impl SpicyObj {
                 DataType::List(_) => s
                     .list()
                     .unwrap()
-                    .into_iter()
-                    .map(|s| {
-                        SpicyObj::Series(s.unwrap_or(Series::new_empty("".into(), &DataType::Null)))
+                    .iter()
+                    .map(|arr| match arr {
+                        Some(arr) => SpicyObj::Series(
+                            Series::from_arrow("".into(), arr)
+                                .unwrap_or_else(|_| Series::new_empty("".into(), &DataType::Null)),
+                        ),
+                        None => SpicyObj::Series(Series::new_empty("".into(), &DataType::Null)),
                     })
                     .collect(),
                 DataType::Categorical(_, _) => s
@@ -1686,7 +1682,7 @@ pub fn get_series_len(series: &Series) -> Result<usize, SpicyError> {
         }
         PolarsDataType::Binary => {
             let array = series.binary().unwrap();
-            let is_16_fixed_binary = array.into_iter().any(|v| 16 == v.unwrap_or(&[]).len());
+            let is_16_fixed_binary = array.iter().any(|v| 16 == v.unwrap_or(&[]).len());
             if is_16_fixed_binary {
                 Ok(16 * length + 6)
             } else {
