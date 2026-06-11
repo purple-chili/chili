@@ -345,15 +345,13 @@ pub fn eval_fn_query(
                     .map(|op| {
                         if let Expr::Alias(_, name) = &op {
                             // add another alias so that the update can handle "by columns"
-                            op.clone()
-                                .over(group_by_exprs.clone())
-                                .unwrap()
-                                .alias(name.clone())
+                            Ok(op.clone().over(group_by_exprs.clone())?.alias(name.clone()))
                         } else {
-                            op.over(group_by_exprs.clone()).unwrap()
+                            op.over(group_by_exprs.clone())
                         }
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| SpicyError::Err(e.to_string()))?
             } else {
                 op_exprs
             };
