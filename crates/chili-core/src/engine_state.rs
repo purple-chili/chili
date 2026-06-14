@@ -635,21 +635,38 @@ impl EngineState {
                     break;
                 }
                 let size = u64::from_le_bytes(header[..8].try_into().unwrap());
+                if size == 0 {
+                    break;
+                }
                 let utc_time = u64::from_le_bytes(header[8..16].try_into().unwrap()) as i64;
                 if (start_time > 0 && utc_time < start_time) || i < start {
-                    file.seek(SeekFrom::Current(size as i64))
-                        .map_err(|e| SpicyError::Err(e.to_string()))?;
+                    if let Err(e) = file.seek(SeekFrom::Current(size as i64)) {
+                        warn!("torn skip-seek at index {}: {} — stopping replay at last good frame", i, e);
+                        break;
+                    }
                     i += 1;
                     pb.inc(1);
                     continue;
                 }
                 read_msg_count += 1;
                 let mut buffer = vec![0u8; size as usize];
-                file.read_exact(&mut buffer).map_err(|e| {
-                    warn!("failed to read message at index {}: {}", i, e);
-                    SpicyError::Err(e.to_string())
-                })?;
-                let list = serde9::deserialize(&buffer, &mut 0)?;
+                if let Err(e) = file.read_exact(&mut buffer) {
+                    warn!("torn frame at index {}: {} — stopping replay at last good frame", i, e);
+                    break;
+                }
+                let list = match std::panic::catch_unwind(|| {
+                    serde9::deserialize(&buffer, &mut 0)
+                }) {
+                    Ok(Ok(l)) => l,
+                    Ok(Err(e)) => {
+                        warn!("corrupt frame at index {}: {} — stopping replay at last good frame", i, e);
+                        break;
+                    }
+                    Err(_) => {
+                        warn!("corrupt frame at index {} caused panic — stopping replay at last good frame", i);
+                        break;
+                    }
+                };
                 if eval {
                     if table_names.is_empty()
                         || table_names.contains(
@@ -775,7 +792,9 @@ impl EngineState {
         // Flush (fdatasync) the writer before dropping the handle
         if let Some(h) = handle.get_mut(handle_num) {
             if let Some(ref mut rw) = h.rw {
-                let _ = rw.flush();
+                if let Err(e) = rw.flush() {
+                    warn!("close_handle flush failed on handle {}: {}", handle_num, e);
+                }
             }
         }
         handle.shift_remove(handle_num);

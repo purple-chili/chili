@@ -2,12 +2,13 @@ use std::{
     env,
     io::{Read, Write},
     net::TcpStream,
+    path::PathBuf,
     sync::{Arc, LazyLock},
     time::Duration,
 };
 
 use crate::{errors::SpicyError, obj::SpicyObj};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use polars::{frame::DataFrame, prelude::IntoColumn, series::Series};
 use regex::Regex;
 
@@ -17,20 +18,68 @@ use crate::{ConnType, EngineState, Stack, engine_state::ReadWrite, serde6, serde
 /// [`File::sync_data`] (`fdatasync`), so that an explicit `.flush()` guarantees
 /// data durability on disk.  Normal `write()` calls pass straight through
 /// without any extra syscalls.
-struct SyncFile(std::fs::File);
+///
+/// On a sticky EIO (or any non-EINTR flush error), `flush()` closes the
+/// underlying fd, reopens the file at the same path, seeks to EOF, and
+/// retries `sync_data()` once.  This matches the recovery pattern used by
+/// Postgres, etcd, and RocksDB for transient device-level writeback errors.
+struct SyncFile {
+    file: std::fs::File,
+    path: PathBuf,
+}
 
 impl Write for SyncFile {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.write(buf)
+        self.file.write(buf)
     }
+
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.sync_data()
+        match self.file.sync_data() {
+            Ok(()) => return Ok(()),
+            Err(e) if e.raw_os_error() == Some(4 /* EINTR */) => {
+                // EINTR — retry once in place, no reopen needed.
+                return self.file.sync_data();
+            }
+            Err(first_err) => {
+                // Persistent error (likely sticky EIO) — close and reopen the fd.
+                let path_display = self.path.display();
+                let new_file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(false)
+                    .open(&self.path)
+                    .map_err(|reopen_err| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "fsync failed ({first_err}), reopen of {path_display} also failed: {reopen_err}"
+                            ),
+                        )
+                    })?;
+                self.file = new_file;
+                // Seek to end so subsequent writes append correctly.
+                use std::io::{Seek, SeekFrom};
+                self.file.seek(SeekFrom::End(0))?;
+                warn!(
+                    "fsync EIO on {}: closed and reopened fd after transient error",
+                    path_display
+                );
+                self.file.sync_data().map_err(|retry_err| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!(
+                            "fsync failed ({first_err}), retried after reopen of {path_display}, still failed: {retry_err}"
+                        ),
+                    )
+                })
+            }
+        }
     }
 }
 
 impl Read for SyncFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read(buf)
+        self.file.read(buf)
     }
 }
 
@@ -150,12 +199,13 @@ pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType, 
         count
     } else {
         file.seek(SeekFrom::End(0))
-            .map_err(|e| {
-                SpicyError::Err(format!("failed to seek to end of file, error: {}", e))
-            })?;
+            .map_err(|e| SpicyError::Err(format!("failed to seek to end of file, error: {}", e)))?;
         0
     };
-    let rw: Box<dyn ReadWrite> = Box::new(SyncFile(file));
+    let rw: Box<dyn ReadWrite> = Box::new(SyncFile {
+        file,
+        path: PathBuf::from(path),
+    });
     Ok((rw, conn_type, msg_count))
 }
 

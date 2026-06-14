@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.2] - 2026-06-14
+
+### Fixed
+
+- `SyncFile` now recovers from sticky EIO by closing and reopening the underlying fd on `flush()` failure, fixing the `fsync_handle` / `rotate_handle` wedge on transient I/O errors
+- `replay_chili_msgs_log` now tolerates torn trailing records (partial headers, short payloads, corrupt frames) — stops at the last valid frame with a warning instead of crashing replay
+- `close_handle` now logs flush errors instead of silently swallowing them
+
 ## [0.9.1] - 2026-06-11
 
 ### Added
