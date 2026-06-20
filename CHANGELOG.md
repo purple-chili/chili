@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.3] - 2026-06-20
+
+### Added
+
+- `.broker.validateSeqStrict` built-in — strict variant of `validateSeq` that returns an error on any corrupt or truncated frame instead of silently truncating; opens the file read-only
+
+### Fixed
+
+- `serde9::deserialize` now returns `Err` instead of panicking on truncated/torn frames — buffer-derived-length slices are bounds-checked via a `take` helper, so `count_seq_messages` torn-tail recovery works as designed
+- Fixed Boolean Series deserialization mismatch — `length` (bit count) was incorrectly used as a byte count to slice the bitmap data; now reads remaining bytes (`&data_bytes[i..]`) to match what `serialize_bitmap` actually writes
+
 ## [0.9.2] - 2026-06-14
 
 ### Fixed

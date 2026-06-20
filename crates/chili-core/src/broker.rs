@@ -78,6 +78,29 @@ fn validate_seq(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     Ok(SpicyObj::I64(count))
 }
 
+fn validate_seq_strict(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::StrOrSym, ArgType::Boolean])?;
+    let path = args[0].str().unwrap();
+    let must_deserialize = args[1].to_bool().unwrap();
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|e| SpicyError::Err(format!("failed to open file '{}': {}", path, e)))?;
+
+    let conn_type = utils::detect_conn_type(&mut file)?;
+    match conn_type {
+        ConnType::New => return Ok(SpicyObj::I64(0)),
+        ConnType::Sequence => {
+            let mut pad = [0u8; 4];
+            file.read_exact(&mut pad)
+                .map_err(|e| SpicyError::Err(format!("failed to read header '{}': {}", path, e)))?;
+        }
+        _ => return Err(SpicyError::Err(format!("not a sequence file '{}'", path))),
+    }
+    let (count, _) = utils::count_seq_messages_strict(&mut file, must_deserialize)?;
+    Ok(SpicyObj::I64(count))
+}
+
 fn eod(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let message = args[0];
     state.signal_eod(message)?;
@@ -101,6 +124,15 @@ pub static BROKER_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(validate_seq)),
                 2,
                 ".broker.validateSeq",
+                &["file", "must_deserialize"],
+            ),
+        ),
+        (
+            ".broker.validateSeqStrict".to_owned(),
+            Func::new_built_in_fn(
+                Some(Box::new(validate_seq_strict)),
+                2,
+                ".broker.validateSeqStrict",
                 &["file", "must_deserialize"],
             ),
         ),

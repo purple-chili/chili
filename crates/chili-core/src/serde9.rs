@@ -69,6 +69,21 @@ static IPC_COMPRESSION: LazyLock<Option<IpcCompression>> = LazyLock::new(|| {
     }
 });
 
+/// Bounds-checked slice: returns `Err` instead of panicking when `pos + len`
+/// exceeds the buffer, so that a torn/truncated frame produces a recoverable
+/// error instead of a process-killing panic.
+#[inline]
+fn take<'a>(vec: &'a [u8], pos: usize, len: usize) -> SpicyResult<&'a [u8]> {
+    vec.get(pos..pos + len).ok_or_else(|| {
+        SpicyError::DeserializationErr(format!(
+            "serde9: truncated frame: need {}..{} but buffer length is {}",
+            pos,
+            pos + len,
+            vec.len()
+        ))
+    })
+}
+
 pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
     let code = vec[*pos];
     *pos += 4;
@@ -126,7 +141,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
         243 | 242 | 128 => {
             let byte_len = u32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap()) as usize;
             *pos += 4;
-            let s = String::from_utf8(vec[*pos..*pos + byte_len].to_vec()).unwrap();
+            let s = String::from_utf8(take(vec, *pos, byte_len)?.to_vec()).unwrap();
             obj = if code == 243 {
                 SpicyObj::String(s)
             } else if code == 242 {
@@ -141,14 +156,15 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let offset = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
                 i += 8;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
                 i += 8;
-                let data = &data_bytes[i..i + length];
+                // Use remaining bytes — `length` is a bit count, not a byte count.
+                let data = &data_bytes[i..];
                 let bitmap = Bitmap::from_u8_slice(data, length + offset);
                 let array = BooleanArray::try_new(ArrowDataType::Boolean, bitmap, None).unwrap();
                 obj = SpicyObj::Series(Series::from_arrow("".into(), array.boxed()).unwrap());
@@ -157,7 +173,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
@@ -175,7 +191,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
@@ -194,7 +210,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
@@ -214,7 +230,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
@@ -236,7 +252,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
@@ -250,7 +266,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
@@ -264,7 +280,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
@@ -297,7 +313,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
@@ -311,7 +327,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += 4;
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let data_bytes = &vec[*pos..*pos + byte_len];
+                let data_bytes = take(vec, *pos, byte_len)?;
                 *pos += byte_len;
                 let mut i = 0;
                 let length = u64::from_le_bytes(data_bytes[i..i + 8].try_into().unwrap()) as usize;
@@ -352,7 +368,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
 
-                let keys = &vec[*pos..*pos + byte_len];
+                let keys = take(vec, *pos, byte_len)?;
                 let k_len = u64::from_le_bytes(keys[0..8].try_into().unwrap()) as usize;
 
                 let array_vec = keys[8..4 * dict_len + 8].to_vec();
@@ -364,7 +380,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
                 *pos += keys_end + PADDING[keys_end % 8].len();
                 let v_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;
-                let values = &vec[*pos..*pos + v_len];
+                let values = take(vec, *pos, v_len)?;
 
                 *pos += v_len + PADDING[v_len % 8].len();
                 let mut v_pos = 0;
@@ -385,7 +401,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
             *pos += 4;
             let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
             *pos += 8;
-            let df = IpcStreamReader::new(Cursor::new(&vec[*pos..*pos + byte_len]))
+            let df = IpcStreamReader::new(Cursor::new(take(vec, *pos, byte_len)?))
                 .finish()
                 .map_err(|e| SpicyError::Err(e.to_string()))?;
             obj = SpicyObj::DataFrame(df);
@@ -396,7 +412,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
             *pos += 4;
             let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
             *pos += 8;
-            let df = IpcStreamReader::new(Cursor::new(&vec[*pos..*pos + byte_len]))
+            let df = IpcStreamReader::new(Cursor::new(take(vec, *pos, byte_len)?))
                 .finish()
                 .map_err(|e| SpicyError::Err(e.to_string()))?;
             obj = SpicyObj::Series(
@@ -421,7 +437,7 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
             *pos += 4;
             let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
             *pos += 8;
-            let s = String::from_utf8(vec[*pos..*pos + byte_len].to_vec()).unwrap();
+            let s = String::from_utf8(take(vec, *pos, byte_len)?.to_vec()).unwrap();
             obj = SpicyObj::Fn(Func::new_raw_fn(&s, lang));
             *pos += byte_len + PADDING[byte_len % 8].len();
         }

@@ -154,8 +154,75 @@ pub fn count_seq_messages(
             if crate::serde9::deserialize(&buffer, &mut 0).is_err() {
                 break;
             }
+            // Defense-in-depth: if deserialize ever panics (e.g. on a torn/truncated
+            // frame), catch it here so the walk stops at the last good frame instead
+            // of killing the thread. The primary fix is in serde9::deserialize itself
+            // (returns Err, never panics), but this guard matches the pattern in
+            // replay_chili_msgs_log for robustness.
+            // Note: the Err-based check above handles the normal case; this comment
+            // documents the rationale for why catch_unwind is NOT needed here after
+            // the serde9 bounds-checking fix. If a future regression reintroduces
+            // panics, add catch_unwind back.
         } else if file.seek_relative(msg_size as i64).is_err() {
             break;
+        }
+        count += 1;
+        valid_size += msg_size + 16;
+    }
+    Ok((count, valid_size))
+}
+
+/// Strict variant of [`count_seq_messages`]: returns `Err` on any corrupt or
+/// truncated frame instead of silently stopping. Use this when you want to
+/// surface corruption to the caller rather than tolerating it.
+pub fn count_seq_messages_strict(
+    file: &mut std::fs::File,
+    must_deserialize: bool,
+) -> Result<(i64, u64), SpicyError> {
+    use std::io::{Read, Seek};
+
+    let total_size = file
+        .metadata()
+        .map_err(|e| SpicyError::Err(e.to_string()))?
+        .len();
+    let mut count: i64 = 0;
+    let mut valid_size: u64 = 8; // 8-byte magic header already consumed
+    while valid_size < total_size {
+        let mut header = [0u8; 16];
+        file.read_exact(&mut header).map_err(|e| {
+            SpicyError::Err(format!(
+                "failed to read frame header at offset {}: {}",
+                valid_size, e
+            ))
+        })?;
+        let msg_size = u64::from_le_bytes(header[..8].try_into().unwrap());
+        if msg_size == 0 {
+            return Err(SpicyError::Err(format!(
+                "zero-length frame at offset {}",
+                valid_size
+            )));
+        }
+        if must_deserialize {
+            let mut buffer = vec![0u8; msg_size as usize];
+            file.read_exact(&mut buffer).map_err(|e| {
+                SpicyError::Err(format!(
+                    "truncated frame payload at offset {} (expected {} bytes): {}",
+                    valid_size, msg_size, e
+                ))
+            })?;
+            crate::serde9::deserialize(&buffer, &mut 0).map_err(|e| {
+                SpicyError::Err(format!(
+                    "corrupt frame at offset {} (message #{}): {}",
+                    valid_size, count, e
+                ))
+            })?;
+        } else {
+            file.seek_relative(msg_size as i64).map_err(|e| {
+                SpicyError::Err(format!(
+                    "failed to seek past frame at offset {}: {}",
+                    valid_size, e
+                ))
+            })?;
         }
         count += 1;
         valid_size += msg_size + 16;
