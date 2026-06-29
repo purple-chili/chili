@@ -36,6 +36,12 @@
   (.tick.msgLog; tick[0; 0]; .tick.schema)
 };
 
+// Register a per-handle row filter for one topic.
+.tick.subscribeFiltered: {[topic; column; values]
+  .broker.subscribeFiltered[this.h; topic; column; values];
+  (.tick.msgLog; tick[0; 0]; .tick.schema)
+};
+
 .tick.unsubscribe: {[topics]
   topics: $[count topics; topics; key .tick.schema];
   // this is reserved for current stack

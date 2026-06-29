@@ -26,7 +26,7 @@ use polars::{
     io::parquet::read::ParquetReader,
     prelude::{
         ArrowDataType, ArrowField, Column, DataType, IntoLazy, NamedFrom, NamedFromOwned, TimeUnit,
-        col,
+        col, lit,
     },
     series::Series,
 };
@@ -73,6 +73,35 @@ pub struct Handle {
     pub on_disconnected: Option<String>,
 }
 
+/// Per-handle row filter: only rows where `column` is in `values` are sent.
+/// `key` deduplicates identical filters for serialization.
+#[derive(Clone, Debug)]
+pub struct SubFilter {
+    pub column: String,
+    pub values: std::collections::HashSet<String>,
+    key: String,
+}
+
+impl SubFilter {
+    pub fn new(column: String, mut values: Vec<String>) -> Self {
+        values.sort();
+        values.dedup();
+        let key = format!("{}\u{0}{}", column, values.join("\u{1}"));
+        Self {
+            column,
+            values: values.into_iter().collect(),
+            key,
+        }
+    }
+}
+
+/// Topic subscriber: handle plus optional row filter (`None` = whole frame).
+#[derive(Clone, Debug)]
+pub struct Subscriber {
+    pub handle: i64,
+    pub filter: Option<SubFilter>,
+}
+
 /// LRU cache size for parsed AST trees. 256 entries × ~1 KB per AST is
 /// well under 1 MB total memory budget. mdata's gateway sends a small
 /// number of distinct query shapes per (path, source) pair, so this is
@@ -93,7 +122,7 @@ pub struct EngineState {
     handle: RwLock<IndexMap<i64, Handle>>,
     tick_count: RwLock<Vec<i64>>,
     job: RwLock<IndexMap<i64, Job>>,
-    topic_map: RwLock<HashMap<String, Vec<i64>>>,
+    topic_map: RwLock<HashMap<String, Vec<Subscriber>>>,
     arc_self: RwLock<Option<Arc<Self>>>,
     /// Proposal D — LRU parse cache. Keyed on (path, source) so the same
     /// source under different IPC handles or REPL/IPC contexts produces
@@ -109,6 +138,14 @@ pub struct EngineState {
     interval: u64,
     /// Memory limit in MB. 0.0 means unlimited.
     memory_limit: f64,
+    /// Optional name of a function `(user; handle; query) -> query'` run on
+    /// inbound IPC requests before evaluation. Its return value replaces the
+    /// query; a hook error denies the request. `None` skips the hook. Only IPC
+    /// conn handlers consult this — local/REPL eval does not.
+    pre_eval_hook: RwLock<Option<String>>,
+    /// When true, a scheduled job that errors on fire is deactivated instead of
+    /// rescheduling. Default false preserves log-and-keep-firing behaviour.
+    jobs_deactivate_on_error: RwLock<bool>,
 }
 
 impl Default for EngineState {
@@ -166,6 +203,8 @@ impl EngineState {
             repl_lang: Language::Chili,
             interval: 0,
             memory_limit: 0.0,
+            pre_eval_hook: RwLock::new(None),
+            jobs_deactivate_on_error: RwLock::new(false),
         }
     }
 
@@ -272,6 +311,47 @@ impl EngineState {
     pub fn del_var(&self, id: &str) -> SpicyResult<SpicyObj> {
         let mut vars = self.vars.write();
         Ok(vars.remove(id).unwrap_or(SpicyObj::Null))
+    }
+
+    /// Register or clear the pre-eval hook name.
+    pub fn set_pre_eval_hook(&self, name: Option<String>) {
+        *self.pre_eval_hook.write() = name.filter(|n| !n.is_empty());
+    }
+
+    /// Return the registered pre-eval hook name, if any.
+    pub fn get_pre_eval_hook(&self) -> Option<String> {
+        self.pre_eval_hook.read().clone()
+    }
+
+    /// Evaluate `query` through the pre-eval hook when one is set.
+    /// The hook receives `(user; handle; query)` with `query` bound as-is, and
+    /// its return value is evaluated. With no hook, this is equivalent to `eval`.
+    pub fn eval_with_pre_hook(
+        &self,
+        stack: &mut Stack,
+        query: &SpicyObj,
+        src: &str,
+    ) -> SpicyResult<SpicyObj> {
+        let hook = self.pre_eval_hook.read().clone();
+        match hook {
+            Some(name) => {
+                let f = self.get_var(&name).map_err(|_| {
+                    SpicyError::EvalErr(format!("pre-eval hook '{}' is not defined", name))
+                })?;
+                if !matches!(f, SpicyObj::Fn(_)) {
+                    return Err(SpicyError::EvalErr(format!(
+                        "pre-eval hook '{}' is not a function",
+                        name
+                    )));
+                }
+                let user_obj = SpicyObj::Symbol(stack.user.clone());
+                let handle_obj = SpicyObj::I64(stack.h);
+                let args: Vec<&SpicyObj> = vec![&user_obj, &handle_obj, query];
+                let rewritten = crate::eval::eval_call(self, stack, &f, &args, &None, src)?;
+                self.eval(stack, &rewritten, src)
+            }
+            None => self.eval(stack, query, src),
+        }
     }
 
     /// Atomically take the accumulated DataFrame for `id` and replace it with
@@ -641,7 +721,10 @@ impl EngineState {
                 let utc_time = u64::from_le_bytes(header[8..16].try_into().unwrap()) as i64;
                 if (start_time > 0 && utc_time < start_time) || i < start {
                     if let Err(e) = file.seek(SeekFrom::Current(size as i64)) {
-                        warn!("torn skip-seek at index {}: {} — stopping replay at last good frame", i, e);
+                        warn!(
+                            "torn skip-seek at index {}: {} — stopping replay at last good frame",
+                            i, e
+                        );
                         break;
                     }
                     i += 1;
@@ -651,19 +734,26 @@ impl EngineState {
                 read_msg_count += 1;
                 let mut buffer = vec![0u8; size as usize];
                 if let Err(e) = file.read_exact(&mut buffer) {
-                    warn!("torn frame at index {}: {} — stopping replay at last good frame", i, e);
+                    warn!(
+                        "torn frame at index {}: {} — stopping replay at last good frame",
+                        i, e
+                    );
                     break;
                 }
-                let list = match std::panic::catch_unwind(|| {
-                    serde9::deserialize(&buffer, &mut 0)
-                }) {
+                let list = match std::panic::catch_unwind(|| serde9::deserialize(&buffer, &mut 0)) {
                     Ok(Ok(l)) => l,
                     Ok(Err(e)) => {
-                        warn!("corrupt frame at index {}: {} — stopping replay at last good frame", i, e);
+                        warn!(
+                            "corrupt frame at index {}: {} — stopping replay at last good frame",
+                            i, e
+                        );
                         break;
                     }
                     Err(_) => {
-                        warn!("corrupt frame at index {} caused panic — stopping replay at last good frame", i);
+                        warn!(
+                            "corrupt frame at index {} caused panic — stopping replay at last good frame",
+                            i
+                        );
                         break;
                     }
                 };
@@ -1220,9 +1310,68 @@ impl EngineState {
         }
     }
 
+    /// Fire-and-forget async write to any connected handle (including incoming).
+    /// Unlike [`Self::async_`], does not read a response or reject incoming handles.
+    pub fn reply(&self, h: &i64, msg: &SpicyObj) -> SpicyResult<SpicyObj> {
+        let mut handle = self.handle.write();
+        match handle.get_mut(h) {
+            Some(Handle {
+                rw: Some(rw),
+                is_local,
+                ipc_type,
+                conn_type,
+                ..
+            }) => {
+                if *conn_type == ConnType::Disconnected {
+                    return Err(SpicyError::Err(format!("handle {h} is disconnected")));
+                }
+                match msg {
+                    SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
+                        if *ipc_type == IpcType::Q {
+                            let v8 = serde6::serialize(msg)?;
+                            let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
+                            if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Async) {
+                                *conn_type = ConnType::Disconnected;
+                                return Err(SpicyError::Err(e.to_string()));
+                            }
+                            Ok(SpicyObj::Null)
+                        } else {
+                            let v8 = serde9::serialize(msg, !*is_local)?;
+                            if let Err(e) = utils::write_chili_ipc_msg(rw, &v8, MessageType::Async) {
+                                *conn_type = ConnType::Disconnected;
+                                return Err(SpicyError::Err(e.to_string()));
+                            }
+                            Ok(SpicyObj::Null)
+                        }
+                    }
+                    _ => Err(SpicyError::MismatchedTypeErr(
+                        "sym|str|mixedList".to_owned(),
+                        msg.get_type_name(),
+                    )),
+                }
+            }
+            _ => Err(SpicyError::InvalidHandleErr(*h)),
+        }
+    }
+
     pub fn add_subscriber(&self, topic: &str, h: i64) -> SpicyResult<()> {
+        self.add_subscriber_filtered(topic, h, None)
+    }
+
+    /// Register a subscriber with an optional row filter.
+    /// Re-subscribing the same handle replaces its filter.
+    pub fn add_subscriber_filtered(
+        &self,
+        topic: &str,
+        h: i64,
+        filter: Option<SubFilter>,
+    ) -> SpicyResult<()> {
         let mut topic_map = self.topic_map.write();
-        topic_map.entry(topic.to_owned()).or_insert(vec![]).push(h);
+        let subs = topic_map.entry(topic.to_owned()).or_insert(vec![]);
+        match subs.iter_mut().find(|s| s.handle == h) {
+            Some(existing) => existing.filter = filter,
+            None => subs.push(Subscriber { handle: h, filter }),
+        }
         Ok(())
     }
 
@@ -1231,11 +1380,56 @@ impl EngineState {
         topic_map
             .entry(topic.to_owned())
             .or_insert(vec![])
-            .retain(|&x| x != h);
+            .retain(|s| s.handle != h);
         Ok(())
     }
 
-    pub fn publish(&self, table: &str, bytes: &[Vec<u8>]) -> SpicyResult<()> {
+    /// Keep rows whose `column` is in `filter.values`, or return the full frame
+    /// if the message is not a DataFrame or the column is missing.
+    fn filtered_message(message: &SpicyObj, filter: &SubFilter) -> SpicyObj {
+        let SpicyObj::DataFrame(df) = message else {
+            return message.clone();
+        };
+        if df.column(&filter.column).is_err() {
+            warn!(
+                "filtered subscribe: column '{}' not in published frame; sending unfiltered",
+                filter.column
+            );
+            return message.clone();
+        }
+        let allowed: Vec<&str> = filter.values.iter().map(|s| s.as_str()).collect();
+        let mask = Series::new("__sub_filter__".into(), allowed);
+        // Cast to String in the predicate only; original column dtype is preserved.
+        match df
+            .clone()
+            .lazy()
+            .filter(
+                col(&filter.column)
+                    .cast(DataType::String)
+                    .is_in(lit(mask).implode(false), false),
+            )
+            .collect()
+        {
+            Ok(filtered) => SpicyObj::DataFrame(filtered),
+            Err(e) => {
+                warn!(
+                    "filtered subscribe failed on column '{}' ({}); sending unfiltered",
+                    filter.column, e
+                );
+                message.clone()
+            }
+        }
+    }
+
+    /// Broadcast `message` to subscribers on `table`, applying per-handle filters.
+    /// Each distinct filter is serialized once and shared across matching handles.
+    pub fn publish(
+        &self,
+        upd_name: &SpicyObj,
+        table_obj: &SpicyObj,
+        table: &str,
+        message: &SpicyObj,
+    ) -> SpicyResult<()> {
         let mut topic_map = self.topic_map.write();
         let subscribers = match topic_map.get(table) {
             Some(subscribers) => subscribers.clone(),
@@ -1250,8 +1444,36 @@ impl EngineState {
             return Ok(());
         }
 
+        // One serialization per distinct filter (plus one for unfiltered).
+        let serialize_frame = |frame_msg: &SpicyObj| -> SpicyResult<Vec<Vec<u8>>> {
+            serde9::serialize(
+                &SpicyObj::MixedList(vec![upd_name.clone(), table_obj.clone(), frame_msg.clone()]),
+                false,
+            )
+        };
+        let mut payload_cache: HashMap<Option<String>, Vec<Vec<u8>>> = HashMap::new();
+        let mut filter_by_key: HashMap<String, SubFilter> = HashMap::new();
+        for sub in &subscribers {
+            let cache_key = sub.filter.as_ref().map(|f| f.key.clone());
+            if let Some(f) = &sub.filter {
+                filter_by_key
+                    .entry(f.key.clone())
+                    .or_insert_with(|| f.clone());
+            }
+            if !payload_cache.contains_key(&cache_key) {
+                let frame_msg = match &sub.filter {
+                    None => message.clone(),
+                    Some(f) => Self::filtered_message(message, f),
+                };
+                payload_cache.insert(cache_key, serialize_frame(&frame_msg)?);
+            }
+        }
+
         let mut handle = self.handle.write();
-        for subscriber in subscribers {
+        for sub in subscribers {
+            let subscriber = sub.handle;
+            let cache_key = sub.filter.as_ref().map(|f| f.key.clone());
+            let bytes = payload_cache.get(&cache_key).expect("payload cached above");
             if let Some(v) = handle.get_mut(&subscriber) {
                 if v.conn_type == ConnType::Disconnected {
                     continue;
@@ -1280,7 +1502,7 @@ impl EngineState {
                 topic_map
                     .get_mut(table)
                     .unwrap()
-                    .retain(|x| *x != subscriber);
+                    .retain(|s| s.handle != subscriber);
             }
         }
         Ok(())
@@ -1359,7 +1581,7 @@ impl EngineState {
         let mut offset = 0;
         for (topic, handles) in topic_map.iter() {
             topics.push(topic.clone());
-            subscribers.extend(handles);
+            subscribers.extend(handles.iter().map(|s| s.handle));
             offset += handles.len();
             offsets.push(offset as i32);
         }
@@ -2064,6 +2286,16 @@ impl EngineState {
         )))
     }
 
+    /// Enable or disable deactivating scheduled jobs after a fire error.
+    pub fn set_jobs_deactivate_on_error(&self, enabled: bool) {
+        *self.jobs_deactivate_on_error.write() = enabled;
+    }
+
+    /// Return whether jobs are deactivated after a fire error.
+    pub fn jobs_deactivate_on_error(&self) -> bool {
+        *self.jobs_deactivate_on_error.read()
+    }
+
     pub fn execute_jobs(&self) {
         let mut active_jobs: HashMap<i64, Job> = HashMap::new();
         {
@@ -2076,6 +2308,7 @@ impl EngineState {
         }
 
         if !active_jobs.is_empty() {
+            let quarantine = self.jobs_deactivate_on_error();
             for (id, job) in active_jobs.iter_mut() {
                 let src_path = if self.repl_lang == Language::Chili {
                     format!("job{}.chi", id)
@@ -2087,13 +2320,20 @@ impl EngineState {
                     &SpicyObj::String(self.repl_lang.format_call(&job.fn_name, &[])),
                     &src_path,
                 );
+                let errored = obj.is_err();
                 if let Err(e) = obj {
                     error!(
                         "failed to execute job id '{}' , fn_name '{}', err - {}\n",
                         id, job.fn_name, e
                     );
                 };
-                if job.next_run_time + job.interval < job.end_time {
+                if errored && quarantine {
+                    warn!(
+                        "quarantining job id '{}' fn_name '{}' after error (deactivate_on_error)",
+                        id, job.fn_name
+                    );
+                    job.is_active = false;
+                } else if job.next_run_time + job.interval < job.end_time {
                     job.next_run_time += job.interval;
                 } else {
                     job.is_active = false;
@@ -2290,15 +2530,18 @@ impl EngineState {
         use std::net::SocketAddr;
 
         let ip = if remote { "0.0.0.0" } else { "127.0.0.1" };
-        let addr: SocketAddr = format!("{}:{}", ip, port)
-            .parse()
-            .map_err(|e| SpicyError::OsErr(format!("invalid listen addr {}:{} - {}", ip, port, e)))?;
+        let addr: SocketAddr = format!("{}:{}", ip, port).parse().map_err(|e| {
+            SpicyError::OsErr(format!("invalid listen addr {}:{} - {}", ip, port, e))
+        })?;
 
         let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))
-            .map_err(|e| SpicyError::OsErr(format!("socket create failed on port {} - {}", port, e)))?;
-        socket
-            .set_reuse_address(true)
-            .map_err(|e| SpicyError::OsErr(format!("set SO_REUSEADDR failed on port {} - {}", port, e)))?;
+            .map_err(|e| {
+                SpicyError::OsErr(format!("socket create failed on port {} - {}", port, e))
+            })?;
+        // SO_REUSEADDR: survive a peer's TIME_WAIT on restart.
+        socket.set_reuse_address(true).map_err(|e| {
+            SpicyError::OsErr(format!("set SO_REUSEADDR failed on port {} - {}", port, e))
+        })?;
         socket
             .bind(&addr.into())
             .map_err(|e| SpicyError::OsErr(format!("bind failed on port {} - {}", port, e)))?;

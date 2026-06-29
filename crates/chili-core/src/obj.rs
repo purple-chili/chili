@@ -550,6 +550,18 @@ impl SpicyObj {
                 )),
             },
             SpicyObj::MixedList(l) if l.is_empty() => Ok(vec![]),
+            // handle mixed list of strings/symbols
+            SpicyObj::MixedList(l) => l
+                .iter()
+                .map(|e| match e {
+                    SpicyObj::String(s) => Ok(s.as_str()),
+                    SpicyObj::Symbol(s) => Ok(s.as_str()),
+                    _ => Err(SpicyError::MismatchedTypeErr(
+                        "sym | syms".to_owned(),
+                        e.get_type_name(),
+                    )),
+                })
+                .collect(),
             _ => Err(SpicyError::MismatchedTypeErr(
                 "sym | syms".to_owned(),
                 self.get_type_name(),

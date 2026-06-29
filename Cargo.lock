@@ -468,6 +468,7 @@ version = "0.9.4"
 dependencies = [
  "anyhow",
  "ariadne",
+ "chili-op",
  "chili-parser",
  "chrono",
  "chumsky",

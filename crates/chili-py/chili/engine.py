@@ -110,6 +110,38 @@ class ChiliEngine:
         """
         return self.engine.del_var(id)
 
+    def set_pre_eval_hook(self, name: str) -> None:
+        """Register a pre-eval hook on inbound IPC requests.
+
+        ``name(user; handle; query)`` runs before evaluation; its return value
+        replaces the query, or a ``raise`` denies the request. Local ``eval`` is
+        not gated.
+
+        Args:
+            name: Function ``(user; handle; query) -> query'`` already defined.
+        """
+        return self.engine.set_pre_eval_hook(name)
+
+    def clear_pre_eval_hook(self) -> None:
+        """Clear any registered pre-eval hook (requests run unchanged)."""
+        return self.engine.clear_pre_eval_hook()
+
+    def get_pre_eval_hook(self) -> "str | None":
+        """Return the registered pre-eval hook name, or ``None``."""
+        return self.engine.get_pre_eval_hook()
+
+    def set_jobs_deactivate_on_error(self, enabled: bool) -> None:
+        """Enable or disable deactivating scheduled jobs after a fire error.
+
+        When enabled, a job that raises on fire is deactivated instead of
+        rescheduling every interval. Default disabled.
+        """
+        return self.engine.set_jobs_deactivate_on_error(enabled)
+
+    def jobs_deactivate_on_error(self) -> bool:
+        """Return whether quarantine-on-error is enabled for ``.job``s."""
+        return self.engine.jobs_deactivate_on_error()
+
     def drain(self, id: str) -> Any:
         """Atomically take the accumulated DataFrame and reset the variable.
 
@@ -284,15 +316,12 @@ class ChiliEngine:
             sort_columns: Optional columns to sort by before writing.
             rechunk: Re-chunk the data into a single contiguous allocation.
             overwrite: If ``True``, overwrite an existing partition.
-            compression: Optional Parquet compression codec name. One of
-                ``"snappy"`` (default if omitted), ``"zstd"``, ``"lz4_raw"``,
-                ``"uncompressed"``, ``"gzip"``, ``"brotli"``. Case-insensitive.
-                ``None`` preserves the default codec for byte-equivalence
-                with pre-Sprint-15 output (ADR 0005). Sprint 15 / 0.8.3.
-            row_group_size: Optional row group size override. ``None``
-                preserves chili's existing auto-sizing logic (auto-computed
-                clamp 1024..32768 when ``sort_columns`` is non-empty,
-                else polars default 262144). Sprint 15 / 0.8.3.
+
+        Note:
+            The Parquet codec is the polars default (**zstd**) and the
+            row-group size is auto-sized (clamped when ``sort_columns`` is set,
+            else the polars default 262144). A per-table ``compression`` /
+            ``row_group_size`` override is a pending feature request
 
         Returns:
             The number of rows written.
@@ -479,9 +508,32 @@ class ChiliEngine:
             self.is_sub_loaded = True
 
     # The socket should start with chili://hostname:port
-    def subscribe(self, tick_socket: str, topics: Optional[list[str]] = None) -> None:
+    def subscribe(
+        self,
+        tick_socket: str,
+        topics: Optional[list[str]] = None,
+        filters: Optional[dict[str, tuple[str, list[str]]]] = None,
+    ) -> None:
+        """Subscribe to one or more topics on a tickerplant.
+
+        Args:
+            tick_socket: ``chili://host:port`` of the tickerplant.
+            topics: list of topic (table) names. Topics that also appear in
+                ``filters`` are subscribed with a row-filter instead.
+            filters: optional per-topic row filter
+                ``{topic: (column, [values])}``. Live broadcasts send only
+                matching rows; replay stays unfiltered. Each filtered topic
+                uses its own connection.
+        """
         self.load_sub()
-        self.fn_call(".sub.init", [tick_socket, topics or []])
+        filters = filters or {}
+        unfiltered = [t for t in (topics or []) if t not in filters]
+        if unfiltered or not filters:
+            self.fn_call(".sub.init", [tick_socket, unfiltered])
+        for topic, (column, values) in filters.items():
+            self.fn_call(
+                ".sub.initFiltered", [tick_socket, topic, column, list(values)]
+            )
 
     def open_handle(self, socket: str) -> int:
         return self.fn_call(".handle.open", [socket])

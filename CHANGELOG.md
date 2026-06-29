@@ -6,13 +6,23 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `set_jobs_deactivate_on_error` and `jobs_deactivate_on_error` on `EngineState` and Python `ChiliEngine` — optionally deactivate scheduled jobs after a fire error instead of rescheduling every interval
+- Pre-eval request hook — `EngineState::eval_with_pre_hook`, `set_pre_eval_hook`, and `get_pre_eval_hook`; inbound IPC requests can be routed through a registered `(user; handle; query) -> query'` function before evaluation (allow, rewrite, or deny via `raise`)
+- `set_pre_eval_hook`, `clear_pre_eval_hook`, and `get_pre_eval_hook` on Python `ChiliEngine`
+- `.broker.subscribeFiltered` built-in — register a subscriber on one topic with an optional per-handle row filter (`column` + allowed values); empty values means no filter
+- `.tick.subscribeFiltered` and `.sub.initFiltered` pepper helpers — filtered live broadcast with unfiltered historical replay; filter state is restored on `.sub.recover`
+- `filters` parameter on Python `ChiliEngine.subscribe()` — `{topic: (column, [values])}`; each filtered topic uses its own connection
 - `bind_tcp_listener` and `run_accept_loop` on `EngineState` — separate synchronous bind from the blocking accept loop
-- Integration tests for `start_tcp_listener` bind behavior (`test_tcp_listener_bind.py`)
+- Integration tests for job quarantine (`job_quarantine_test.rs`), pre-eval hook (`pre_eval_hook_test.rs`), filtered subscribe (`test_tick_sub_filtered.py`), and TCP listener bind behavior (`test_tcp_listener_bind.py`)
 
 ### Changed
 
+- `execute_jobs` deactivates a failing scheduled job when `jobs_deactivate_on_error` is enabled; default behaviour (log and reschedule) is unchanged
+- Inbound IPC conn handlers (`handle_q_conn`, `handle_chili_conn`) use `eval_with_pre_hook` instead of `eval` when a pre-eval hook is registered; local/REPL eval is unchanged
+- `EngineState::publish` now accepts the update frame and applies per-subscriber row filters before serializing; each distinct filter is serialized once and shared across matching handles
 - Python `start_tcp_listener` binds synchronously and raises `ChiliError` when the port is unavailable, instead of failing asynchronously via process exit
 - TCP listener bind uses `socket2` with `SO_REUSEADDR` set before bind
+- `SpicyObj::to_str_vec` accepts a `MixedList` of strings/symbols so Python symbol lists work as filter values
 
 ## [0.9.3] - 2026-06-20
 

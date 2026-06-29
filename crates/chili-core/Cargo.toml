@@ -84,6 +84,7 @@ socket2 = "0.6.4"
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
 serial_test = "3"
+chili-op = { path = "../chili-op" }
 
 [[bench]]
 name = "parse_cache"

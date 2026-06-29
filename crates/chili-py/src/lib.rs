@@ -366,6 +366,39 @@ impl PyEngineState {
         spicy_to_py(py, obj)
     }
 
+    /// Register a pre-eval hook for inbound IPC requests.
+    fn set_pre_eval_hook(&self, name: &str) -> PyResult<()> {
+        self.check_fork()?;
+        self.inner.set_pre_eval_hook(Some(name.to_string()));
+        Ok(())
+    }
+
+    /// Clear the pre-eval hook.
+    fn clear_pre_eval_hook(&self) -> PyResult<()> {
+        self.check_fork()?;
+        self.inner.set_pre_eval_hook(None);
+        Ok(())
+    }
+
+    /// Return the registered pre-eval hook name, if any.
+    fn get_pre_eval_hook(&self) -> PyResult<Option<String>> {
+        self.check_fork()?;
+        Ok(self.inner.get_pre_eval_hook())
+    }
+
+    /// Enable or disable deactivating scheduled jobs after a fire error.
+    fn set_jobs_deactivate_on_error(&self, enabled: bool) -> PyResult<()> {
+        self.check_fork()?;
+        self.inner.set_jobs_deactivate_on_error(enabled);
+        Ok(())
+    }
+
+    /// Return whether jobs are deactivated after a fire error.
+    fn jobs_deactivate_on_error(&self) -> PyResult<bool> {
+        self.check_fork()?;
+        Ok(self.inner.jobs_deactivate_on_error())
+    }
+
     /// Atomically take the accumulated DataFrame for a variable and reset it
     /// to a 0-row frame with the same schema.
     ///

@@ -85,6 +85,15 @@ fn fsync_handle(
     state.fsync_handle(&handle_num)
 }
 
+fn reply_handle(
+    state: &EngineState,
+    _stack: &mut Stack,
+    args: &[&SpicyObj],
+) -> SpicyResult<SpicyObj> {
+    let handle_num = args[0].to_i64()?;
+    state.reply(&handle_num, args[1])
+}
+
 fn exit(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let exit_code = args[0].to_i64()?;
     state.shutdown();
@@ -727,6 +736,15 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 1,
                 ".handle.fsync",
                 &["handle_num"],
+            ),
+        ),
+        (
+            ".handle.reply".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(reply_handle)),
+                2,
+                ".handle.reply",
+                &["handle_num", "msg"],
             ),
         ),
         (

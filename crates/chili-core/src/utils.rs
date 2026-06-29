@@ -504,7 +504,7 @@ pub fn handle_q_conn(
         } else {
             format!("ipc{}.pep", handle)
         };
-        let res = state.eval(&mut stack, &obj, &src_path);
+        let res = state.eval_with_pre_hook(&mut stack, &obj, &src_path);
         debug!("evaluated result: {:?}", res);
 
         if message_type == MessageType::Sync {
@@ -611,7 +611,7 @@ pub fn handle_chili_conn(
         };
         debug!("eval chili IPC message: {:?}", any);
         stack.clear_vars();
-        let res = state.eval(&mut stack, &any, &src_path);
+        let res = state.eval_with_pre_hook(&mut stack, &any, &src_path);
 
         if message_type == MessageType::Sync {
             match res {
