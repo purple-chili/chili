@@ -86,6 +86,8 @@ pub struct QueuedWriter {
     pub sender: std::sync::mpsc::SyncSender<Vec<Vec<u8>>>,
     /// Set by the writer thread on write error, or by the engine on a full queue.
     pub disconnected: Arc<std::sync::atomic::AtomicBool>,
+    /// Frames enqueued but not yet written; incremented on `try_send`, decremented in the writer thread.
+    pub depth: Arc<std::sync::atomic::AtomicI64>,
 }
 
 enum WriteTarget {
@@ -1680,7 +1682,9 @@ impl EngineState {
                     }
                 }
                 WriteTarget::Queued(q) => match q.sender.try_send(bytes.clone()) {
-                    Ok(()) => (),
+                    Ok(()) => {
+                        q.depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                     Err(std::sync::mpsc::TrySendError::Full(_)) => {
                         warn!(
                             "subscriber {} outbound queue full (slow consumer), shedding",
@@ -1778,7 +1782,9 @@ impl EngineState {
                     }
                 }
                 WriteTarget::Queued(q) => match q.sender.try_send(bytes.clone()) {
-                    Ok(()) => (),
+                    Ok(()) => {
+                        q.depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                     Err(std::sync::mpsc::TrySendError::Full(_)) => {
                         warn!(
                             "subscriber {} outbound queue full on EOD (slow consumer), shedding",
@@ -1848,9 +1854,11 @@ impl EngineState {
                 .as_ref()
                 .and_then(|s| s.try_clone().ok());
             let disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let depth = Arc::new(std::sync::atomic::AtomicI64::new(0));
             let (sender, receiver) =
                 std::sync::mpsc::sync_channel::<Vec<Vec<u8>>>(queue_max as usize);
             let writer_disc = Arc::clone(&disconnected);
+            let writer_depth = Arc::clone(&depth);
             let writer_h = *h;
             thread::spawn(move || {
                 let mut rw_box = rw_box;
@@ -1858,9 +1866,10 @@ impl EngineState {
                     if writer_disc.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
-                    if let Err(e) =
-                        crate::write_chili_ipc_msg(&mut *rw_box, &frame, MessageType::Async)
-                    {
+                    let write_res =
+                        crate::write_chili_ipc_msg(&mut *rw_box, &frame, MessageType::Async);
+                    writer_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    if let Err(e) = write_res {
                         warn!(
                             "subscriber-queue writer for handle {} failed to write ({}), shedding",
                             writer_h, e
@@ -1876,6 +1885,7 @@ impl EngineState {
             handle.queued = Some(QueuedWriter {
                 sender,
                 disconnected,
+                depth,
             });
         }
 
@@ -2831,6 +2841,58 @@ impl EngineState {
                     .collect::<Vec<String>>(),
             )),
         );
+
+        let (handle_nums, queue_depths, total_queue_depth) = {
+            let handles = self.handle.read();
+            let mut nums = Vec::with_capacity(handles.len());
+            let mut depths = Vec::with_capacity(handles.len());
+            let mut total: i64 = 0;
+            for (k, v) in handles.iter() {
+                let d = v
+                    .queued
+                    .as_ref()
+                    .map(|q| q.depth.load(std::sync::atomic::Ordering::Relaxed).max(0))
+                    .unwrap_or(0);
+                nums.push(*k);
+                depths.push(d);
+                total += d;
+            }
+            (nums, depths, total)
+        };
+        status.insert(
+            "handle_count".into(),
+            SpicyObj::I64(handle_nums.len() as i64),
+        );
+        status.insert(
+            "handle_nums".into(),
+            SpicyObj::Series(Series::new("handle".into(), handle_nums)),
+        );
+        status.insert(
+            "queue_depth_by_handle".into(),
+            SpicyObj::Series(Series::new("queue_depth".into(), queue_depths)),
+        );
+        status.insert("queue_depth_total".into(), SpicyObj::I64(total_queue_depth));
+
+        // `-1` when the current process cannot be read.
+        let rss_bytes: i64 = match sysinfo::get_current_pid() {
+            Ok(pid) => {
+                let mut sys = sysinfo::System::new();
+                sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+                sys.process(pid).map(|p| p.memory() as i64).unwrap_or(-1)
+            }
+            Err(_) => -1,
+        };
+        status.insert("process_memory_rss_bytes".into(), SpicyObj::I64(rss_bytes));
+
+        status.insert(
+            "vars_len".into(),
+            SpicyObj::I64(self.vars.read().len() as i64),
+        );
+        status.insert(
+            "topic_count".into(),
+            SpicyObj::I64(self.topic_map.read().len() as i64),
+        );
+
         Ok(SpicyObj::Dict(status))
     }
 

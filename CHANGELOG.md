@@ -17,7 +17,8 @@ All notable changes to this project will be documented in this file.
 - `.tick.subscribeFiltered` and `.sub.initFiltered` pepper helpers — filtered live broadcast with unfiltered historical replay; filter state is restored on `.sub.recover`
 - `filters` parameter on Python `ChiliEngine.subscribe()` — `{topic: (column, [values])}`; each filtered topic uses its own connection
 - `bind_tcp_listener` and `run_accept_loop` on `EngineState` — separate synchronous bind from the blocking accept loop
-- Integration tests for post-eval hook (`post_eval_hook_test.rs`), slow-subscriber shed (`slow_subscriber_shed_test.rs`), async reply (`async_reply_test.rs`), job quarantine (`job_quarantine_test.rs`), pre-eval hook (`pre_eval_hook_test.rs`), filtered subscribe (`test_tick_sub_filtered.py`), TCP listener bind behavior (`test_tcp_listener_bind.py`), and partition atomic overwrite / codec (`partition_atomic_codec_test.rs`)
+- Integration tests for post-eval hook (`post_eval_hook_test.rs`), slow-subscriber shed (`slow_subscriber_shed_test.rs`), async reply (`async_reply_test.rs`), job quarantine (`job_quarantine_test.rs`), pre-eval hook (`pre_eval_hook_test.rs`), filtered subscribe (`test_tick_sub_filtered.py`), TCP listener bind behavior (`test_tcp_listener_bind.py`), partition atomic overwrite / codec (`partition_atomic_codec_test.rs`), and engine stats introspection (`engine_stats_introspection_test.rs`)
+- `EngineState::stats()` — subscriber outbound queue depth (`queue_depth_by_handle`, `queue_depth_total`), process RSS (`process_memory_rss_bytes`), open handles (`handle_count`, `handle_nums`), and bound-var / topic counts (`vars_len`, `topic_count`)
 - `wparc` built-in — customized partition write (`atomic` single-shard overwrite, per-call Parquet compression); `wpar` unchanged at 7 args
 - `write_partition_native_full` exported from `chili-op`
 - `write_partitioned_df_custom` on Python `ChiliEngine`
