@@ -1,4 +1,4 @@
-//! Tests for `.z.w` and `.handle.reply`.
+//! Tests for `this.h` (caller handle) and `.handle.reply`.
 
 use chili_core::{EngineState, SpicyObj, Stack};
 use chili_op::{BUILT_IN_FN, LOG_FN};
