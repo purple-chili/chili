@@ -73,6 +73,8 @@ pub struct Handle {
     pub ipc_type: IpcType,
     pub conn_type: ConnType,
     pub on_disconnected: Option<String>,
+    /// Extra `TcpStream` dup used to `shutdown(Both)` incoming connections on disconnect.
+    pub shutdown_handle: Option<std::net::TcpStream>,
 }
 
 /// Per-handle row filter: only rows where `column` is in `values` are sent.
@@ -148,6 +150,8 @@ pub struct EngineState {
     /// When true, a scheduled job that errors on fire is deactivated instead of
     /// rescheduling. Default false preserves log-and-keep-firing behaviour.
     jobs_deactivate_on_error: RwLock<bool>,
+    /// Per-write timeout (ms) for incoming subscriber sockets; `0` disables.
+    write_timeout_ms: std::sync::atomic::AtomicI64,
 }
 
 impl Default for EngineState {
@@ -207,6 +211,7 @@ impl EngineState {
             memory_limit: 0.0,
             pre_eval_hook: RwLock::new(None),
             jobs_deactivate_on_error: RwLock::new(false),
+            write_timeout_ms: std::sync::atomic::AtomicI64::new(0),
         }
     }
 
@@ -1003,6 +1008,18 @@ impl EngineState {
         }
         Ok(SpicyObj::Null)
     }
+    /// Set per-write timeout for incoming sockets accepted after this call (`0` = off).
+    pub fn set_write_timeout_ms(&self, ms: i64) {
+        self.write_timeout_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_shutdown_handle(&self, h: &i64, s: std::net::TcpStream) {
+        if let Some(hd) = self.handle.write().get_mut(h) {
+            hd.shutdown_handle = Some(s);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn set_handle(
         &self,
@@ -1030,6 +1047,7 @@ impl EngineState {
                 ipc_type,
                 conn_type,
                 on_disconnected: None,
+                shutdown_handle: None,
             },
         );
         Ok(SpicyObj::I64(h))
@@ -1087,6 +1105,7 @@ impl EngineState {
                         ipc_type,
                         conn_type: ConnType::Subscribing,
                         on_disconnected: handle.on_disconnected,
+                        shutdown_handle: None,
                     },
                 );
                 let user = self.user.clone();
@@ -1114,6 +1133,9 @@ impl EngineState {
     fn mark_disconnected(&self, h: &i64) {
         if let Some(hd) = self.handle.write().get_mut(h) {
             hd.conn_type = ConnType::Disconnected;
+            if let Some(s) = hd.shutdown_handle.as_ref() {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
         }
     }
 
@@ -1573,6 +1595,9 @@ impl EngineState {
             for subscriber in failed {
                 if let Some(hd) = handle.get_mut(&subscriber) {
                     hd.conn_type = ConnType::Disconnected;
+                    if let Some(s) = hd.shutdown_handle.as_ref() {
+                        let _ = s.shutdown(std::net::Shutdown::Both);
+                    }
                 }
             }
         }
@@ -1634,6 +1659,9 @@ impl EngineState {
             for h in failed {
                 if let Some(hd) = handle.get_mut(&h) {
                     hd.conn_type = ConnType::Disconnected;
+                    if let Some(s) = hd.shutdown_handle.as_ref() {
+                        let _ = s.shutdown(std::net::Shutdown::Both);
+                    }
                 }
             }
         }
@@ -2726,6 +2754,22 @@ impl EngineState {
                     continue;
                 }
             };
+            let write_timeout_ms = state_tcp
+                .write_timeout_ms
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let shutdown_dup = if write_timeout_ms > 0 {
+                if let Err(e) = cloned_stream
+                    .set_write_timeout(Some(Duration::from_millis(write_timeout_ms as u64)))
+                {
+                    warn!(
+                        "set_write_timeout failed on incoming handle (continuing): {}",
+                        e
+                    );
+                }
+                stream.try_clone().ok()
+            } else {
+                None
+            };
             let h = match state_tcp.set_handle(
                 Some(Box::new(cloned_stream)),
                 &peer_addr,
@@ -2753,6 +2797,9 @@ impl EngineState {
                     continue;
                 }
             };
+            if let Some(s) = shutdown_dup {
+                state_tcp.set_shutdown_handle(&h_i64, s);
+            }
             if auth_info.version <= 6 {
                 let mut stream = Box::new(stream);
                 thread::spawn(move || {

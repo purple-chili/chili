@@ -380,6 +380,13 @@ impl PyEngineState {
         Ok(())
     }
 
+    /// Set per-write timeout for incoming subscriber sockets (`0` = off).
+    fn set_write_timeout_ms(&self, ms: i64) -> PyResult<()> {
+        self.check_fork()?;
+        self.inner.set_write_timeout_ms(ms);
+        Ok(())
+    }
+
     /// Return the registered pre-eval hook name, if any.
     fn get_pre_eval_hook(&self) -> PyResult<Option<String>> {
         self.check_fork()?;

@@ -416,6 +416,10 @@ class ChiliEngine:
         """
         self.engine.start_tcp_listener(port, remote, users or [])
 
+    def set_write_timeout_ms(self, ms: int) -> None:
+        """Shed a subscriber whose socket blocks a write for > ms (0 = off)."""
+        self.engine.set_write_timeout_ms(ms)
+
     def list_handle(self) -> pl.DataFrame:
         """Return a DataFrame listing all active handles."""
         return self.engine.list_handle()

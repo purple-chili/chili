@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `set_write_timeout_ms` on `EngineState` and Python `ChiliEngine` — optionally shed incoming subscribers whose socket blocks a write (disconnect + `shutdown(Both)`); default `0` disables
 - `.handle.reply` built-in and `EngineState::reply` — fire-and-forget async write to any connected handle, including incoming caller connections
 - `set_jobs_deactivate_on_error` and `jobs_deactivate_on_error` on `EngineState` and Python `ChiliEngine` — optionally deactivate scheduled jobs after a fire error instead of rescheduling every interval
 - Pre-eval request hook — `EngineState::eval_with_pre_hook`, `set_pre_eval_hook`, and `get_pre_eval_hook`; inbound IPC requests can be routed through a registered `(user; handle; query) -> query'` function before evaluation (allow, rewrite, or deny via `raise`)
@@ -14,10 +15,11 @@ All notable changes to this project will be documented in this file.
 - `.tick.subscribeFiltered` and `.sub.initFiltered` pepper helpers — filtered live broadcast with unfiltered historical replay; filter state is restored on `.sub.recover`
 - `filters` parameter on Python `ChiliEngine.subscribe()` — `{topic: (column, [values])}`; each filtered topic uses its own connection
 - `bind_tcp_listener` and `run_accept_loop` on `EngineState` — separate synchronous bind from the blocking accept loop
-- Integration tests for async reply (`async_reply_test.rs`), job quarantine (`job_quarantine_test.rs`), pre-eval hook (`pre_eval_hook_test.rs`), filtered subscribe (`test_tick_sub_filtered.py`), and TCP listener bind behavior (`test_tcp_listener_bind.py`)
+- Integration tests for slow-subscriber shed (`slow_subscriber_shed_test.rs`), async reply (`async_reply_test.rs`), job quarantine (`job_quarantine_test.rs`), pre-eval hook (`pre_eval_hook_test.rs`), filtered subscribe (`test_tick_sub_filtered.py`), and TCP listener bind behavior (`test_tcp_listener_bind.py`)
 
 ### Changed
 
+- Incoming subscriber sockets can get an opt-in per-write timeout at accept time; timed-out publishes mark the handle disconnected and shut down the connection
 - Handle I/O (`sync`, `async_`, `reply`, `publish`, `signal_eod`) runs blocking reads/writes under per-handle mutexes instead of holding the global handle map lock — slow connections no longer serialize all handle operations
 - `execute_jobs` deactivates a failing scheduled job when `jobs_deactivate_on_error` is enabled; default behaviour (log and reschedule) is unchanged
 - Inbound IPC conn handlers (`handle_q_conn`, `handle_chili_conn`) use `eval_with_pre_hook` instead of `eval` when a pre-eval hook is registered; local/REPL eval is unchanged
