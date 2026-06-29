@@ -31,14 +31,7 @@ use std::sync::LazyLock;
 
 use chili_core::{ArgType, SpicyError, SpicyObj, SpicyResult, validate_args};
 
-/// Proposal O — process-wide cache of `fs::canonicalize` results for HDB
-/// paths, keyed by the input string. `wpar` is called in tight loops by
-/// some downstream users (mdata's batch ingest, partition migration
-/// scripts), and `fs::canonicalize` is a syscall that hits the filesystem
-/// every time. The canonicalized path of an HDB root is invariant for the
-/// lifetime of the process (no one is going to `mv` the HDB root mid-run),
-/// so caching is safe and lock-light. RwLock because the read path is
-/// massively dominant — write only happens once per unique HDB path.
+/// Cache `fs::canonicalize` results for HDB paths (invariant for process lifetime).
 static CANON_CACHE: LazyLock<RwLock<HashMap<String, PathBuf>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -286,7 +279,7 @@ pub fn write_parquet(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     }
 }
 
-// hdb_path, partition, table, df, columns, rechunk
+// hdb_path, partition, table, df, columns, rechunk, overwrite
 pub fn write_partition(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     validate_args(
         args,
@@ -305,11 +298,59 @@ pub fn write_partition(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let table_name = args[2].str().unwrap();
     let df = args[3].df().unwrap();
     let columns = args[4].to_str_vec().unwrap();
-    // rechunk | append
     let rechunk = *args[5].bool().unwrap();
     let overwrite = *args[6].bool().unwrap();
-    write_partition_native(
-        hdb_path, partition, table_name, df, &columns, rechunk, overwrite,
+    write_partition_native_full(
+        hdb_path,
+        partition,
+        table_name,
+        df,
+        &columns,
+        rechunk,
+        overwrite,
+        false,
+        None,
+    )
+}
+
+// hdb_path, partition, table, df, columns, rechunk, overwrite, atomic, compression
+pub fn write_partition_custom(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(
+        args,
+        &[
+            ArgType::StrOrSym,
+            ArgType::Any,
+            ArgType::Sym,
+            ArgType::DataFrame,
+            ArgType::SymOrSyms,
+            ArgType::Boolean,
+            ArgType::Boolean,
+            ArgType::Boolean,
+            ArgType::Any,
+        ],
+    )?;
+    let hdb_path = args[0].str().unwrap();
+    let partition = args[1];
+    let table_name = args[2].str().unwrap();
+    let df = args[3].df().unwrap();
+    let columns = args[4].to_str_vec().unwrap();
+    let rechunk = *args[5].bool().unwrap();
+    let overwrite = *args[6].bool().unwrap();
+    let atomic = *args[7].bool().unwrap();
+    let compression: Option<String> = match args[8] {
+        SpicyObj::Null => None,
+        o => o.str().ok().map(|s| s.to_string()),
+    };
+    write_partition_native_full(
+        hdb_path,
+        partition,
+        table_name,
+        df,
+        &columns,
+        rechunk,
+        overwrite,
+        atomic,
+        compression.as_deref(),
     )
 }
 
@@ -322,29 +363,42 @@ pub fn write_partition_native(
     rechunk: bool,
     overwrite: bool,
 ) -> SpicyResult<SpicyObj> {
+    write_partition_native_full(
+        hdb_path,
+        partition,
+        table_name,
+        df,
+        sort_columns,
+        rechunk,
+        overwrite,
+        false,
+        None,
+    )
+}
+
+/// `write_partition_native` with optional atomic overwrite and parquet codec (`wparc`).
+///
+/// `atomic`: on overwrite, write to a temp file then `fs::rename` into `_0000`
+/// (single-shard only). `compression`: codec name; `None` uses zstd.
+#[allow(clippy::too_many_arguments)]
+pub fn write_partition_native_full(
+    hdb_path: &str,
+    partition: &SpicyObj,
+    table_name: &str,
+    df: &polars::prelude::DataFrame,
+    sort_columns: &[&str],
+    rechunk: bool,
+    overwrite: bool,
+    atomic: bool,
+    compression: Option<&str>,
+) -> SpicyResult<SpicyObj> {
+    let codec = util::parse_parquet_compression(compression)?;
     let sort_options = SortMultipleOptions::default();
-    // Proposal O — same canonicalize cache as the public `write_partition`.
     let hdb_path = canon_cached(hdb_path)?;
 
-    // When sort_columns is non-empty, force a smaller row group
-    // so polars can later prune row groups by min/max stats on the sort key.
-    //
-    // polars' default row_group_size is 512*512 = 262144 rows; mdata-shaped
-    // partitions (10k-50k rows) end up as a single row group covering the
-    // entire symbol range, defeating pruning.
-    //
-    // Critically: polars' `chunk_df_for_writing` uses floor division
-    // (`n_splits = height / row_group_size`). To get N splits we need
-    // row_group_size <= height/N. We aim for at least ~10 row groups per
-    // partition, with a minimum of 1024 rows per group (otherwise polars
-    // rechunks small groups back together at line 154 of chunks.rs:
-    // "if df.estimated_size() / n_chunks < 128 * 1024 { rechunk }").
-    //
-    // Compute the target row_group_size based on the actual DataFrame
-    // height — this gives good selectivity for partitions of any size.
+    // Smaller row groups when sorted so parquet min/max stats enable pruning.
     let row_group_size: Option<usize> = if !sort_columns.is_empty() {
         let n_rows = df.height();
-        // Target ~16 row groups, with floor 1024 and ceiling 32768
         let target = (n_rows / 16).clamp(1024, 32768);
         Some(target)
     } else {
@@ -395,8 +449,13 @@ pub fn write_partition_native(
                         table_name
                     )));
                 }
-                return util::write_parquet_to_filepath(table_path.to_string_lossy().as_ref(), df)
-                    .map(|size| SpicyObj::I64(size as i64));
+                return util::write_parquet_to_filepath_full(
+                    table_path.to_string_lossy().as_ref(),
+                    df,
+                    None,
+                    codec.clone(),
+                )
+                .map(|size| SpicyObj::I64(size as i64));
             }
         }
         _ => {
@@ -468,6 +527,25 @@ pub fn write_partition_native(
         .map(|p| p.map_err(|e| SpicyError::Err(e.to_string())))
         .collect::<SpicyResult<Vec<_>>>()?;
 
+    // Atomic overwrite: write tmp shard, rename into _0000, then drop other shards.
+    if atomic && overwrite {
+        let final_path = format!("{}_0000", par_path.display());
+        let tmp_path = format!("{}_0000.tmp", par_path.display());
+        let size = util::write_parquet_to_filepath_full(
+            &tmp_path,
+            &df,
+            row_group_size,
+            codec.clone(),
+        )?;
+        fs::rename(&tmp_path, &final_path).map_err(|e| SpicyError::Err(e.to_string()))?;
+        for path in &existing_sub_parts {
+            if path.to_string_lossy() != final_path {
+                fs::remove_file(path).map_err(|e| SpicyError::Err(e.to_string()))?;
+            }
+        }
+        return Ok(SpicyObj::I64(size as i64));
+    }
+
     if overwrite && !existing_sub_parts.is_empty() {
         for path in &existing_sub_parts {
             fs::remove_file(path).map_err(|e| SpicyError::Err(e.to_string()))?;
@@ -476,7 +554,7 @@ pub fn write_partition_native(
 
     if existing_sub_parts.is_empty() || overwrite {
         let sub_par_path = format!("{}_0000", par_path.display());
-        util::write_parquet_to_filepath_with_row_group_size(&sub_par_path, &df, row_group_size)
+        util::write_parquet_to_filepath_full(&sub_par_path, &df, row_group_size, codec.clone())
             .map(|size| SpicyObj::I64(size as i64))
     } else {
         let mut par = existing_sub_parts.len();
@@ -490,10 +568,11 @@ pub fn write_partition_native(
                 "Exceed maximum sub partition number 9999".to_string(),
             ))
         } else {
-            let size = util::write_parquet_to_filepath_with_row_group_size(
+            let size = util::write_parquet_to_filepath_full(
                 &sub_par_path,
                 &df,
                 row_group_size,
+                codec.clone(),
             )?;
             if rechunk {
                 let tmp_path = table_path.join("tmp");

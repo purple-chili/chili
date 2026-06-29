@@ -341,8 +341,9 @@ class ChiliEngine:
         Note:
             The Parquet codec is the polars default (**zstd**) and the
             row-group size is auto-sized (clamped when ``sort_columns`` is set,
-            else the polars default 262144). A per-table ``compression`` /
-            ``row_group_size`` override is a pending feature request
+            else the polars default 262144). Use
+            :meth:`write_partitioned_df_custom` for atomic overwrite and a
+            per-call compression codec.
 
         Returns:
             The number of rows written.
@@ -369,6 +370,59 @@ class ChiliEngine:
                 sort_cols_arg,
                 rechunk,
                 overwrite,
+            ],
+        )
+
+    def write_partitioned_df_custom(
+        self,
+        df: pl.DataFrame,
+        hdb_path: str,
+        table: str,
+        date: Any,
+        sort_columns: Optional[list[str]] = None,
+        rechunk: bool = False,
+        overwrite: bool = False,
+        atomic: bool = False,
+        compression: Optional[str] = None,
+    ) -> int:
+        """Write a date-partitioned Parquet table with customized write options.
+
+        Same as :meth:`write_partitioned_df`, plus:
+
+        Args:
+            atomic: On overwrite, write the new single shard to a temp file
+                and rename it into place so readers never see an empty
+                partition directory.
+            compression: Optional Parquet codec name (e.g. ``"zstd"``,
+                ``"snappy"``); ``None`` keeps the default (**zstd**).
+
+        Returns:
+            The number of rows written.
+        """
+        from datetime import date as _date_t
+        from datetime import datetime as _dt_t
+
+        if isinstance(date, str):
+            partition = _dt_t.strptime(date, "%Y.%m.%d").date()
+        elif isinstance(date, (_date_t, _dt_t)):
+            partition = date
+        else:
+            partition = date  # let the engine validate
+        sort_cols_arg: Any = pl.Series(
+            "sort_columns", sort_columns or [], dtype=pl.Categorical
+        )
+        return self.fn_call(
+            "wparc",
+            [
+                hdb_path,
+                partition,
+                table,
+                df,
+                sort_cols_arg,
+                rechunk,
+                overwrite,
+                atomic,
+                compression,
             ],
         )
 
