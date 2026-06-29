@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "chili-bin"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "chili-core",
  "chili-op",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "chili-core"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -486,6 +486,7 @@ dependencies = [
  "regex",
  "serde_json",
  "serial_test",
+ "socket2",
  "sysinfo 0.39.3",
  "tempfile",
  "thiserror",
@@ -495,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "chili-op"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "chili-core",
  "chrono",
@@ -519,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "chili-parser"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "ariadne",
  "chumsky",

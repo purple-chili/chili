@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.4] - 2026-06-29
+
+### Added
+
+- `bind_tcp_listener` and `run_accept_loop` on `EngineState` — separate synchronous bind from the blocking accept loop
+- Integration tests for `start_tcp_listener` bind behavior (`test_tcp_listener_bind.py`)
+
+### Changed
+
+- Python `start_tcp_listener` binds synchronously and raises `ChiliError` when the port is unavailable, instead of failing asynchronously via process exit
+- TCP listener bind uses `socket2` with `SO_REUSEADDR` set before bind
+
 ## [0.9.3] - 2026-06-20
 
 ### Added

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "chili-sauce"
-version = "0.9.3"
+version = "0.9.4"
 description = "Python bindings for the Chili engine (EngineState)"
 requires-python = ">=3.10"
 readme = "README.md"

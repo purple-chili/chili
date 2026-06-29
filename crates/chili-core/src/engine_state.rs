@@ -2284,29 +2284,46 @@ impl EngineState {
         Ok(SpicyObj::Dict(status))
     }
 
-    /// Start a TCP listener on the given port and spawn a thread per
-    /// incoming connection. Handles authentication, IPC version
-    /// negotiation, and connection dispatch.
-    ///
-    /// This method blocks the **calling thread** (it should be spawned
-    /// on a dedicated thread from `main`).
-    pub fn start_tcp_listener(self: &Arc<Self>, port: i32, remote: bool, users: Vec<String>) {
-        let addr = if remote {
-            format!("0.0.0.0:{}", port)
-        } else {
-            format!("127.0.0.1:{}", port)
-        };
+    /// Bind a TCP listener on `port`. Sets `SO_REUSEADDR` before bind.
+    pub fn bind_tcp_listener(port: i32, remote: bool) -> SpicyResult<TcpListener> {
+        use socket2::{Domain, Protocol, Socket, Type};
+        use std::net::SocketAddr;
 
-        let listener = match TcpListener::bind(&addr) {
+        let ip = if remote { "0.0.0.0" } else { "127.0.0.1" };
+        let addr: SocketAddr = format!("{}:{}", ip, port)
+            .parse()
+            .map_err(|e| SpicyError::OsErr(format!("invalid listen addr {}:{} - {}", ip, port, e)))?;
+
+        let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))
+            .map_err(|e| SpicyError::OsErr(format!("socket create failed on port {} - {}", port, e)))?;
+        socket
+            .set_reuse_address(true)
+            .map_err(|e| SpicyError::OsErr(format!("set SO_REUSEADDR failed on port {} - {}", port, e)))?;
+        socket
+            .bind(&addr.into())
+            .map_err(|e| SpicyError::OsErr(format!("bind failed on port {} - {}", port, e)))?;
+        socket
+            .listen(128)
+            .map_err(|e| SpicyError::OsErr(format!("listen failed on port {} - {}", port, e)))?;
+
+        info!("listening at port {}", port);
+        Ok(socket.into())
+    }
+
+    /// Bind and run the accept loop; exits the process if bind fails.
+    pub fn start_tcp_listener(self: &Arc<Self>, port: i32, remote: bool, users: Vec<String>) {
+        let listener = match Self::bind_tcp_listener(port, remote) {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("{} - {}", e, port);
                 std::process::exit(1)
             }
         };
+        self.run_accept_loop(listener, users);
+    }
 
-        info!("listening at port {}", port);
-
+    /// Accept incoming connections on `listener` until the process exits.
+    pub fn run_accept_loop(self: &Arc<Self>, listener: TcpListener, users: Vec<String>) {
         for stream in listener.incoming() {
             let state_tcp = Arc::clone(self);
             let mut stream = match stream {
