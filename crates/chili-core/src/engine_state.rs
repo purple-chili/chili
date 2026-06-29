@@ -75,6 +75,22 @@ pub struct Handle {
     pub on_disconnected: Option<String>,
     /// Extra `TcpStream` dup used to `shutdown(Both)` incoming connections on disconnect.
     pub shutdown_handle: Option<std::net::TcpStream>,
+    /// Bounded outbound queue when subscriber queue shedding is enabled.
+    pub queued: Option<QueuedWriter>,
+}
+
+/// Bounded outbound channel and dedicated writer thread for a Publishing subscriber.
+#[derive(Clone)]
+pub struct QueuedWriter {
+    /// Bounded sender; `try_send` a whole serialized frame. `Full` means shed.
+    pub sender: std::sync::mpsc::SyncSender<Vec<Vec<u8>>>,
+    /// Set by the writer thread on write error, or by the engine on a full queue.
+    pub disconnected: Arc<std::sync::atomic::AtomicBool>,
+}
+
+enum WriteTarget {
+    Direct(Arc<Mutex<Box<dyn ReadWrite>>>),
+    Queued(QueuedWriter),
 }
 
 /// Per-handle row filter: only rows where `column` is in `values` are sent.
@@ -147,11 +163,15 @@ pub struct EngineState {
     /// query; a hook error denies the request. `None` skips the hook. Only IPC
     /// conn handlers consult this — local/REPL eval does not.
     pre_eval_hook: RwLock<Option<String>>,
+    /// Optional name of a function `(user; handle; query; result; error)` fired
+    /// after inbound IPC evaluation for audit logging. Hook errors are logged
+    /// and ignored. `None` skips the hook. Only IPC conn handlers consult this.
+    post_eval_hook: RwLock<Option<String>>,
     /// When true, a scheduled job that errors on fire is deactivated instead of
     /// rescheduling. Default false preserves log-and-keep-firing behaviour.
     jobs_deactivate_on_error: RwLock<bool>,
-    /// Per-write timeout (ms) for incoming subscriber sockets; `0` disables.
-    write_timeout_ms: std::sync::atomic::AtomicI64,
+    /// Max outbound frames queued per Publishing subscriber; `0` disables shedding.
+    subscriber_queue_max: std::sync::atomic::AtomicI64,
 }
 
 impl Default for EngineState {
@@ -210,8 +230,9 @@ impl EngineState {
             interval: 0,
             memory_limit: 0.0,
             pre_eval_hook: RwLock::new(None),
+            post_eval_hook: RwLock::new(None),
             jobs_deactivate_on_error: RwLock::new(false),
-            write_timeout_ms: std::sync::atomic::AtomicI64::new(0),
+            subscriber_queue_max: std::sync::atomic::AtomicI64::new(0),
         }
     }
 
@@ -330,10 +351,65 @@ impl EngineState {
         self.pre_eval_hook.read().clone()
     }
 
-    /// Evaluate `query` through the pre-eval hook when one is set.
-    /// The hook receives `(user; handle; query)` with `query` bound as-is, and
-    /// its return value is evaluated. With no hook, this is equivalent to `eval`.
+    /// Register or clear the post-eval hook name.
+    pub fn set_post_eval_hook(&self, name: Option<String>) {
+        *self.post_eval_hook.write() = name.filter(|n| !n.is_empty());
+    }
+
+    /// Return the registered post-eval hook name, if any.
+    pub fn get_post_eval_hook(&self) -> Option<String> {
+        self.post_eval_hook.read().clone()
+    }
+
+    /// Fire the post-eval hook for audit logging; errors are logged and ignored.
+    fn fire_post_eval_hook(
+        &self,
+        stack: &mut Stack,
+        query: &SpicyObj,
+        result: &SpicyResult<SpicyObj>,
+        src: &str,
+    ) {
+        let hook = self.post_eval_hook.read().clone();
+        let Some(name) = hook else {
+            return;
+        };
+        let f = match self.get_var(&name) {
+            Ok(f) if matches!(f, SpicyObj::Fn(_)) => f,
+            Ok(_) => {
+                warn!("post-eval hook '{}' is not a function; skipping", name);
+                return;
+            }
+            Err(_) => {
+                warn!("post-eval hook '{}' is not defined; skipping", name);
+                return;
+            }
+        };
+        let user_obj = SpicyObj::Symbol(stack.user.clone());
+        let handle_obj = SpicyObj::I64(stack.h);
+        let (result_obj, error_obj) = match result {
+            Ok(v) => (v.clone(), SpicyObj::Null),
+            Err(e) => (SpicyObj::Null, SpicyObj::Symbol(e.to_string())),
+        };
+        let args: Vec<&SpicyObj> = vec![&user_obj, &handle_obj, query, &result_obj, &error_obj];
+        if let Err(e) = crate::eval::eval_call(self, stack, &f, &args, &None, src) {
+            warn!("post-eval hook '{}' failed (ignored): {}", name, e);
+        }
+    }
+
+    /// Evaluate `query` through the pre-eval hook when one is set, then fire the
+    /// post-eval hook. With no hooks, this is equivalent to `eval`.
     pub fn eval_with_pre_hook(
+        &self,
+        stack: &mut Stack,
+        query: &SpicyObj,
+        src: &str,
+    ) -> SpicyResult<SpicyObj> {
+        let result = self.eval_with_pre_hook_inner(stack, query, src);
+        self.fire_post_eval_hook(stack, query, &result, src);
+        result
+    }
+
+    fn eval_with_pre_hook_inner(
         &self,
         stack: &mut Stack,
         query: &SpicyObj,
@@ -1008,10 +1084,10 @@ impl EngineState {
         }
         Ok(SpicyObj::Null)
     }
-    /// Set per-write timeout for incoming sockets accepted after this call (`0` = off).
-    pub fn set_write_timeout_ms(&self, ms: i64) {
-        self.write_timeout_ms
-            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    /// Set max outbound queue depth for Publishing subscribers (`0` = off).
+    pub fn set_subscriber_queue_max(&self, n: i64) {
+        self.subscriber_queue_max
+            .store(n, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn set_shutdown_handle(&self, h: &i64, s: std::net::TcpStream) {
@@ -1048,6 +1124,7 @@ impl EngineState {
                 conn_type,
                 on_disconnected: None,
                 shutdown_handle: None,
+                queued: None,
             },
         );
         Ok(SpicyObj::I64(h))
@@ -1106,6 +1183,8 @@ impl EngineState {
                         conn_type: ConnType::Subscribing,
                         on_disconnected: handle.on_disconnected,
                         shutdown_handle: None,
+                        // Subscribing (OUTGOING) handle — never queue-shed.
+                        queued: None,
                     },
                 );
                 let user = self.user.clone();
@@ -1135,6 +1214,10 @@ impl EngineState {
             hd.conn_type = ConnType::Disconnected;
             if let Some(s) = hd.shutdown_handle.as_ref() {
                 let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            if let Some(q) = hd.queued.as_ref() {
+                q.disconnected
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
@@ -1323,41 +1406,37 @@ impl EngineState {
         let mut rw_guard = rw_arc.lock();
         let rw: &mut Box<dyn ReadWrite> = &mut rw_guard;
         let result: SpicyResult<SpicyObj> = (|| {
-            {
-                if conn_type == ConnType::Outgoing {
-                    match msg {
-                        SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
-                            if *ipc_type == IpcType::Q {
-                                let v8 = serde6::serialize(msg)?;
-                                let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
-                                if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Async)
-                                {
-                                    disconnected = true;
-                                    return Err(SpicyError::Err(e.to_string()));
-                                }
-                                return Ok(SpicyObj::Null);
-                            } else {
-                                let v8 = serde9::serialize(msg, !*is_local)?;
-                                if let Err(e) =
-                                    utils::write_chili_ipc_msg(rw, &v8, MessageType::Async)
-                                {
-                                    disconnected = true;
-                                    return Err(SpicyError::Err(e.to_string()));
-                                }
-                                return Ok(SpicyObj::Null);
+            if conn_type == ConnType::Outgoing {
+                match msg {
+                    SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
+                        if *ipc_type == IpcType::Q {
+                            let v8 = serde6::serialize(msg)?;
+                            let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
+                            if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Async) {
+                                disconnected = true;
+                                return Err(SpicyError::Err(e.to_string()));
                             }
+                            return Ok(SpicyObj::Null);
+                        } else {
+                            let v8 = serde9::serialize(msg, !*is_local)?;
+                            if let Err(e) = utils::write_chili_ipc_msg(rw, &v8, MessageType::Async)
+                            {
+                                disconnected = true;
+                                return Err(SpicyError::Err(e.to_string()));
+                            }
+                            return Ok(SpicyObj::Null);
                         }
-                        _ => Err(SpicyError::MismatchedTypeErr(
-                            "sym|str|mixedList".to_owned(),
-                            msg.get_type_name(),
-                        )),
                     }
-                } else {
-                    Err(SpicyError::EvalErr(format!(
-                        "cannot async for {:?} handle",
-                        conn_type
-                    )))
+                    _ => Err(SpicyError::MismatchedTypeErr(
+                        "sym|str|mixedList".to_owned(),
+                        msg.get_type_name(),
+                    )),
                 }
+            } else {
+                Err(SpicyError::EvalErr(format!(
+                    "cannot async for {:?} handle",
+                    conn_type
+                )))
             }
         })();
         drop(rw_guard);
@@ -1396,31 +1475,29 @@ impl EngineState {
         let mut disconnected = false;
         let mut rw_guard = rw_arc.lock();
         let rw: &mut Box<dyn ReadWrite> = &mut rw_guard;
-        let result: SpicyResult<SpicyObj> = (|| {
-            match msg {
-                SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
-                    if *ipc_type == IpcType::Q {
-                        let v8 = serde6::serialize(msg)?;
-                        let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
-                        if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Async) {
-                            disconnected = true;
-                            return Err(SpicyError::Err(e.to_string()));
-                        }
-                        Ok(SpicyObj::Null)
-                    } else {
-                        let v8 = serde9::serialize(msg, !*is_local)?;
-                        if let Err(e) = utils::write_chili_ipc_msg(rw, &v8, MessageType::Async) {
-                            disconnected = true;
-                            return Err(SpicyError::Err(e.to_string()));
-                        }
-                        Ok(SpicyObj::Null)
+        let result: SpicyResult<SpicyObj> = (|| match msg {
+            SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
+                if *ipc_type == IpcType::Q {
+                    let v8 = serde6::serialize(msg)?;
+                    let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
+                    if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Async) {
+                        disconnected = true;
+                        return Err(SpicyError::Err(e.to_string()));
                     }
+                    Ok(SpicyObj::Null)
+                } else {
+                    let v8 = serde9::serialize(msg, !*is_local)?;
+                    if let Err(e) = utils::write_chili_ipc_msg(rw, &v8, MessageType::Async) {
+                        disconnected = true;
+                        return Err(SpicyError::Err(e.to_string()));
+                    }
+                    Ok(SpicyObj::Null)
                 }
-                _ => Err(SpicyError::MismatchedTypeErr(
-                    "sym|str|mixedList".to_owned(),
-                    msg.get_type_name(),
-                )),
             }
+            _ => Err(SpicyError::MismatchedTypeErr(
+                "sym|str|mixedList".to_owned(),
+                msg.get_type_name(),
+            )),
         })();
         drop(rw_guard);
         if disconnected {
@@ -1545,7 +1622,7 @@ impl EngineState {
         }
 
         #[allow(clippy::type_complexity)]
-        let mut targets: Vec<(i64, Arc<Mutex<Box<dyn ReadWrite>>>, Option<String>)> = Vec::new();
+        let mut targets: Vec<(i64, WriteTarget, Option<String>)> = Vec::new();
         let mut failed: Vec<i64> = Vec::new();
         {
             let handle = self.handle.read();
@@ -1556,11 +1633,23 @@ impl EngineState {
                     if v.conn_type == ConnType::Disconnected {
                         continue;
                     }
-                    match v.rw.as_ref() {
-                        Some(rw) => targets.push((subscriber, Arc::clone(rw), cache_key)),
-                        None => {
-                            warn!("handle {} is disconnected", subscriber);
+                    if let Some(q) = v.queued.as_ref() {
+                        if q.disconnected.load(std::sync::atomic::Ordering::Relaxed) {
                             failed.push(subscriber);
+                        } else {
+                            targets.push((subscriber, WriteTarget::Queued(q.clone()), cache_key));
+                        }
+                    } else {
+                        match v.rw.as_ref() {
+                            Some(rw) => targets.push((
+                                subscriber,
+                                WriteTarget::Direct(Arc::clone(rw)),
+                                cache_key,
+                            )),
+                            None => {
+                                warn!("handle {} is disconnected", subscriber);
+                                failed.push(subscriber);
+                            }
                         }
                     }
                 } else {
@@ -1575,19 +1664,37 @@ impl EngineState {
                 }
             }
         }
-        for (subscriber, rw_arc, cache_key) in targets {
+        for (subscriber, target, cache_key) in targets {
             let bytes = payload_cache.get(&cache_key).expect("payload cached above");
-            let mut rw = rw_arc.lock();
-            match crate::write_chili_ipc_msg(&mut **rw, bytes, MessageType::Async) {
-                Ok(_) => (),
-                Err(e) => {
-                    warn!(
-                        "failed to write to handle {} - err {}, disconnecting...",
-                        subscriber, e
-                    );
-                    drop(rw);
-                    failed.push(subscriber);
+            match target {
+                WriteTarget::Direct(rw_arc) => {
+                    let mut rw = rw_arc.lock();
+                    if let Err(e) = crate::write_chili_ipc_msg(&mut **rw, bytes, MessageType::Async)
+                    {
+                        warn!(
+                            "failed to write to handle {} - err {}, disconnecting...",
+                            subscriber, e
+                        );
+                        drop(rw);
+                        failed.push(subscriber);
+                    }
                 }
+                WriteTarget::Queued(q) => match q.sender.try_send(bytes.clone()) {
+                    Ok(()) => (),
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        warn!(
+                            "subscriber {} outbound queue full (slow consumer), shedding",
+                            subscriber
+                        );
+                        q.disconnected
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        failed.push(subscriber);
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        warn!("subscriber {} writer thread gone, shedding", subscriber);
+                        failed.push(subscriber);
+                    }
+                },
             }
         }
         if !failed.is_empty() {
@@ -1597,6 +1704,10 @@ impl EngineState {
                     hd.conn_type = ConnType::Disconnected;
                     if let Some(s) = hd.shutdown_handle.as_ref() {
                         let _ = s.shutdown(std::net::Shutdown::Both);
+                    }
+                    if let Some(q) = hd.queued.as_ref() {
+                        q.disconnected
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -1626,7 +1737,7 @@ impl EngineState {
         // and invokes it as a function.
         let bytes = serde9::serialize(args, false)?;
         #[allow(clippy::type_complexity)]
-        let mut targets: Vec<(i64, Arc<Mutex<Box<dyn ReadWrite>>>)> = Vec::new();
+        let mut targets: Vec<(i64, WriteTarget)> = Vec::new();
         let mut failed: Vec<i64> = Vec::new();
         {
             let handle = self.handle.read();
@@ -1634,24 +1745,54 @@ impl EngineState {
                 if v.conn_type != ConnType::Publishing {
                     continue;
                 }
-                match v.rw.as_ref() {
-                    Some(rw) => targets.push((*h, Arc::clone(rw))),
-                    None => {
-                        warn!("handle {} is disconnected (no rw), removing", h);
+                if let Some(q) = v.queued.as_ref() {
+                    if q.disconnected.load(std::sync::atomic::Ordering::Relaxed) {
                         failed.push(*h);
+                    } else {
+                        targets.push((*h, WriteTarget::Queued(q.clone())));
+                    }
+                } else {
+                    match v.rw.as_ref() {
+                        Some(rw) => targets.push((*h, WriteTarget::Direct(Arc::clone(rw)))),
+                        None => {
+                            warn!("handle {} is disconnected (no rw), removing", h);
+                            failed.push(*h);
+                        }
                     }
                 }
             }
         }
-        for (h, rw_arc) in targets {
-            let mut rw = rw_arc.lock();
-            if let Err(e) = utils::write_chili_ipc_msg(&mut **rw, &bytes, MessageType::Async) {
-                warn!(
-                    "failed to signal EOD to handle {} - err {}, disconnecting...",
-                    h, e
-                );
-                drop(rw);
-                failed.push(h);
+        for (h, target) in targets {
+            match target {
+                WriteTarget::Direct(rw_arc) => {
+                    let mut rw = rw_arc.lock();
+                    if let Err(e) =
+                        utils::write_chili_ipc_msg(&mut **rw, &bytes, MessageType::Async)
+                    {
+                        warn!(
+                            "failed to signal EOD to handle {} - err {}, disconnecting...",
+                            h, e
+                        );
+                        drop(rw);
+                        failed.push(h);
+                    }
+                }
+                WriteTarget::Queued(q) => match q.sender.try_send(bytes.clone()) {
+                    Ok(()) => (),
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        warn!(
+                            "subscriber {} outbound queue full on EOD (slow consumer), shedding",
+                            h
+                        );
+                        q.disconnected
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        failed.push(h);
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        warn!("subscriber {} writer thread gone on EOD, shedding", h);
+                        failed.push(h);
+                    }
+                },
             }
         }
         if !failed.is_empty() {
@@ -1662,6 +1803,10 @@ impl EngineState {
                     if let Some(s) = hd.shutdown_handle.as_ref() {
                         let _ = s.shutdown(std::net::Shutdown::Both);
                     }
+                    if let Some(q) = hd.queued.as_ref() {
+                        q.disconnected
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -1669,6 +1814,9 @@ impl EngineState {
     }
 
     pub fn handle_subscriber(&self, h: &i64) -> SpicyResult<()> {
+        let queue_max = self
+            .subscriber_queue_max
+            .load(std::sync::atomic::Ordering::Relaxed);
         let mut handles = self.handle.write();
         let handle = handles.get_mut(h).ok_or(SpicyError::InvalidHandleErr(*h))?;
 
@@ -1676,15 +1824,62 @@ impl EngineState {
             return Ok(());
         }
 
-        if handle.conn_type == ConnType::Incoming {
-            handle.conn_type = ConnType::Publishing;
-            Ok(())
-        } else {
-            Err(SpicyError::Err(format!(
+        if handle.conn_type != ConnType::Incoming {
+            return Err(SpicyError::Err(format!(
                 "requires an incoming connection for publishing, got {:?}",
                 handle.conn_type
-            )))
+            )));
         }
+
+        handle.conn_type = ConnType::Publishing;
+
+        if queue_max > 0 {
+            let rw_arc = handle.rw.take().ok_or_else(|| {
+                SpicyError::Err("subscriber handle has no write socket to queue".into())
+            })?;
+            let rw_box = Arc::try_unwrap(rw_arc)
+                .map_err(|arc| {
+                    handle.rw = Some(arc);
+                    SpicyError::Err("handle rw still shared; cannot start writer thread".into())
+                })?
+                .into_inner();
+            let shutdown_dup = handle
+                .shutdown_handle
+                .as_ref()
+                .and_then(|s| s.try_clone().ok());
+            let disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (sender, receiver) =
+                std::sync::mpsc::sync_channel::<Vec<Vec<u8>>>(queue_max as usize);
+            let writer_disc = Arc::clone(&disconnected);
+            let writer_h = *h;
+            thread::spawn(move || {
+                let mut rw_box = rw_box;
+                while let Ok(frame) = receiver.recv() {
+                    if writer_disc.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Err(e) =
+                        crate::write_chili_ipc_msg(&mut *rw_box, &frame, MessageType::Async)
+                    {
+                        warn!(
+                            "subscriber-queue writer for handle {} failed to write ({}), shedding",
+                            writer_h, e
+                        );
+                        writer_disc.store(true, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(s) = shutdown_dup.as_ref() {
+                            let _ = s.shutdown(std::net::Shutdown::Both);
+                        }
+                        break;
+                    }
+                }
+            });
+            handle.queued = Some(QueuedWriter {
+                sender,
+                disconnected,
+            });
+        }
+
+        Ok(())
     }
 
     pub fn list_topic_map(&self) -> SpicyResult<DataFrame> {
@@ -2754,18 +2949,10 @@ impl EngineState {
                     continue;
                 }
             };
-            let write_timeout_ms = state_tcp
-                .write_timeout_ms
+            let subscriber_queue_max = state_tcp
+                .subscriber_queue_max
                 .load(std::sync::atomic::Ordering::Relaxed);
-            let shutdown_dup = if write_timeout_ms > 0 {
-                if let Err(e) = cloned_stream
-                    .set_write_timeout(Some(Duration::from_millis(write_timeout_ms as u64)))
-                {
-                    warn!(
-                        "set_write_timeout failed on incoming handle (continuing): {}",
-                        e
-                    );
-                }
+            let shutdown_dup = if subscriber_queue_max > 0 {
                 stream.try_clone().ok()
             } else {
                 None

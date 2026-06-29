@@ -380,10 +380,30 @@ impl PyEngineState {
         Ok(())
     }
 
-    /// Set per-write timeout for incoming subscriber sockets (`0` = off).
-    fn set_write_timeout_ms(&self, ms: i64) -> PyResult<()> {
+    /// Register a post-eval audit hook for inbound IPC requests.
+    fn set_post_eval_hook(&self, name: &str) -> PyResult<()> {
         self.check_fork()?;
-        self.inner.set_write_timeout_ms(ms);
+        self.inner.set_post_eval_hook(Some(name.to_string()));
+        Ok(())
+    }
+
+    /// Clear the post-eval hook.
+    fn clear_post_eval_hook(&self) -> PyResult<()> {
+        self.check_fork()?;
+        self.inner.set_post_eval_hook(None);
+        Ok(())
+    }
+
+    /// Return the registered post-eval hook name, if any.
+    fn get_post_eval_hook(&self) -> PyResult<Option<String>> {
+        self.check_fork()?;
+        Ok(self.inner.get_post_eval_hook())
+    }
+
+    /// Set max outbound queue depth for Publishing subscribers (`0` = off).
+    fn set_subscriber_queue_max(&self, n: i64) -> PyResult<()> {
+        self.check_fork()?;
+        self.inner.set_subscriber_queue_max(n);
         Ok(())
     }
 

@@ -130,6 +130,27 @@ class ChiliEngine:
         """Return the registered pre-eval hook name, or ``None``."""
         return self.engine.get_pre_eval_hook()
 
+    def set_post_eval_hook(self, name: str) -> None:
+        """Register a post-eval audit hook on inbound IPC requests.
+
+        Fired after evaluation with ``name(user; handle; query; result; error)``.
+        ``result`` is the evaluated value (Null on error); ``error`` is the error
+        string (Null on success). Side effects only — hook errors are logged and
+        ignored. Local ``eval`` is not gated.
+
+        Args:
+            name: Function ``(user; handle; query; result; error)`` already defined.
+        """
+        return self.engine.set_post_eval_hook(name)
+
+    def clear_post_eval_hook(self) -> None:
+        """Clear any registered post-eval hook (no audit hook fires)."""
+        return self.engine.clear_post_eval_hook()
+
+    def get_post_eval_hook(self) -> "str | None":
+        """Return the registered post-eval hook name, or ``None``."""
+        return self.engine.get_post_eval_hook()
+
     def set_jobs_deactivate_on_error(self, enabled: bool) -> None:
         """Enable or disable deactivating scheduled jobs after a fire error.
 
@@ -416,9 +437,14 @@ class ChiliEngine:
         """
         self.engine.start_tcp_listener(port, remote, users or [])
 
-    def set_write_timeout_ms(self, ms: int) -> None:
-        """Shed a subscriber whose socket blocks a write for > ms (0 = off)."""
-        self.engine.set_write_timeout_ms(ms)
+    def set_subscriber_queue_max(self, n: int) -> None:
+        """Shed a subscriber whose outbound write queue exceeds ``n`` frames.
+
+        When ``n > 0``, each Publishing subscriber gets a bounded channel and
+        writer thread; publish uses non-blocking ``try_send``. A full queue
+        disconnects the subscriber. ``0`` (default) disables queue shedding.
+        """
+        self.engine.set_subscriber_queue_max(n)
 
     def list_handle(self) -> pl.DataFrame:
         """Return a DataFrame listing all active handles."""
