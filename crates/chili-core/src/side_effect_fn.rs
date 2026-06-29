@@ -111,13 +111,15 @@ fn upsert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyR
         let mut df = args[0].df().unwrap().clone();
         match arg1 {
             SpicyObj::DataFrame(df1) => {
+                let df1 = crate::utils::coerce_extend_tz(&df, df1);
                 df.clone()
-                    .extend(df1)
+                    .extend(&df1)
                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                 Ok(SpicyObj::DataFrame(df))
             }
             SpicyObj::MixedList(list) => {
                 let df1 = convert_list_to_df(list, &df)?;
+                let df1 = crate::utils::coerce_extend_tz(&df, &df1);
                 df.extend(&df1)
                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                 Ok(SpicyObj::DataFrame(df))
@@ -147,11 +149,14 @@ fn insert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyR
         let mut df = arg0.df().unwrap().clone();
         let df = match value {
             SpicyObj::DataFrame(df1) => {
-                df.extend(df1).map_err(|e| SpicyError::Err(e.to_string()))?;
+                let df1 = crate::utils::coerce_extend_tz(&df, df1);
+                df.extend(&df1)
+                    .map_err(|e| SpicyError::Err(e.to_string()))?;
                 df
             }
             SpicyObj::MixedList(list) => {
                 let df1 = convert_list_to_df(list, &df)?;
+                let df1 = crate::utils::coerce_extend_tz(&df, &df1);
                 df.extend(&df1)
                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                 df

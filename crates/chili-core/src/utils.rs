@@ -9,7 +9,11 @@ use std::{
 
 use crate::{errors::SpicyError, obj::SpicyObj};
 use log::{debug, error, info, warn};
-use polars::{frame::DataFrame, prelude::IntoColumn, series::Series};
+use polars::{
+    frame::DataFrame,
+    prelude::{DataType, IntoColumn, IntoSeries, TimeZone},
+    series::Series,
+};
 use regex::Regex;
 
 use crate::{ConnType, EngineState, Stack, engine_state::ReadWrite, serde6, serde9};
@@ -458,6 +462,63 @@ pub fn write_chili_ipc_msg(
     Ok(())
 }
 
+/// Relabel tz tag on a Datetime series without shifting physical timestamps.
+fn relabel_datetime_tz(s: &Series, target_tz: Option<TimeZone>) -> Series {
+    let name = s.name().clone();
+    let DataType::Datetime(tu, _) = s.dtype() else {
+        return s.clone();
+    };
+    let tu = *tu;
+    let phys = s.to_physical_repr().into_owned();
+    let i64ca = phys.i64().expect("datetime physical repr is i64");
+    i64ca
+        .clone()
+        .into_datetime(tu, target_tz)
+        .into_series()
+        .with_name(name)
+}
+
+/// Relabel incoming datetime timezone tags to match `target` for `df.extend`.
+///
+/// Same time unit, different tz tag: relabel incoming columns to the target tag
+/// without shifting physical timestamps. No-op when tags already match.
+pub fn coerce_extend_tz(target: &DataFrame, incoming: &DataFrame) -> DataFrame {
+    let needs_fix = incoming.columns().iter().any(|c| {
+        let Ok(t) = target.column(c.name()) else {
+            return false;
+        };
+        match (t.dtype(), c.dtype()) {
+            (DataType::Datetime(tu_t, tz_t), DataType::Datetime(tu_i, tz_i)) => {
+                tu_t == tu_i && tz_t != tz_i
+            }
+            _ => false,
+        }
+    });
+    if !needs_fix {
+        return incoming.clone();
+    }
+
+    let new_cols = incoming
+        .columns()
+        .iter()
+        .map(|c| {
+            let Ok(t) = target.column(c.name()) else {
+                return c.clone();
+            };
+            match (t.dtype(), c.dtype()) {
+                (DataType::Datetime(tu_t, tz_t), DataType::Datetime(tu_i, tz_i))
+                    if tu_t == tu_i && tz_t != tz_i =>
+                {
+                    let s = c.as_materialized_series();
+                    relabel_datetime_tz(s, tz_t.clone()).into_column()
+                }
+                _ => c.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    DataFrame::new(incoming.height(), new_cols).expect("relabel preserves shape")
+}
+
 static RE_STYLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1B\[[0-9;]*m").unwrap());
 
 pub fn handle_q_conn(
@@ -691,4 +752,108 @@ pub fn convert_list_to_df(list: &[SpicyObj], df: &DataFrame) -> Result<DataFrame
             .collect::<Vec<_>>(),
     )
     .map_err(|e| SpicyError::Err(e.to_string()))
+}
+
+#[cfg(test)]
+mod tz_coerce_tests {
+    use super::coerce_extend_tz;
+    use polars::prelude::*;
+
+    fn dt_col(name: &str, vals: &[i64], tz: Option<&str>) -> Column {
+        let ca = Int64Chunked::from_slice(name.into(), vals);
+        let tz = tz.map(|t| unsafe { TimeZone::new_unchecked(t) });
+        ca.into_datetime(TimeUnit::Nanoseconds, tz)
+            .into_series()
+            .into_column()
+    }
+
+    #[test]
+    fn utc_incoming_relabelled_to_naive_target_and_extends() {
+        let height = 2usize;
+        let target = DataFrame::new(
+            height,
+            vec![
+                Column::new("seq".into(), &[1i64, 2]),
+                dt_col("ingest_ts", &[1_000, 2_000], None),
+            ],
+        )
+        .unwrap();
+        let incoming = DataFrame::new(
+            height,
+            vec![
+                Column::new("seq".into(), &[3i64, 4]),
+                dt_col("ingest_ts", &[3_000, 4_000], Some("UTC")),
+            ],
+        )
+        .unwrap();
+
+        let coerced = coerce_extend_tz(&target, &incoming);
+        assert_eq!(
+            coerced.column("ingest_ts").unwrap().dtype(),
+            &DataType::Datetime(TimeUnit::Nanoseconds, None)
+        );
+
+        let mut t = target.clone();
+        t.extend(&coerced).expect("extend after tz relabel");
+        assert_eq!(t.height(), 4);
+        let phys = t
+            .column("ingest_ts")
+            .unwrap()
+            .as_materialized_series()
+            .to_physical_repr()
+            .into_owned();
+        let got: Vec<i64> = phys.i64().unwrap().into_no_null_iter().collect();
+        assert_eq!(got, vec![1_000, 2_000, 3_000, 4_000]);
+    }
+
+    #[test]
+    fn naive_incoming_relabelled_to_utc_target_both_directions() {
+        let height = 1usize;
+        let target = DataFrame::new(
+            height,
+            vec![dt_col("ts", &[10_000], Some("UTC"))],
+        )
+        .unwrap();
+        let incoming = DataFrame::new(height, vec![dt_col("ts", &[20_000], None)]).unwrap();
+        let coerced = coerce_extend_tz(&target, &incoming);
+        assert_eq!(
+            coerced.column("ts").unwrap().dtype(),
+            &DataType::Datetime(TimeUnit::Nanoseconds, Some(unsafe { TimeZone::new_unchecked("UTC") }))
+        );
+        let mut t = target.clone();
+        t.extend(&coerced).expect("extend naive->UTC target");
+        let phys = t
+            .column("ts")
+            .unwrap()
+            .as_materialized_series()
+            .to_physical_repr()
+            .into_owned();
+        let got: Vec<i64> = phys.i64().unwrap().into_no_null_iter().collect();
+        assert_eq!(got, vec![10_000, 20_000]);
+    }
+
+    #[test]
+    fn matching_tz_is_zero_touch_noop() {
+        let height = 1usize;
+        let target = DataFrame::new(height, vec![dt_col("ts", &[1i64], Some("UTC"))]).unwrap();
+        let incoming = DataFrame::new(height, vec![dt_col("ts", &[2i64], Some("UTC"))]).unwrap();
+        let coerced = coerce_extend_tz(&target, &incoming);
+        assert_eq!(coerced.column("ts").unwrap().dtype(), incoming.column("ts").unwrap().dtype());
+    }
+
+    #[test]
+    fn different_time_unit_is_left_untouched() {
+        let height = 1usize;
+        let target = DataFrame::new(height, vec![dt_col("ts", &[1i64], None)]).unwrap();
+        let ms = Int64Chunked::from_slice("ts".into(), &[2i64])
+            .into_datetime(TimeUnit::Milliseconds, Some(unsafe { TimeZone::new_unchecked("UTC") }))
+            .into_series()
+            .into_column();
+        let incoming = DataFrame::new(height, vec![ms]).unwrap();
+        let coerced = coerce_extend_tz(&target, &incoming);
+        assert_eq!(
+            coerced.column("ts").unwrap().dtype(),
+            &DataType::Datetime(TimeUnit::Milliseconds, Some(unsafe { TimeZone::new_unchecked("UTC") }))
+        );
+    }
 }

@@ -33,6 +33,7 @@ All notable changes to this project will be documented in this file.
 - Python `start_tcp_listener` binds synchronously and raises `ChiliError` when the port is unavailable, instead of failing asynchronously via process exit
 - TCP listener bind uses `socket2` with `SO_REUSEADDR` set before bind
 - `SpicyObj::to_str_vec` accepts a `MixedList` of strings/symbols so Python symbol lists work as filter values
+- DataFrame extend paths (`upsert`, `insert`, subscriber topic append) relabel incoming datetime timezone tags to match the target frame when time units match, so `extend` succeeds across naive vs tagged columns without shifting timestamps
 
 ## [0.9.3] - 2026-06-20
 

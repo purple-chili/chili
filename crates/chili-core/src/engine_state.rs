@@ -482,12 +482,14 @@ impl EngineState {
         match obj.mut_df() {
             Ok(df) => match arg {
                 SpicyObj::DataFrame(records) => {
-                    df.extend(records)
+                    let records = crate::utils::coerce_extend_tz(df, records);
+                    df.extend(&records)
                         .map_err(|e| SpicyError::Err(e.to_string()))?;
                     Ok(SpicyObj::I64(records.height() as i64))
                 }
                 SpicyObj::MixedList(list) => {
                     let df1 = convert_list_to_df(list, df)?;
+                    let df1 = crate::utils::coerce_extend_tz(df, &df1);
                     df.extend(&df1)
                         .map_err(|e| SpicyError::Err(e.to_string()))?;
                     Ok(SpicyObj::I64(df1.height() as i64))
@@ -534,12 +536,14 @@ impl EngineState {
                     count = df.height();
                     match args {
                         SpicyObj::DataFrame(records) => {
-                            df.extend(records)
+                            let records = crate::utils::coerce_extend_tz(df, records);
+                            df.extend(&records)
                                 .map_err(|e| SpicyError::Err(e.to_string()))?;
                             df.clone()
                         }
                         SpicyObj::MixedList(list) => {
                             let records = convert_list_to_df(list, df)?;
+                            let records = crate::utils::coerce_extend_tz(df, &records);
                             df.extend(&records)
                                 .map_err(|e| SpicyError::Err(e.to_string()))?;
                             df.clone()
