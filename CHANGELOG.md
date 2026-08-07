@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.1] - 2026-08-07
+
+### Changed
+
+- Polars **0.55.1 → 0.55.2** (patched `polars-core` tag `v0.55.2`)
+- Python bindings: **pyo3 0.29.1 → 0.29.2**
+
 ## [0.10.0] - 2026-08-05
 
 ### Changed
