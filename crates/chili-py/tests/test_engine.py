@@ -80,6 +80,25 @@ class TestEval:
         with pytest.raises(Exception):
             engine.eval("undefined_var_xyz")
 
+    def test_eval_date_literal_is_calendar_date(self, engine: ChiliEngine):
+        """Scalar Date must not shift via local from_timestamp (west-of-UTC quirk)."""
+        from datetime import date
+
+        assert engine.eval("1970.01.01") == date(1970, 1, 1)
+        assert engine.eval("2020.01.01") == date(2020, 1, 1)
+        assert engine.eval("2024.06.15") == date(2024, 6, 15)
+
+    def test_date_roundtrip_preserves_calendar_day(self, engine: ChiliEngine):
+        from datetime import date
+
+        d = date(2020, 1, 1)
+        engine.set_var("d", d)
+        assert engine.get_var("d") == d
+
+    def test_prod_on_series(self, engine: ChiliEngine):
+        engine.set_var("xs", pl.Series("xs", [2.0, 3.0, 4.0]))
+        assert engine.eval("prod(xs)") == pytest.approx(24.0)
+
 
 class TestEvalLazy:
     """Opt-in lazy parameter on engine.eval.

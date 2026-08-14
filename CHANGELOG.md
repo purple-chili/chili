@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.2] - 2026-08-14
+
+### Fixed
+
+- `prod` on Series no longer process-panics — enable Polars `product` feature in `chili-op`
+- Python scalar `Date` → `datetime.date` uses calendar days from the CE epoch (`PyDate::new`) instead of `from_timestamp`, so west-of-UTC timezones no longer shift the calendar day
+
 ## [0.10.1] - 2026-08-07
 
 ### Changed

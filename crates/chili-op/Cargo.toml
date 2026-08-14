@@ -42,6 +42,7 @@ polars = { workspace = true, default-features = true, features = [
     "pivot",
     "polars-ops",
     "polars-io",
+    "product",
     "random",
     "range",
     "rank",

@@ -1034,3 +1034,15 @@ fn gt() {
         assert!(operator::gt(args).is_err(), "error case - {:?}", args)
     }
 }
+
+#[test]
+fn product_series() {
+    use chili_core::EngineState;
+    use chili_op::BUILT_IN_FN;
+
+    let state = EngineState::new(false, false, false);
+    state.register_fn(&BUILT_IN_FN);
+    let xs = SpicyObj::Series(Series::new("xs".into(), vec![2.0f64, 3.0, 4.0]));
+    let out = state.fn_call("prod", &[&xs]).unwrap();
+    assert_eq!(out, SpicyObj::F64(24.0));
+}
