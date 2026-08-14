@@ -192,6 +192,9 @@ pub struct EngineState {
     tcp_listener: Mutex<Option<TcpListener>>,
     /// Accept loop checks this and exits when true.
     listener_stopping: std::sync::atomic::AtomicBool,
+    /// Serializes `lpt` (log-write + publish + tick) so tickerplant fan-in
+    /// keeps log order, broadcast order, and `tick[0]` in lockstep.
+    lpt_lock: Mutex<()>,
 }
 
 impl Default for EngineState {
@@ -259,6 +262,7 @@ impl EngineState {
             eval_timeout_ms: std::sync::atomic::AtomicI64::new(0),
             tcp_listener: Mutex::new(None),
             listener_stopping: std::sync::atomic::AtomicBool::new(false),
+            lpt_lock: Mutex::new(()),
         }
     }
 
@@ -1447,7 +1451,7 @@ impl EngineState {
     }
 
     pub fn sync(&self, h: &i64, msg: &SpicyObj) -> SpicyResult<SpicyObj> {
-        let (rw_arc, is_local, ipc_type, mut conn_type) = {
+        let (rw_arc, is_local, ipc_type, _) = {
             let handle = self.handle.read();
             match handle.get(h) {
                 Some(hd) => match hd.rw.as_ref() {
@@ -1459,19 +1463,28 @@ impl EngineState {
         };
         let is_local = &is_local;
         let ipc_type = &ipc_type;
-        let conn_type = &mut conn_type;
         let mut rw_guard = rw_arc.lock();
+        // Re-read conn_type under the handle mutex. A stale copy taken before
+        // locking can still be `New` after another thread finished the first
+        // frame and transitioned the handle to `Sequence`, causing a spurious
+        // magic header mid-file and tplog corruption under concurrent writers.
+        let mut conn_type = self
+            .handle
+            .read()
+            .get(h)
+            .map(|hd| hd.conn_type)
+            .unwrap_or(ConnType::Disconnected);
         let rw: &mut Box<dyn ReadWrite> = &mut rw_guard;
         let result: SpicyResult<SpicyObj> = (|| {
             {
-                if *conn_type == ConnType::Outgoing {
+                if conn_type == ConnType::Outgoing {
                     match msg {
                         SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
                             if *ipc_type == IpcType::Q {
                                 let v8 = serde6::serialize(msg)?;
                                 let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
                                 if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Sync) {
-                                    *conn_type = ConnType::Disconnected;
+                                    conn_type = ConnType::Disconnected;
                                     return Err(SpicyError::Err(e.to_string()));
                                 }
                                 // read response
@@ -1494,7 +1507,7 @@ impl EngineState {
                                 if let Err(e) =
                                     utils::write_chili_ipc_msg(rw, &v8, MessageType::Sync)
                                 {
-                                    *conn_type = ConnType::Disconnected;
+                                    conn_type = ConnType::Disconnected;
                                     return Err(SpicyError::Err(e.to_string()));
                                 }
                                 let mut header = [0u8; 16];
@@ -1517,12 +1530,12 @@ impl EngineState {
                             msg.get_type_name(),
                         )),
                     }
-                } else if *conn_type == ConnType::New {
+                } else if conn_type == ConnType::New {
                     match msg {
                         SpicyObj::Symbol(s) | SpicyObj::String(s) => {
                             writeln!(rw, "{}", s).map_err(|e| SpicyError::Err(e.to_string()))?;
                             // s + '\n'
-                            *conn_type = ConnType::File;
+                            conn_type = ConnType::File;
                             Ok(SpicyObj::I64(s.len() as i64))
                         }
                         SpicyObj::MixedList(_) => {
@@ -1530,9 +1543,9 @@ impl EngineState {
                                 .map_err(|e| SpicyError::Err(e.to_string()))?;
                             let bytes_vec = serde9::serialize(msg, false)?;
                             let total_len = bytes_vec.iter().map(|v| v.len()).sum::<usize>();
-                            rw.write(total_len.to_le_bytes().as_slice())
+                            rw.write_all(&total_len.to_le_bytes())
                                 .map_err(|e| SpicyError::Err(e.to_string()))?;
-                            rw.write(
+                            rw.write_all(
                                 &(SystemTime::now()
                                     .duration_since(UNIX_EPOCH)
                                     .unwrap()
@@ -1545,7 +1558,7 @@ impl EngineState {
                                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                             }
                             // 8 (magic) + 8 (total_len) + 8 (timestamp) + payload
-                            *conn_type = ConnType::Sequence;
+                            conn_type = ConnType::Sequence;
                             Ok(SpicyObj::I64(total_len as i64))
                         }
                         _ => Err(SpicyError::MismatchedTypeErr(
@@ -1553,7 +1566,7 @@ impl EngineState {
                             msg.get_type_name(),
                         )),
                     }
-                } else if *conn_type == ConnType::File {
+                } else if conn_type == ConnType::File {
                     match msg {
                         SpicyObj::Symbol(s) | SpicyObj::String(s) => {
                             writeln!(rw, "{}", s).map_err(|e| SpicyError::Err(e.to_string()))?;
@@ -1565,14 +1578,14 @@ impl EngineState {
                             msg.get_type_name(),
                         )),
                     }
-                } else if *conn_type == ConnType::Sequence {
+                } else if conn_type == ConnType::Sequence {
                     match msg {
                         SpicyObj::MixedList(_) => {
                             let bytes_vec = serde9::serialize(msg, false)?;
                             let total_len = bytes_vec.iter().map(|v| v.len()).sum::<usize>();
-                            rw.write(total_len.to_le_bytes().as_slice())
+                            rw.write_all(&total_len.to_le_bytes())
                                 .map_err(|e| SpicyError::Err(e.to_string()))?;
-                            rw.write(
+                            rw.write_all(
                                 &(SystemTime::now()
                                     .duration_since(UNIX_EPOCH)
                                     .unwrap()
@@ -1585,7 +1598,7 @@ impl EngineState {
                                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                             }
                             // 8 (total_len) + 8 (timestamp) + payload
-                            *conn_type = ConnType::Sequence;
+                            conn_type = ConnType::Sequence;
                             Ok(SpicyObj::I64(total_len as i64))
                         }
                         _ => Err(SpicyError::MismatchedTypeErr(
@@ -1602,7 +1615,7 @@ impl EngineState {
             }
         })();
         drop(rw_guard);
-        self.set_conn_type(h, *conn_type);
+        self.set_conn_type(h, conn_type);
         result
     }
 
@@ -2783,6 +2796,43 @@ impl EngineState {
                 empty_schema,
             },
         ))
+    }
+
+    /// Log-before-broadcast tickerplant update: write `(`upd; table; data)` to
+    /// `.tick.msgHandle`, publish to subscribers, then `tick[tick_index; 1]`, all
+    /// under one lock. Returns the new counter at `tick_index`.
+    pub fn lpt(
+        &self,
+        table: &SpicyObj,
+        data: &SpicyObj,
+        tick_index: usize,
+    ) -> SpicyResult<SpicyObj> {
+        let _gate = self.lpt_lock.lock();
+        let handle = self.get_var(".tick.msgHandle").map_err(|_| {
+            SpicyError::EvalErr(
+                "lpt requires .tick.msgHandle; call .tick.createLog / init_tick first".to_owned(),
+            )
+        })?;
+        if matches!(handle, SpicyObj::Null) {
+            return Err(SpicyError::EvalErr(
+                "lpt requires .tick.msgHandle; call .tick.createLog / init_tick first".to_owned(),
+            ));
+        }
+        let h = handle.to_i64()?;
+        let table_name = table.str()?;
+        let msg = SpicyObj::MixedList(vec![
+            SpicyObj::Symbol("upd".into()),
+            table.clone(),
+            data.clone(),
+        ]);
+        self.sync(&h, &msg)?;
+        self.publish(
+            &SpicyObj::Symbol("upd".into()),
+            table,
+            table_name,
+            data,
+        )?;
+        self.tick(tick_index, 1)
     }
 
     pub fn tick(&self, index: usize, inc: i64) -> SpicyResult<SpicyObj> {

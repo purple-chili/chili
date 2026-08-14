@@ -5,7 +5,8 @@
   // Recovery: if the plain dated path is missing but <date>.gz exists
   // (hk / log-rotation layout), use the gzip archive.
   if[(not exists .tick.msgLog) & exists[.tick.msgLog + ".gz"];
-    .tick.msgLog: .tick.msgLog + ".gz"];
+    .tick.msgLog: .tick.msgLog + ".gz"
+  ];
   .tick.logFile: "file://" + .tick.msgLog;
   // tick is using handle 0 for internal tick count (message count from validateSeq).
   // To set an absolute counter after init (e.g. a per-row high-water), use:
@@ -28,11 +29,8 @@
 };
 
 .tick.upd: {[table; data]
-  .tick.msgHandle (`upd; table; data);
-  .broker.publish[`upd; table; data];
-  // tick[0; 1] is a built-in function for updating internal tick count
-  // use `tick[0; 0]` to get current tick count, `tick[0; neg tick[0; 0]]` to reset tick count.
-  tick[0; 1];
+  // lpt: log-write + publish + tick[tick_index; 1] under one lock
+  lpt[table; data; 0]
 };
 
 .tick.subscribe: {[topics]

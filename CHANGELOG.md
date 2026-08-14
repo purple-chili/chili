@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.3] - 2026-08-14
+
+### Added
+
+- `lpt[table; data; tick_index]` — atomic tickerplant update: write `(`upd; table; data)` to `.tick.msgHandle`, `.broker.publish`, then `tick[tick_index; 1]`, under one lock. Stock `.tick.upd` calls `lpt[table; data; 0]`.
+- `semi[keys; left; right]` / `anti[keys; left; right]` DataFrame joins (Polars semi/anti join wrappers; existed since 0.9.x but were undocumented)
+
+### Fixed
+
+- Concurrent sequence-log writes on one handle no longer corrupt the tplog — re-read `conn_type` under the per-handle mutex so a second writer cannot take the `New` path after the first frame and insert a spurious magic header
+
 ## [0.10.2] - 2026-08-14
 
 ### Fixed

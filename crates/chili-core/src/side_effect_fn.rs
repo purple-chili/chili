@@ -1,5 +1,5 @@
 use log::{info, warn};
-use polars::prelude::{IntoLazy, SortMultipleOptions, SortOptions, col};
+use polars::prelude::{col, IntoLazy, SortMultipleOptions, SortOptions};
 use polars::series::ops::NullBehavior;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use crate::errors::{SpicyError, SpicyResult};
 use crate::eval::{eval_call, eval_fn_call, eval_for_console, eval_for_ide, eval_op};
 use crate::func::Func;
 use crate::utils::convert_list_to_df;
-use crate::{ArgType, EngineState, SpicyObj, Stack, eval_query, job, validate_args};
+use crate::{eval_query, job, validate_args, ArgType, EngineState, SpicyObj, Stack};
 
 fn time_it(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let times = args.last().unwrap();
@@ -325,6 +325,11 @@ fn tick(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyRes
     state.tick(index, inc)
 }
 
+fn lpt(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::StrOrSym, ArgType::Any, ArgType::Int])?;
+    state.lpt(args[0], args[1], args[2].to_i64()? as usize)
+}
+
 fn set_tick(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let index = args[0].to_i64()? as usize;
     let value = args[1].to_i64()?;
@@ -625,6 +630,15 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         (
             "tick".to_owned(),
             Func::new_side_effect_built_in_fn(Some(Box::new(tick)), 2, "tick", &["index", "inc"]),
+        ),
+        (
+            "lpt".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(lpt)),
+                3,
+                "lpt",
+                &["table", "data", "tick_index"],
+            ),
         ),
         (
             "tock".to_owned(),

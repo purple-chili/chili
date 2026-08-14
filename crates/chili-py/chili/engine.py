@@ -596,7 +596,10 @@ class ChiliEngine:
         """Return engine statistics as a dictionary.
 
         Includes lazy mode status, REPL language, partitioned DataFrame
-        count, parse cache size, and partition paths.
+        count, parse cache size, partition paths, process RSS, handle
+        count/nums, vars length, topic count, and subscriber queue depth
+        (``queue_depth_total``, ``queue_depth_by_handle`` — aligned with
+        ``handle_nums``).
         """
         return self.engine.stats()
 
@@ -605,7 +608,8 @@ class ChiliEngine:
 
         Evaluates the bundled Pepper script that defines ``.tick.*``
         functions (``createLog``, ``upd``, ``subscribe``, ``unsubscribe``,
-        ``eod``).
+        ``eod``). ``.tick.upd`` is ``lpt[table; data; 0]`` (log + publish +
+        tick under one lock).
         """
         if not self.is_tick_loaded:
             tick_path = Path(__file__).parent / "src" / "tick.pep"
