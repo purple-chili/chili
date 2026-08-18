@@ -326,8 +326,14 @@ fn tick(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyRes
 }
 
 fn lpt(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
-    validate_args(args, &[ArgType::StrOrSym, ArgType::Any, ArgType::Int])?;
-    state.lpt(args[0], args[1], args[2].to_i64()? as usize)
+    validate_args(args, &[ArgType::StrOrSym, ArgType::Any, ArgType::Any])?;
+    if !(args[2].is_integer() || args[2].is_bool() || args[2].is_sym() || args[2].is_str()) {
+        return Err(SpicyError::MismatchedTypeErr(
+            "int | sym".to_owned(),
+            args[2].get_type_name(),
+        ));
+    }
+    state.lpt(args[0], args[1], args[2])
 }
 
 fn set_tick(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
@@ -637,7 +643,7 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(lpt)),
                 3,
                 "lpt",
-                &["table", "data", "tick_index"],
+                &["table", "data", "tick_index_or_col"],
             ),
         ),
         (

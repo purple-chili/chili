@@ -25,8 +25,8 @@ use polars::{
     io::SerReader,
     io::parquet::read::ParquetReader,
     prelude::{
-        ArrowDataType, ArrowField, Column, DataType, IntoLazy, NamedFrom, NamedFromOwned, TimeUnit,
-        col, lit,
+        ArrowDataType, ArrowField, Column, DataType, IntoColumn, IntoLazy, NamedFrom, NamedFromOwned,
+        TimeUnit, col, lit,
     },
     series::Series,
 };
@@ -2798,14 +2798,45 @@ impl EngineState {
         ))
     }
 
-    /// Log-before-broadcast tickerplant update: write `(`upd; table; data)` to
-    /// `.tick.msgHandle`, publish to subscribers, then `tick[tick_index; 1]`, all
-    /// under one lock. Returns the new counter at `tick_index`.
+    /// Stamp `col` with `tick[0] + i` per row (`u64`). Used by `lpt` when the
+    /// last argument is a column name.
+    fn stamp_seq_column(df: &DataFrame, col: &str, base: i64) -> SpicyResult<DataFrame> {
+        if base < 0 {
+            return Err(SpicyError::EvalErr(
+                "lpt stamp requires a non-negative tick[0] base".to_owned(),
+            ));
+        }
+        let n = df.height();
+        let mut vals = Vec::with_capacity(n);
+        for i in 0..n {
+            let seq = (base as u64).checked_add(i as u64).ok_or_else(|| {
+                SpicyError::EvalErr("lpt seq stamp overflow".to_owned())
+            })?;
+            vals.push(seq);
+        }
+        let series = Series::new(col.into(), vals);
+        let mut out = df.clone();
+        if out.get_column_names().iter().any(|c| c.as_str() == col) {
+            let _ = out.drop_in_place(col);
+        }
+        out.with_column(series.into_column())
+            .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
+        Ok(out)
+    }
+
+    /// Log-before-broadcast tickerplant update under one lock.
+    ///
+    /// Third argument:
+    /// - **int** `tick_index` — write `data` as given, then `tick[tick_index; 1]`
+    /// - **sym/str** `stamp_col` — stamp `stamp_col` with `tick[0; 0] + i` (`u64`)
+    ///   per row, write/publish the stamped frame, then `tick[0; count data]`
+    ///
+    /// Returns the new counter at the tick slot used.
     pub fn lpt(
         &self,
         table: &SpicyObj,
         data: &SpicyObj,
-        tick_index: usize,
+        tick_index_or_col: &SpicyObj,
     ) -> SpicyResult<SpicyObj> {
         let _gate = self.lpt_lock.lock();
         let handle = self.get_var(".tick.msgHandle").map_err(|_| {
@@ -2820,19 +2851,47 @@ impl EngineState {
         }
         let h = handle.to_i64()?;
         let table_name = table.str()?;
+
+        let stamp_col = if tick_index_or_col.is_integer() || tick_index_or_col.is_bool() {
+            None
+        } else if tick_index_or_col.is_sym() || tick_index_or_col.is_str() {
+            Some(tick_index_or_col.str()?.to_owned())
+        } else {
+            return Err(SpicyError::MismatchedTypeErr(
+                "int | sym".to_owned(),
+                tick_index_or_col.get_type_name(),
+            ));
+        };
+
+        let stamped;
+        let (payload, tick_index, tick_inc) = if let Some(col) = stamp_col.as_deref() {
+            let SpicyObj::DataFrame(df) = data else {
+                return Err(SpicyError::MismatchedTypeErr(
+                    "dataframe".to_owned(),
+                    data.get_type_name(),
+                ));
+            };
+            let base = self.get_tick_count(0)?;
+            stamped = SpicyObj::DataFrame(Self::stamp_seq_column(df, col, base)?);
+            let nrows = df.height() as i64;
+            (&stamped, 0usize, nrows)
+        } else {
+            (data, tick_index_or_col.to_i64()? as usize, 1i64)
+        };
+
         let msg = SpicyObj::MixedList(vec![
             SpicyObj::Symbol("upd".into()),
             table.clone(),
-            data.clone(),
+            payload.clone(),
         ]);
         self.sync(&h, &msg)?;
         self.publish(
             &SpicyObj::Symbol("upd".into()),
             table,
             table_name,
-            data,
+            payload,
         )?;
-        self.tick(tick_index, 1)
+        self.tick(tick_index, tick_inc)
     }
 
     pub fn tick(&self, index: usize, inc: i64) -> SpicyResult<SpicyObj> {

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [0.10.4] - 2026-08-18
+
+### Added
+
+- `lpt[table; data; stamp_col]` — when the last argument is a symbol/string, stamp that column with `tick[0; 0] + i` (`u64`) per row under the same lock, log/publish the stamped frame, then `tick[0; count data]`. Integer last argument is unchanged (`tick[tick_index; 1]`, no stamp).
+
 ## [0.10.3] - 2026-08-14
 
 ### Added

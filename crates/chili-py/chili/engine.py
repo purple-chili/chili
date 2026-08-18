@@ -609,7 +609,9 @@ class ChiliEngine:
         Evaluates the bundled Pepper script that defines ``.tick.*``
         functions (``createLog``, ``upd``, ``subscribe``, ``unsubscribe``,
         ``eod``). ``.tick.upd`` is ``lpt[table; data; 0]`` (log + publish +
-        tick under one lock).
+        tick under one lock). Pass a symbol as the last argument
+        (``lpt[table; data; `seq]``) to stamp a per-row seq column and
+        advance the counter by row count instead of 1.
         """
         if not self.is_tick_loaded:
             tick_path = Path(__file__).parent / "src" / "tick.pep"
