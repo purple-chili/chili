@@ -1297,6 +1297,15 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 &["timestamp", "from_timezone", "to_timezone"],
             ),
         ),
+        (
+            "setz".to_owned(),
+            Func::new_built_in_fn(
+                Some(Box::new(temporal::setz)),
+                2,
+                "setz",
+                &["timezone", "timestamp"],
+            ),
+        ),
     ]
     .into_iter()
     .collect()

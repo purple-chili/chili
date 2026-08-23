@@ -317,6 +317,75 @@ pub fn elementwise_convert_tz(
     Ok(out.into_datetime(datetime.time_unit(), None))
 }
 
+/// Attach a timezone label to a datetime/timestamp without converting the
+/// physical clock values. Use when comparing a naive `D`/`T` literal against a
+/// tz-aware column, e.g. `time > setz[`UTC; 2026.08.25D00:00:00]`.
+pub fn setz(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    let tz_arg = args[0];
+    let dt_arg = args[1];
+    if tz_arg.is_expr() || dt_arg.is_expr() {
+        let timezone = tz_arg.as_expr()?;
+        let datetime = dt_arg.as_expr()?;
+        return Ok(SpicyObj::Expr(datetime.map_many(
+            setz_expr,
+            &[timezone],
+            |_, f| Ok(f[0].clone()),
+        )));
+    }
+
+    validate_args(args, &[ArgType::StrOrSym, ArgType::Any])?;
+    let tz_name = tz_arg.str()?;
+    let tz = polars::prelude::TimeZone::opt_try_new(Some(tz_name))
+        .map_err(|e| SpicyError::Err(e.to_string()))?
+        .ok_or_else(|| SpicyError::Err(format!("not a valid timezone: {tz_name}")))?;
+
+    let s = if dt_arg.is_series() {
+        dt_arg.series().unwrap().clone()
+    } else if dt_arg.is_timestamp() || dt_arg.is_datetime() {
+        dt_arg.as_series()?
+    } else {
+        return Err(SpicyError::Err(format!(
+            "Expect data type 'datetime(s) | timestamp(s)' for '2' argument , got '{}'.",
+            dt_arg.get_type_name()
+        )));
+    };
+
+    Ok(SpicyObj::Series(
+        attach_tz_series(s, tz).map_err(|e| SpicyError::Err(e.to_string()))?,
+    ))
+}
+
+fn setz_expr(columns: &mut [Column]) -> PolarsResult<Column> {
+    let dt = columns[0].clone();
+    let tz_col = columns[1].cast(&DataType::String)?;
+    let tz_name = tz_col
+        .str()?
+        .get(0)
+        .ok_or_else(|| polars_err!(InvalidOperation: "setz timezone must be a non-null string"))?;
+    let tz = polars::prelude::TimeZone::opt_try_new(Some(tz_name))?.ok_or_else(
+        || polars_err!(InvalidOperation: format!("not a valid timezone: {}", tz_name)),
+    )?;
+    let s = attach_tz_series(dt.take_materialized_series(), tz)?;
+    Ok(s.into_column())
+}
+
+fn attach_tz_series(
+    s: polars::series::Series,
+    tz: polars::prelude::TimeZone,
+) -> PolarsResult<polars::series::Series> {
+    let s = if s.dtype().is_datetime() {
+        s
+    } else {
+        s.cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))?
+    };
+    match s.dtype().clone() {
+        DataType::Datetime(tu, _) => s.cast(&DataType::Datetime(tu, Some(tz))),
+        other => Err(polars_err!(
+            InvalidOperation: format!("setz requires datetime/timestamp, got '{}'", other)
+        )),
+    }
+}
+
 fn convert_tz_single(
     dt: i64,
     from_tz: &Tz,

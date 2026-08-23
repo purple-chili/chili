@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-08-23
+
+### Added
+
+- `setz[timezone; timestamp]` — attach a timezone label to a datetime/timestamp without converting physical values (for comparing naive `D`/`T` literals to tz-aware columns, e.g. `time > setz[`UTC; 2026.08.25D00:00:00]`)
+
+### Fixed
+
+- `delete qty, price from t` — bare column ids (and multi-column lists) work for column delete
+- `xbar` on `Datetime` with a time zone (e.g. `Datetime('ns','UTC')`) — floor on the physical i64 and restore unit+tz; previously only `Datetime(_, None)` matched and tz-aware series failed casting `Duration` → datetime
+
 ## [0.10.4] - 2026-08-18
 
 ### Added

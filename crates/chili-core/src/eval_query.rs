@@ -275,6 +275,27 @@ pub fn eval_fn_query(
         {
             lf = lf.filter(combined);
         }
+
+        // Column-delete ops are names, not select exprs: bare ids become
+        // `Expr::Column` under query column context; backticks stay sym/str.
+        let drop_cols = delete_column_names(op)?;
+        if drop_cols.is_empty() && where_exprs_len == 0 {
+            lf = lf.filter(lit(false));
+        } else if !drop_cols.is_empty() {
+            let selector = Selector::ByName {
+                names: drop_cols.into_iter().map(|c| c.into()).collect(),
+                strict: true,
+            };
+            lf = lf.drop(selector);
+        }
+        // where-only: keep-filter already applied above
+        return if is_lazy_mode {
+            Ok(SpicyObj::LazyFrame(lf))
+        } else {
+            lf.collect()
+                .map(SpicyObj::DataFrame)
+                .map_err(|e| SpicyError::EvalErr(e.to_string()))
+        };
     } else if *query_op == QueryOp::Select {
         // Proposal K: fuse sequential filters into a single .and() chain.
         // Polars' optimizer typically folds consecutive `.filter()` calls
@@ -293,96 +314,73 @@ pub fn eval_fn_query(
         SpicyError::EvalErr(format!("group by expression are not expressions, {}", e))
     })?;
 
-    if *query_op == QueryOp::Delete {
-        let columns: Vec<&str> = op
-            .to_str_vec()
-            .map_err(|e| SpicyError::EvalErr(format!("requires columns(str) for delete, {}", e)))?;
-        if columns.is_empty() && where_exprs_len == 0 {
-            return lf
-                .filter(lit(false))
-                .collect()
-                .map(SpicyObj::DataFrame)
-                .map_err(|e| SpicyError::EvalErr(e.to_string()));
-        } else if !columns.is_empty() {
-            let selector = Selector::ByName {
-                names: columns.into_iter().map(|c| c.into()).collect(),
-                strict: true,
-            };
-            lf = lf.drop(selector);
-            return lf
-                .collect()
-                .map(SpicyObj::DataFrame)
-                .map_err(|e| SpicyError::EvalErr(e.to_string()));
-        }
-    } else {
-        // update by => with_columns col("abc").over(partition_by);
-        if *query_op == QueryOp::Select {
-            if group_by.size() > 0 {
-                if op.size() == 0 {
-                    lf = lf.group_by_stable(group_by_exprs).agg(&[col("*").last()]);
-                } else {
-                    lf = lf.group_by_stable(group_by_exprs).agg(op_exprs);
-                }
-            } else if op_exprs.is_empty() {
-                lf = lf.select(&[col("*")]);
+    // update by => with_columns col("abc").over(partition_by);
+    if *query_op == QueryOp::Select {
+        if group_by.size() > 0 {
+            if op.size() == 0 {
+                lf = lf.group_by_stable(group_by_exprs).agg(&[col("*").last()]);
             } else {
-                lf = lf.select(op_exprs);
+                lf = lf.group_by_stable(group_by_exprs).agg(op_exprs);
             }
+        } else if op_exprs.is_empty() {
+            lf = lf.select(&[col("*")]);
+        } else {
+            lf = lf.select(op_exprs);
+        }
 
-            let limited_num = limited.to_i64().map_err(|e| {
-                SpicyError::EvalErr(format!("limited expression must be a number, {}", e))
-            })?;
+        let limited_num = limited.to_i64().map_err(|e| {
+            SpicyError::EvalErr(format!("limited expression must be a number, {}", e))
+        })?;
 
-            if limited_num > 0 {
-                lf = lf.limit(limited_num as u32);
-            } else if limited_num < 0 {
-                lf = lf.tail(limited_num.unsigned_abs() as u32);
-            }
-        } else if *query_op == QueryOp::Update {
-            let op_expr = if !group_by_exprs.is_empty() {
-                op_exprs
+        if limited_num > 0 {
+            lf = lf.limit(limited_num as u32);
+        } else if limited_num < 0 {
+            lf = lf.tail(limited_num.unsigned_abs() as u32);
+        }
+    } else if *query_op == QueryOp::Update {
+        let op_expr = if !group_by_exprs.is_empty() {
+            op_exprs
+                .into_iter()
+                .map(|op| {
+                    if let Expr::Alias(_, name) = &op {
+                        // add another alias so that the update can handle "by columns"
+                        Ok(op.clone().over(group_by_exprs.clone())?.alias(name.clone()))
+                    } else {
+                        op.over(group_by_exprs.clone())
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| SpicyError::Err(e.to_string()))?
+        } else {
+            op_exprs
+        };
+        if where_exprs_len > 0 {
+            let where_exp = where_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
+            lf = lf.with_columns(
+                op_expr
                     .into_iter()
                     .map(|op| {
-                        if let Expr::Alias(_, name) = &op {
-                            // add another alias so that the update can handle "by columns"
-                            Ok(op.clone().over(group_by_exprs.clone())?.alias(name.clone()))
-                        } else {
-                            op.over(group_by_exprs.clone())
-                        }
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| SpicyError::Err(e.to_string()))?
-            } else {
-                op_exprs
-            };
-            if where_exprs_len > 0 {
-                let where_exp = where_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
-                lf = lf.with_columns(
-                    op_expr
-                        .into_iter()
-                        .map(|op| {
-                            let otherwise = if let Expr::Alias(_, name) = &op {
-                                if columns.contains(&name.to_string()) {
-                                    col(name.clone())
-                                } else {
-                                    SpicyObj::Null.as_expr().unwrap()
-                                }
+                        let otherwise = if let Expr::Alias(_, name) = &op {
+                            if columns.contains(&name.to_string()) {
+                                col(name.clone())
                             } else {
                                 SpicyObj::Null.as_expr().unwrap()
-                            };
+                            }
+                        } else {
+                            SpicyObj::Null.as_expr().unwrap()
+                        };
 
-                            when(where_exp.clone()).then(op).otherwise(otherwise)
-                        })
-                        .collect::<Vec<Expr>>(),
-                )
-            } else {
-                lf = lf.with_columns(op_expr)
-            }
+                        when(where_exp.clone()).then(op).otherwise(otherwise)
+                    })
+                    .collect::<Vec<Expr>>(),
+            )
         } else {
-            return Err(SpicyError::NotYetImplemented(
-                "eval query 'exec'".to_owned(),
-            ));
-        };
+            lf = lf.with_columns(op_expr)
+        }
+    } else {
+        return Err(SpicyError::NotYetImplemented(
+            "eval query 'exec'".to_owned(),
+        ));
     }
 
     if is_lazy_mode {
@@ -391,6 +389,44 @@ pub fn eval_fn_query(
         lf.collect()
             .map(SpicyObj::DataFrame)
             .map_err(|e| SpicyError::EvalErr(e.to_string()))
+    }
+}
+
+/// Column names for `delete col1, col2 from t` / `.fn.delete[t;();cols]`.
+/// Accepts sym/str(/series), or `Expr::Column` produced when bare ids are
+/// evaluated under query column context.
+fn delete_column_names(op: &SpicyObj) -> SpicyResult<Vec<String>> {
+    match op {
+        SpicyObj::MixedList(l) => l.iter().map(delete_column_name).collect(),
+        SpicyObj::String(_) | SpicyObj::Symbol(_) | SpicyObj::Series(_) => Ok(op
+            .to_str_vec()
+            .map_err(|e| SpicyError::EvalErr(format!("requires columns(str) for delete, {}", e)))?
+            .into_iter()
+            .map(|s| s.to_owned())
+            .collect()),
+        SpicyObj::Expr(_) => Ok(vec![delete_column_name(op)?]),
+        _ => Err(SpicyError::EvalErr(format!(
+            "requires columns(str) for delete, got {}",
+            op.get_type_name()
+        ))),
+    }
+}
+
+fn delete_column_name(obj: &SpicyObj) -> SpicyResult<String> {
+    match obj {
+        SpicyObj::String(s) => Ok(s.clone()),
+        SpicyObj::Symbol(s) => Ok(s.clone()),
+        SpicyObj::Expr(Expr::Column(name)) => Ok(name.to_string()),
+        SpicyObj::Expr(Expr::Alias(inner, _)) => match inner.as_ref() {
+            Expr::Column(name) => Ok(name.to_string()),
+            _ => Err(SpicyError::EvalErr(
+                "requires columns(str) for delete, got non-column expression".to_owned(),
+            )),
+        },
+        _ => Err(SpicyError::EvalErr(format!(
+            "requires columns(str) for delete, got {}",
+            obj.get_type_name()
+        ))),
     }
 }
 

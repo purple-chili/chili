@@ -2849,6 +2849,8 @@ pub fn cast(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                     Ok(SpicyObj::String(format!("{}", arg1)))
                 } else if arg1.is_float() {
                     Ok(SpicyObj::String(format!("{}", arg1.to_f64().unwrap())))
+                } else if arg1.is_sym() {
+                    Ok(SpicyObj::String(arg1.to_string()))
                 } else {
                     match arg1 {
                         SpicyObj::Series(s1) => Ok(SpicyObj::Series(
