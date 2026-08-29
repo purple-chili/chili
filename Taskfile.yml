@@ -64,7 +64,7 @@ tasks:
 
   tag:
     deps:
-      - update-py-version
+      - sync-cargo-version
     cmds:
       - git tag {{.VERSION}} && git push origin tag {{.VERSION}}
 
@@ -77,12 +77,8 @@ tasks:
       - mkdir -p ~/.vim
       - cp -r ./vim-config/* ~/.vim/
 
-  update-py-version:
+  sync-cargo-version:
     cmds:
-      - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/"
-        crates/chili-bin/pyproject.toml
-      - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/"
-        crates/chili-py/pyproject.toml
       - sed -i "s/^version = \".*\"/version = \"{{.VERSION}}\"/"
         crates/chili-py/Cargo.toml
 
