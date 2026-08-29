@@ -46,6 +46,18 @@ lto = "fat"   # cross-crate inlining across polars boundary
 codegen-units = 1
 # panic = "abort"
 
+# Windows MSVC CI/local wheels: fat LTO + single codegen unit can OOM compiling polars-ops.
+[profile.windows]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
+[profile.windows.package.polars-ops]
+codegen-units = 32
+
+[profile.windows.package.polars-core]
+codegen-units = 32
+
 [patch.crates-io.polars-core]
 git = "https://github.com/hinmeru/polars-core-patch.git"
 tag = "v0.55.2"
