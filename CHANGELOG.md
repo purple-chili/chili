@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-09-01
+
+### Fixed
+
+- Engine deadlock when `lpt`/`sync`, `fsync_handle`, `stats`, and TCP accept ran concurrently — `sync` no longer re-enters `handle.read()` while holding the per-handle I/O mutex; `fsync_handle`/`close_handle`/`rotate_handle` take a read guard only to clone the `rw` arc before flushing; `publish` drops `topic_map` before `handle.write()`
+
 ## [0.10.5] - 2026-08-23
 
 ### Added

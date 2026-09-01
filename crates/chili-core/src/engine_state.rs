@@ -1168,15 +1168,18 @@ impl EngineState {
     }
 
     pub fn close_handle(&self, handle_num: &i64) -> SpicyResult<SpicyObj> {
-        let mut handle = self.handle.write();
-        // Flush before dropping; in-flight I/O may still hold an Arc clone.
-        if let Some(h) = handle.get_mut(handle_num) {
-            if let Some(rw) = h.rw.as_ref() {
-                if let Err(e) = rw.lock().flush() {
-                    warn!("close_handle flush failed on handle {}: {}", handle_num, e);
-                }
+        let rw_arc = {
+            let handles = self.handle.read();
+            handles
+                .get(handle_num)
+                .and_then(|h| h.rw.as_ref().map(Arc::clone))
+        };
+        if let Some(rw) = rw_arc {
+            if let Err(e) = rw.lock().flush() {
+                warn!("close_handle flush failed on handle {}: {}", handle_num, e);
             }
         }
+        let mut handle = self.handle.write();
         handle.shift_remove(handle_num);
         Ok(SpicyObj::Null)
     }
@@ -1198,13 +1201,16 @@ impl EngineState {
                 }
                 // Flush (fdatasync) the old handle before replacing it
                 {
-                    let mut handles = self.handle.write();
-                    if let Some(h) = handles.get_mut(handle_num) {
-                        if let Some(rw) = h.rw.as_ref() {
-                            rw.lock()
-                                .flush()
-                                .map_err(|e| SpicyError::Err(e.to_string()))?;
-                        }
+                    let rw_arc = {
+                        let handles = self.handle.read();
+                        handles
+                            .get(handle_num)
+                            .and_then(|h| h.rw.as_ref().map(Arc::clone))
+                    };
+                    if let Some(rw) = rw_arc {
+                        rw.lock()
+                            .flush()
+                            .map_err(|e| SpicyError::Err(e.to_string()))?;
                     }
                 }
                 let mut tick_count = self.tick_count.write();
@@ -1238,18 +1244,19 @@ impl EngineState {
     }
 
     pub fn fsync_handle(&self, handle_num: &i64) -> SpicyResult<SpicyObj> {
-        let mut handles = self.handle.write();
-        match handles.get_mut(handle_num) {
-            Some(h) => {
-                if let Some(rw) = h.rw.as_ref() {
-                    rw.lock()
-                        .flush()
-                        .map_err(|e| SpicyError::Err(e.to_string()))?;
-                }
-                Ok(SpicyObj::Null)
-            }
-            None => Err(SpicyError::InvalidHandleErr(*handle_num)),
+        let rw_arc = {
+            let handles = self.handle.read();
+            let h = handles
+                .get(handle_num)
+                .ok_or(SpicyError::InvalidHandleErr(*handle_num))?;
+            h.rw.as_ref().map(Arc::clone)
+        };
+        if let Some(rw) = rw_arc {
+            rw.lock()
+                .flush()
+                .map_err(|e| SpicyError::Err(e.to_string()))?;
         }
+        Ok(SpicyObj::Null)
     }
 
     pub fn list_handle(&self) -> SpicyResult<DataFrame> {
@@ -1451,11 +1458,16 @@ impl EngineState {
     }
 
     pub fn sync(&self, h: &i64, msg: &SpicyObj) -> SpicyResult<SpicyObj> {
-        let (rw_arc, is_local, ipc_type, _) = {
+        let (rw_arc, is_local, ipc_type, mut conn_type) = {
             let handle = self.handle.read();
             match handle.get(h) {
                 Some(hd) => match hd.rw.as_ref() {
-                    Some(rw) => (Arc::clone(rw), hd.is_local, hd.ipc_type, hd.conn_type),
+                    Some(rw) => (
+                        Arc::clone(rw),
+                        hd.is_local,
+                        hd.ipc_type,
+                        hd.conn_type,
+                    ),
                     None => return Err(SpicyError::InvalidHandleErr(*h)),
                 },
                 None => return Err(SpicyError::InvalidHandleErr(*h)),
@@ -1464,16 +1476,6 @@ impl EngineState {
         let is_local = &is_local;
         let ipc_type = &ipc_type;
         let mut rw_guard = rw_arc.lock();
-        // Re-read conn_type under the handle mutex. A stale copy taken before
-        // locking can still be `New` after another thread finished the first
-        // frame and transitioned the handle to `Sequence`, causing a spurious
-        // magic header mid-file and tplog corruption under concurrent writers.
-        let mut conn_type = self
-            .handle
-            .read()
-            .get(h)
-            .map(|hd| hd.conn_type)
-            .unwrap_or(ConnType::Disconnected);
         let rw: &mut Box<dyn ReadWrite> = &mut rw_guard;
         let result: SpicyResult<SpicyObj> = (|| {
             {
@@ -1854,6 +1856,7 @@ impl EngineState {
         #[allow(clippy::type_complexity)]
         let mut targets: Vec<(i64, WriteTarget, Option<String>)> = Vec::new();
         let mut failed: Vec<i64> = Vec::new();
+        let mut stale_subscribers: Vec<i64> = Vec::new();
         {
             let handle = self.handle.read();
             for sub in &subscribers {
@@ -1887,10 +1890,7 @@ impl EngineState {
                         "subscriber {} is not found, removing from topic map",
                         subscriber
                     );
-                    topic_map
-                        .get_mut(table)
-                        .unwrap()
-                        .retain(|s| s.handle != subscriber);
+                    stale_subscribers.push(subscriber);
                 }
             }
         }
@@ -1927,6 +1927,13 @@ impl EngineState {
                         failed.push(subscriber);
                     }
                 },
+            }
+        }
+        drop(topic_map);
+        if !stale_subscribers.is_empty() {
+            let mut topic_map = self.topic_map.write();
+            if let Some(subs) = topic_map.get_mut(table) {
+                subs.retain(|s| !stale_subscribers.contains(&s.handle));
             }
         }
         if !failed.is_empty() {
