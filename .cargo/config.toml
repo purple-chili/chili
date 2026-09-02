@@ -1,0 +1,13 @@
+# Windows MSVC wheels (chili-pie + chili-sauce): fat LTO + single codegen unit can
+# OOM compiling polars-ops. Lives here (not workspace Cargo.toml) so
+# workspace-excluded `chili-py` sees it when maturin uses --profile windows.
+[profile.windows]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
+[profile.windows.package.polars-ops]
+codegen-units = 32
+
+[profile.windows.package.polars-core]
+codegen-units = 32
