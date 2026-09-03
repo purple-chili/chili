@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-09-03
+
+### Fixed
+
+- Tick-log rotation vs `lpt`/`sync` race — `rotate_handle` takes `lpt_lock`; `sync` keeps New→Sequence under the per-handle writer mutex (`HandleWriter`) and only mirrors `conn_type` when the writer `Arc` is still current (no stamp-back onto a fresh New entry). Concurrent sequence writers no longer insert a second magic header. Lock order stays `lpt_lock → handle → rw` (no re-entry of the handle map while holding `rw`).
+
 ## [0.10.6] - 2026-09-01
 
 ### Fixed

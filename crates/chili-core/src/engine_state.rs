@@ -63,14 +63,26 @@ pub trait ReadWrite: Read + Write + Send + Sync {}
 
 impl<T: Read + Write + Send + Sync> ReadWrite for T {}
 
+/// Per-handle writer + `conn_type` under one mutex.
+///
+/// `conn_type` lives here so concurrent `sync` callers see New→Sequence under the
+/// same lock that serializes I/O — without re-entering the handle-map RwLock
+/// (which deadlocks with `fsync_handle` / `close_handle`).
+pub struct HandleWriter {
+    pub stream: Box<dyn ReadWrite>,
+    pub conn_type: ConnType,
+}
+
 pub struct Handle {
     /// Per-handle I/O lock: blocking reads/writes run here, not under the global
     /// handle map lock. Do not hold both locks at once.
-    pub rw: Option<Arc<Mutex<Box<dyn ReadWrite>>>>,
+    pub rw: Option<Arc<Mutex<HandleWriter>>>,
     pub socket: String,
     pub uri: String,
     pub is_local: bool,
     pub ipc_type: IpcType,
+    /// Mirror of [`HandleWriter::conn_type`] / TCP role for map-level checks.
+    /// Sequence writers must treat the value under `rw` as authoritative.
     pub conn_type: ConnType,
     pub on_disconnected: Option<String>,
     /// Extra `TcpStream` dup used to `shutdown(Both)` incoming connections on disconnect.
@@ -91,7 +103,7 @@ pub struct QueuedWriter {
 }
 
 enum WriteTarget {
-    Direct(Arc<Mutex<Box<dyn ReadWrite>>>),
+    Direct(Arc<Mutex<HandleWriter>>),
     Queued(QueuedWriter),
 }
 
@@ -1175,7 +1187,7 @@ impl EngineState {
                 .and_then(|h| h.rw.as_ref().map(Arc::clone))
         };
         if let Some(rw) = rw_arc {
-            if let Err(e) = rw.lock().flush() {
+            if let Err(e) = rw.lock().stream.flush() {
                 warn!("close_handle flush failed on handle {}: {}", handle_num, e);
             }
         }
@@ -1194,6 +1206,11 @@ impl EngineState {
         }
         match uri.split_once("://") {
             Some(("file", path)) => {
+                // Mutually exclusive with `lpt` so a mid-rotation sync cannot stamp
+                // Sequence onto the fresh New entry (or write a frame into the new
+                // file without the magic header). Lock order matches `lpt`:
+                // lpt_lock → handle → rw → tick_count.
+                let _gate = self.lpt_lock.lock();
                 let (rw, conn_type, msg_count) = utils::prepare_file_writer(path)?;
                 let idx = *handle_num as usize;
                 if *handle_num < 0 || idx >= MAX_HANDLE_NUM {
@@ -1209,6 +1226,7 @@ impl EngineState {
                     };
                     if let Some(rw) = rw_arc {
                         rw.lock()
+                            .stream
                             .flush()
                             .map_err(|e| SpicyError::Err(e.to_string()))?;
                     }
@@ -1253,6 +1271,7 @@ impl EngineState {
         };
         if let Some(rw) = rw_arc {
             rw.lock()
+                .stream
                 .flush()
                 .map_err(|e| SpicyError::Err(e.to_string()))?;
         }
@@ -1353,7 +1372,12 @@ impl EngineState {
         handle.insert(
             h,
             Handle {
-                rw: rw.map(|b| Arc::new(Mutex::new(b))),
+                rw: rw.map(|b| {
+                    Arc::new(Mutex::new(HandleWriter {
+                        stream: b,
+                        conn_type,
+                    }))
+                }),
                 socket: socket.to_owned(),
                 uri: uri.to_owned(),
                 is_local,
@@ -1408,7 +1432,8 @@ impl EngineState {
                     .map_err(|_| {
                         SpicyError::Err("handle rw still shared; cannot start reader".into())
                     })?
-                    .into_inner();
+                    .into_inner()
+                    .stream;
                 handles.insert(
                     h,
                     Handle {
@@ -1450,24 +1475,38 @@ impl EngineState {
         let _ = self.disconnect_handle(h);
     }
 
-    /// Persist `conn_type` after I/O. Same lock rule as `mark_disconnected`.
-    fn set_conn_type(&self, h: &i64, conn_type: ConnType) {
+    /// Mirror `conn_type` onto the handle map after I/O.
+    ///
+    /// Only updates when `rw_arc` is still the map entry's writer — a `sync`
+    /// that started on a pre-rotation Arc must not stamp Sequence onto a fresh
+    /// New entry. Call only after dropping the per-handle `rw` mutex (never
+    /// hold `rw` and `handle.write()` together).
+    fn set_conn_type_if_writer(
+        &self,
+        h: &i64,
+        rw_arc: &Arc<Mutex<HandleWriter>>,
+        conn_type: ConnType,
+    ) {
         if let Some(hd) = self.handle.write().get_mut(h) {
-            hd.conn_type = conn_type;
+            if hd
+                .rw
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, rw_arc))
+            {
+                hd.conn_type = conn_type;
+            }
         }
     }
 
     pub fn sync(&self, h: &i64, msg: &SpicyObj) -> SpicyResult<SpicyObj> {
-        let (rw_arc, is_local, ipc_type, mut conn_type) = {
+        // Lock order: handle.read (brief) → drop → rw.lock → drop → handle.write.
+        // Never re-enter the handle map while holding `rw` (deadlocks with
+        // fsync_handle / close_handle / rotate flush).
+        let (rw_arc, is_local, ipc_type) = {
             let handle = self.handle.read();
             match handle.get(h) {
                 Some(hd) => match hd.rw.as_ref() {
-                    Some(rw) => (
-                        Arc::clone(rw),
-                        hd.is_local,
-                        hd.ipc_type,
-                        hd.conn_type,
-                    ),
+                    Some(rw) => (Arc::clone(rw), hd.is_local, hd.ipc_type),
                     None => return Err(SpicyError::InvalidHandleErr(*h)),
                 },
                 None => return Err(SpicyError::InvalidHandleErr(*h)),
@@ -1476,7 +1515,10 @@ impl EngineState {
         let is_local = &is_local;
         let ipc_type = &ipc_type;
         let mut rw_guard = rw_arc.lock();
-        let rw: &mut Box<dyn ReadWrite> = &mut rw_guard;
+        // Authoritative under the I/O mutex — fixes concurrent New→Sequence races
+        // without touching the handle map while `rw` is held.
+        let mut conn_type = rw_guard.conn_type;
+        let rw: &mut Box<dyn ReadWrite> = &mut rw_guard.stream;
         let result: SpicyResult<SpicyObj> = (|| {
             {
                 if conn_type == ConnType::Outgoing {
@@ -1616,12 +1658,15 @@ impl EngineState {
                 }
             }
         })();
+        rw_guard.conn_type = conn_type;
         drop(rw_guard);
-        self.set_conn_type(h, conn_type);
+        self.set_conn_type_if_writer(h, &rw_arc, conn_type);
         result
     }
 
     pub fn async_(&self, h: &i64, msg: &SpicyObj) -> SpicyResult<SpicyObj> {
+        // TCP role from the map (Incoming/Outgoing/…); do not lock `rw` while
+        // reading the map, and do not update the map while holding `rw`.
         let (rw_arc, is_local, ipc_type, conn_type) = {
             let handle = self.handle.read();
             match handle.get(h) {
@@ -1636,7 +1681,7 @@ impl EngineState {
         let ipc_type = &ipc_type;
         let mut disconnected = false;
         let mut rw_guard = rw_arc.lock();
-        let rw: &mut Box<dyn ReadWrite> = &mut rw_guard;
+        let rw: &mut Box<dyn ReadWrite> = &mut rw_guard.stream;
         let result: SpicyResult<SpicyObj> = (|| {
             if conn_type == ConnType::Outgoing {
                 match msg {
@@ -1706,7 +1751,7 @@ impl EngineState {
         let ipc_type = &ipc_type;
         let mut disconnected = false;
         let mut rw_guard = rw_arc.lock();
-        let rw: &mut Box<dyn ReadWrite> = &mut rw_guard;
+        let rw: &mut Box<dyn ReadWrite> = &mut rw_guard.stream;
         let result: SpicyResult<SpicyObj> = (|| match msg {
             SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
                 if *ipc_type == IpcType::Q {
@@ -1814,7 +1859,7 @@ impl EngineState {
         table: &str,
         message: &SpicyObj,
     ) -> SpicyResult<()> {
-        let mut topic_map = self.topic_map.write();
+        let topic_map = self.topic_map.write();
         let subscribers = match topic_map.get(table) {
             Some(subscribers) => subscribers.clone(),
             None => {
@@ -1899,7 +1944,8 @@ impl EngineState {
             match target {
                 WriteTarget::Direct(rw_arc) => {
                     let mut rw = rw_arc.lock();
-                    if let Err(e) = crate::write_chili_ipc_msg(&mut **rw, bytes, MessageType::Async)
+                    if let Err(e) =
+                        crate::write_chili_ipc_msg(&mut *rw.stream, bytes, MessageType::Async)
                     {
                         warn!(
                             "failed to write to handle {} - err {}, disconnecting...",
@@ -2006,7 +2052,7 @@ impl EngineState {
                 WriteTarget::Direct(rw_arc) => {
                     let mut rw = rw_arc.lock();
                     if let Err(e) =
-                        utils::write_chili_ipc_msg(&mut **rw, &bytes, MessageType::Async)
+                        utils::write_chili_ipc_msg(&mut *rw.stream, &bytes, MessageType::Async)
                     {
                         warn!(
                             "failed to signal EOD to handle {} - err {}, disconnecting...",
@@ -2083,7 +2129,8 @@ impl EngineState {
                     handle.rw = Some(arc);
                     SpicyError::Err("handle rw still shared; cannot start writer thread".into())
                 })?
-                .into_inner();
+                .into_inner()
+                .stream;
             let shutdown_dup = handle
                 .shutdown_handle
                 .as_ref()
