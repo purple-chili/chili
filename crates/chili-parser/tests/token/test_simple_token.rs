@@ -25,3 +25,19 @@ fn test_windows_path() {
         true,
     );
 }
+
+#[test]
+fn test_short_duration() {
+    assert_eq_tokens(
+        "0D00:05;",
+        "repl.chi",
+        vec!["Duration'0D00:05'|7", "Punc';'|1"],
+        true,
+    );
+    assert_eq_tokens(
+        "0D00:05:00;",
+        "repl.chi",
+        vec!["Duration'0D00:05:00'|10", "Punc';'|1"],
+        true,
+    );
+}

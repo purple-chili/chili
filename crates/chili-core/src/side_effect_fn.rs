@@ -326,14 +326,22 @@ fn tick(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyRes
 }
 
 fn lpt(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
-    validate_args(args, &[ArgType::StrOrSym, ArgType::Any, ArgType::Any])?;
+    validate_args(
+        args,
+        &[
+            ArgType::StrOrSym,
+            ArgType::Any,
+            ArgType::Any,
+            ArgType::IntLike,
+        ],
+    )?;
     if !(args[2].is_integer() || args[2].is_bool() || args[2].is_sym() || args[2].is_str()) {
         return Err(SpicyError::MismatchedTypeErr(
             "int | sym".to_owned(),
             args[2].get_type_name(),
         ));
     }
-    state.lpt(args[0], args[1], args[2])
+    state.lpt(args[0], args[1], args[2], args[3])
 }
 
 fn set_tick(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
@@ -641,9 +649,9 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             "lpt".to_owned(),
             Func::new_side_effect_built_in_fn(
                 Some(Box::new(lpt)),
-                3,
+                4,
                 "lpt",
-                &["table", "data", "tick_index_or_col"],
+                &["table", "data", "tick_index_or_col", "handle"],
             ),
         ),
         (

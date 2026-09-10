@@ -130,10 +130,16 @@ impl SubFilter {
 }
 
 /// Topic subscriber: handle plus optional row filter (`None` = whole frame).
+///
+/// `live` is false from `.broker.subscribe` until the subscribe sync Response
+/// has been written — otherwise `publish`/`lpt` can interleave Async frames
+/// into the handshake (wire tear). Direct `add_subscriber` (tests / tooling)
+/// registers live immediately.
 #[derive(Clone, Debug)]
 pub struct Subscriber {
     pub handle: i64,
     pub filter: Option<SubFilter>,
+    pub live: bool,
 }
 
 /// LRU cache size for parsed AST trees. 256 entries × ~1 KB per AST is
@@ -361,8 +367,6 @@ impl EngineState {
         let mut handles = self.handle.write();
         for (_, hd) in handles.iter_mut() {
             Self::shutdown_handle_io(hd);
-            hd.rw = None;
-            hd.shutdown_handle = None;
             hd.queued = None;
         }
         handles.clear();
@@ -618,11 +622,16 @@ impl EngineState {
     /// `self.vars.write()` guard, a concurrent `upsert_var` either lands
     /// fully before the drain (included in the returned frame) or fully
     /// after (accumulated into the next drain) — never split, never lost.
+    ///
+    /// Refuses to clear if column lengths disagree (torn frame from a failed
+    /// mid-column extend); the buffer is left intact.
     pub fn drain(&self, id: &str) -> SpicyResult<SpicyObj> {
         let mut vars = self.vars.write();
         match vars.get_mut(id) {
             Some(obj) => match obj.mut_df() {
                 Ok(df) => {
+                    // Refuse to clear a torn frame (failed mid-column extend).
+                    crate::utils::ensure_df_rectangular(df)?;
                     let empty = df.clear();
                     let taken = std::mem::replace(df, empty);
                     Ok(SpicyObj::DataFrame(taken))
@@ -655,15 +664,14 @@ impl EngineState {
             Ok(df) => match arg {
                 SpicyObj::DataFrame(records) => {
                     let records = crate::utils::coerce_extend_tz(df, records);
-                    df.extend(&records)
-                        .map_err(|e| SpicyError::Err(e.to_string()))?;
+                    let records = crate::utils::coerce_extend_dtypes(df, &records)?;
+                    crate::utils::extend_df_atomic(df, &records)?;
                     Ok(SpicyObj::I64(records.height() as i64))
                 }
                 SpicyObj::MixedList(list) => {
                     let df1 = convert_list_to_df(list, df)?;
                     let df1 = crate::utils::coerce_extend_tz(df, &df1);
-                    df.extend(&df1)
-                        .map_err(|e| SpicyError::Err(e.to_string()))?;
+                    crate::utils::extend_df_atomic(df, &df1)?;
                     Ok(SpicyObj::I64(df1.height() as i64))
                 }
                 _ => Err(SpicyError::Err(format!(
@@ -709,15 +717,14 @@ impl EngineState {
                     match args {
                         SpicyObj::DataFrame(records) => {
                             let records = crate::utils::coerce_extend_tz(df, records);
-                            df.extend(&records)
-                                .map_err(|e| SpicyError::Err(e.to_string()))?;
+                            let records = crate::utils::coerce_extend_dtypes(df, &records)?;
+                            crate::utils::extend_df_atomic(df, &records)?;
                             df.clone()
                         }
                         SpicyObj::MixedList(list) => {
                             let records = convert_list_to_df(list, df)?;
                             let records = crate::utils::coerce_extend_tz(df, &records);
-                            df.extend(&records)
-                                .map_err(|e| SpicyError::Err(e.to_string()))?;
+                            crate::utils::extend_df_atomic(df, &records)?;
                             df.clone()
                         }
                         _ => {
@@ -1319,11 +1326,18 @@ impl EngineState {
     }
 
     /// Shut down a handle's socket and mark it disconnected. Idempotent.
+    ///
+    /// Drops the writer Arc and the shutdown-clone so the kernel FDs close once
+    /// no other holders remain (e.g. an in-flight `sync`). Leaving them in the
+    /// map stranded two CLOSED descriptors per departed peer.
     fn shutdown_handle_io(h: &mut Handle) {
         h.conn_type = ConnType::Disconnected;
-        if let Some(s) = h.shutdown_handle.as_ref() {
+        if let Some(s) = h.shutdown_handle.take() {
             let _ = s.shutdown(std::net::Shutdown::Both);
+            drop(s);
         }
+        // Drop the accept-path writer Arc so its FD is released with the map entry.
+        h.rw = None;
         if let Some(q) = h.queued.as_ref() {
             q.disconnected
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1787,7 +1801,7 @@ impl EngineState {
         self.add_subscriber_filtered(topic, h, None)
     }
 
-    /// Register a subscriber with an optional row filter.
+    /// Register a subscriber with an optional row filter (live immediately).
     /// Re-subscribing the same handle replaces its filter.
     pub fn add_subscriber_filtered(
         &self,
@@ -1795,13 +1809,57 @@ impl EngineState {
         h: i64,
         filter: Option<SubFilter>,
     ) -> SpicyResult<()> {
+        self.add_subscriber_ex(topic, h, filter, true)
+    }
+
+    /// Register a subscriber. `live == false` defers broadcast until
+    /// [`activate_subscribers`] — used by `.broker.subscribe` so the sync
+    /// schema Response is written before any Async publish frames.
+    pub fn add_subscriber_ex(
+        &self,
+        topic: &str,
+        h: i64,
+        filter: Option<SubFilter>,
+        live: bool,
+    ) -> SpicyResult<()> {
         let mut topic_map = self.topic_map.write();
         let subs = topic_map.entry(topic.to_owned()).or_insert(vec![]);
         match subs.iter_mut().find(|s| s.handle == h) {
-            Some(existing) => existing.filter = filter,
-            None => subs.push(Subscriber { handle: h, filter }),
+            Some(existing) => {
+                existing.filter = filter;
+                // Never demote an already-live subscription (e.g. resubscribe).
+                if live {
+                    existing.live = true;
+                }
+            }
+            None => subs.push(Subscriber {
+                handle: h,
+                filter,
+                live,
+            }),
         }
         Ok(())
+    }
+
+    /// Mark all topic entries for `h` live so `publish` may write to them.
+    /// Call only after the subscribe sync Response is on the wire.
+    pub fn activate_subscribers(&self, h: i64) {
+        let mut topic_map = self.topic_map.write();
+        for subs in topic_map.values_mut() {
+            for s in subs.iter_mut() {
+                if s.handle == h {
+                    s.live = true;
+                }
+            }
+        }
+    }
+
+    /// Drop not-yet-live subscriptions for `h` (failed subscribe sync).
+    pub fn drop_pending_subscribers(&self, h: i64) {
+        let mut topic_map = self.topic_map.write();
+        for subs in topic_map.values_mut() {
+            subs.retain(|s| s.handle != h || s.live);
+        }
     }
 
     pub fn remove_subscriber(&self, topic: &str, h: i64) -> SpicyResult<()> {
@@ -1860,8 +1918,8 @@ impl EngineState {
         message: &SpicyObj,
     ) -> SpicyResult<()> {
         let topic_map = self.topic_map.write();
-        let subscribers = match topic_map.get(table) {
-            Some(subscribers) => subscribers.clone(),
+        let subscribers: Vec<Subscriber> = match topic_map.get(table) {
+            Some(subscribers) => subscribers.iter().filter(|s| s.live).cloned().collect(),
             None => {
                 debug!("no subscribers for table '{}', skip publish", table);
                 return Ok(());
@@ -1869,7 +1927,7 @@ impl EngineState {
         };
 
         if subscribers.is_empty() {
-            debug!("no subscribers for table '{}', skip publish", table);
+            debug!("no live subscribers for table '{}', skip publish", table);
             return Ok(());
         }
 
@@ -2885,24 +2943,17 @@ impl EngineState {
     /// - **sym/str** `stamp_col` — stamp `stamp_col` with `tick[0; 0] + i` (`u64`)
     ///   per row, write/publish the stamped frame, then `tick[0; count data]`
     ///
+    /// Fourth argument `handle`: log-file handle bound inside the lock.
+    ///
     /// Returns the new counter at the tick slot used.
     pub fn lpt(
         &self,
         table: &SpicyObj,
         data: &SpicyObj,
         tick_index_or_col: &SpicyObj,
+        handle: &SpicyObj,
     ) -> SpicyResult<SpicyObj> {
         let _gate = self.lpt_lock.lock();
-        let handle = self.get_var(".tick.msgHandle").map_err(|_| {
-            SpicyError::EvalErr(
-                "lpt requires .tick.msgHandle; call .tick.createLog / init_tick first".to_owned(),
-            )
-        })?;
-        if matches!(handle, SpicyObj::Null) {
-            return Err(SpicyError::EvalErr(
-                "lpt requires .tick.msgHandle; call .tick.createLog / init_tick first".to_owned(),
-            ));
-        }
         let h = handle.to_i64()?;
         let table_name = table.str()?;
 

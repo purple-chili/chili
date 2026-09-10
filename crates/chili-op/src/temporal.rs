@@ -39,6 +39,31 @@ pub fn now(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     ))
 }
 
+/// Current wall-clock time labeled with `timezone`, for query comparisons
+/// against tz-aware columns.
+///
+/// `now` always returns a naive/`Timestamp` (no tz in the value). Prefer
+/// `nowz[`UTC]` — or `setz[`UTC; now[`]]` — when the literal must carry a
+/// timezone through `as_expr`.
+pub fn nowz(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::StrOrSym])?;
+    let timezone_str = args[0].str()?;
+    if timezone_str.is_empty() {
+        return Err(SpicyError::Err(
+            "nowz requires a timezone (e.g. nowz[`UTC]); use now[`] for a naive timestamp"
+                .to_owned(),
+        ));
+    }
+    let ts = now(args)?;
+    let pl_tz = polars::prelude::TimeZone::opt_try_new(Some(timezone_str))
+        .map_err(|e| SpicyError::Err(e.to_string()))?
+        .ok_or_else(|| SpicyError::Err(format!("not a valid timezone: {timezone_str}")))?;
+    let s = ts.as_series()?;
+    Ok(SpicyObj::Series(
+        attach_tz_series(s, pl_tz).map_err(|e| SpicyError::Err(e.to_string()))?,
+    ))
+}
+
 pub fn today(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     validate_args(args, &[ArgType::StrOrSym])?;
     let timezone_str = args[0].str().unwrap();

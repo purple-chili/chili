@@ -2,7 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.10.8] - 2026-09-10
+
+### Added
+
+- `nowz[timezone]` — current wall-clock time labeled with `timezone`, for query comparisons against tz-aware columns (`time < nowz[`UTC]`). `now` remains a naive/`Timestamp`; `setz` is unchanged
+- `lpt[table; data; tick_index_or_col; handle]` — fourth argument is the log handle bound inside `lpt_lock` (callers pass `.tick.msgHandle` or any other sequence handle). Stock `.tick.upd` is `lpt[table; data; 0; .tick.msgHandle]`
+
+### Fixed
+
+- Query-context comparisons against function operands (`now[]`, `sum`, `count`, …) return `UnsupportedQueryJTypeErr` instead of panicking via `as_expr().unwrap()`; over IPC the client now gets an error response instead of hanging on `sync()`
+- Inbound IPC eval catches Rust panics (`catch_unwind`) and returns them as Sync error responses, so a panicking request cannot park the caller when `eval_timeout_ms` is 0
+- Listener peer disconnect drops the accept-path writer Arc and shutdown-clone FDs (`disconnect_handle` / `shutdown_handle_io`); previously two CLOSED descriptors were stranded per departed peer
+- Query call position prefers a **builtin** fn over a same-named column (`count sym` / `count[sym]` when the table has `count`); column remains via `'count'` or operand position. Non-builtin bindings do not override the column
+- `tick` docstring documents cross-connection atomicity of increments
+- Short duration literals `0DHH:MM` (e.g. `0D00:05`) parse as durations; previously failed tokenization and surfaced as `Invalid Handle`
+- Subscribe handshake vs publish tear — `.broker.subscribe` / `subscribeFiltered` register **pending** until the sync Response is written, then `activate_subscribers`; `publish`/`lpt` skip non-live handles so Async frames cannot interleave into the schema reply
+- `upsert`/`insert` extend in place with repair-on-error (truncate back to pre-extend height if Polars mid-column `extend` fails); DataFrame upserts coerce to target dtypes first; MixedList upserts cast to target dtypes; `drain` refuses to clear a non-rectangular frame
 
 ## [0.10.7] - 2026-09-03
 

@@ -52,6 +52,7 @@ fn concurrent_lpt_fsync_and_stats_do_not_deadlock() {
                                 &SpicyObj::Symbol("t".into()),
                                 &tiny_frame(),
                                 &SpicyObj::I64(i % 2),
+                                &SpicyObj::I64(log_h),
                             );
                         }
                         1 => {
@@ -95,6 +96,7 @@ fn concurrent_lpt_rotate_and_fsync_do_not_deadlock() {
                         &SpicyObj::Symbol("t".into()),
                         &tiny_frame(),
                         &SpicyObj::I64(0),
+                        &SpicyObj::I64(log_h),
                     );
                     if i % 20 == 19 {
                         let _ = state.fsync_handle(&log_h);
@@ -151,6 +153,7 @@ fn rotate_under_lpt_traffic_keeps_sequence_magic() {
                         &SpicyObj::Symbol("t".into()),
                         &tiny_frame(),
                         &SpicyObj::I64(0),
+                        &SpicyObj::I64(log_h),
                     )
                     .expect("lpt");
                 i += 1;

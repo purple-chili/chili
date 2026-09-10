@@ -317,6 +317,15 @@ impl Token {
             .map(|s: &str| Token::Time(s.to_string()))
             .boxed();
 
+        // HH:MM (kdb-style short duration fragment, e.g. 0D00:05 == 5 minutes).
+        let time_hm = text::digits(10)
+            .exactly(2)
+            .then(just(':'))
+            .then(text::digits(10).exactly(2))
+            .to_slice()
+            .map(|s: &str| Token::Time(s.to_string()))
+            .boxed();
+
         let times = time
             .clone()
             .then(
@@ -369,9 +378,14 @@ impl Token {
             .map(|s: &str| Token::Datetime(s.to_string()))
             .boxed();
 
+        // Full HH:MM:SS first, then HH:MM short form (0D00:05).
         let duration = just('-')
             .or_not()
-            .then(text::int(10).then(just('D')).then(time.clone().or_not()))
+            .then(
+                text::int(10)
+                    .then(just('D'))
+                    .then(time.clone().or(time_hm).or_not()),
+            )
             .to_slice()
             .map(|s: &str| Token::Duration(s.to_string()))
             .boxed();

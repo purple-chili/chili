@@ -222,6 +222,9 @@ class ChiliEngine:
         same schema.  The take and reset happen under a single write-lock,
         so no rows can be lost or duplicated by a concurrent ``upsert``.
 
+        If the in-memory frame is non-rectangular (uneven column lengths),
+        drain raises and does **not** clear the variable.
+
         Args:
             id: Variable name (must hold a DataFrame).
 
@@ -230,7 +233,7 @@ class ChiliEngine:
 
         Raises:
             NameError: If the variable does not exist.
-            RuntimeError: If the variable is not a DataFrame.
+            RuntimeError: If the variable is not a DataFrame, or is torn.
         """
         return self.engine.drain(id)
 
@@ -341,6 +344,9 @@ class ChiliEngine:
 
     def tick(self, index: int = 0, inc: int = 1) -> Any:
         """Increment the tick counter at *index* by *inc*.
+
+        Increments are atomic across concurrent inbound connections: concurrent
+        ``tick`` calls on the same index do not lose updates.
 
         Args:
             index: Tick stream index (default 0).
@@ -608,10 +614,11 @@ class ChiliEngine:
 
         Evaluates the bundled Pepper script that defines ``.tick.*``
         functions (``createLog``, ``upd``, ``subscribe``, ``unsubscribe``,
-        ``eod``). ``.tick.upd`` is ``lpt[table; data; 0]`` (log + publish +
-        tick under one lock). Pass a symbol as the last argument
-        (``lpt[table; data; `seq]``) to stamp a per-row seq column and
-        advance the counter by row count instead of 1.
+        ``eod``). ``.tick.upd`` is ``lpt[table; data; 0; .tick.msgHandle]``
+        (log + publish + tick under one lock). Pass a symbol as the third
+        argument (``lpt[table; data; `seq; handle]``) to stamp a per-row seq
+        column and advance the counter by row count instead of 1. Pass any
+        log handle as the fourth argument (e.g. a per-table tplog).
         """
         if not self.is_tick_loaded:
             tick_path = Path(__file__).parent / "src" / "tick.pep"

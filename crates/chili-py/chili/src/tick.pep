@@ -29,9 +29,9 @@
 };
 
 .tick.upd: {[table; data]
-  // lpt[table; data; 0]: log + publish + tick[0; 1] under one lock.
-  // lpt[table; data; `seq]: stamp seq = tick[0; 0] + i, then tick[0; count data].
-  lpt[table; data; 0]
+  // lpt[table; data; 0; handle]: log + publish + tick[0; 1] under one lock.
+  // lpt[table; data; `seq; handle]: stamp seq = tick[0; 0] + i, then tick[0; count data].
+  lpt[table; data; 0; .tick.msgHandle]
 };
 
 .tick.subscribe: {[topics]

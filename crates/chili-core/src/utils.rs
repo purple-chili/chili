@@ -2,6 +2,7 @@ use std::{
     env,
     io::{Read, Write},
     net::TcpStream,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::{Arc, LazyLock, mpsc},
     time::Duration,
@@ -608,6 +609,95 @@ fn relabel_datetime_tz(s: &Series, target_tz: Option<TimeZone>) -> Series {
         .with_name(name)
 }
 
+/// Ensure every column has the same length (and that matches `df.height()`).
+/// Used by `drain` so a torn frame is never cleared before the caller can see it.
+pub fn ensure_df_rectangular(df: &DataFrame) -> SpicyResult<()> {
+    let cols = df.columns();
+    if cols.is_empty() {
+        return Ok(());
+    }
+    let expected = cols[0].len();
+    let mut mismatched = Vec::new();
+    for c in cols {
+        if c.len() != expected {
+            mismatched.push(format!("{}:{}", c.name(), c.len()));
+        }
+    }
+    if !mismatched.is_empty() || df.height() != expected {
+        let heights: Vec<String> = cols
+            .iter()
+            .map(|c| format!("{}:{}", c.name(), c.len()))
+            .collect();
+        return Err(SpicyError::Err(format!(
+            "dataframe is not rectangular (height={}, columns=[{}]); refusing to drain",
+            df.height(),
+            heights.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// `DataFrame::extend` mutates columns left-to-right; a mid-column dtype error
+/// leaves earlier columns grown and later ones short. We extend **in place**
+/// (no clone on the success path). On failure, truncate columns back to the
+/// pre-extend height via `head` so the target stays rectangular.
+pub fn extend_df_atomic(df: &mut DataFrame, records: &DataFrame) -> SpicyResult<()> {
+    let height_before = df.height();
+    match df.extend(records) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if df.columns().iter().any(|c| c.len() != height_before) {
+                // height cache is still `height_before` on failed extend; head
+                // truncates each column to that length.
+                *df = df.head(Some(height_before));
+            }
+            Err(SpicyError::Err(format!(
+                "extend failed (target left unchanged): {e}"
+            )))
+        }
+    }
+}
+
+/// Cast incoming columns to match `target` dtypes (by name) before extend.
+/// Avoids the common String→Categorical tear on symbol/fn-style columns.
+pub fn coerce_extend_dtypes(target: &DataFrame, incoming: &DataFrame) -> SpicyResult<DataFrame> {
+    let needs_cast = incoming.columns().iter().any(|c| {
+        target
+            .column(c.name())
+            .map(|t| t.dtype() != c.dtype())
+            .unwrap_or(false)
+    });
+    if !needs_cast {
+        return Ok(incoming.clone());
+    }
+
+    let height = incoming.height();
+    let cols = incoming
+        .columns()
+        .iter()
+        .map(|c| {
+            let Ok(t) = target.column(c.name()) else {
+                return Ok(c.clone());
+            };
+            if c.dtype() == t.dtype() {
+                return Ok(c.clone());
+            }
+            c.cast(t.dtype())
+                .map_err(|e| {
+                    SpicyError::Err(format!(
+                        "cannot cast column '{}' from {} to {}: {}",
+                        c.name(),
+                        c.dtype(),
+                        t.dtype(),
+                        e
+                    ))
+                })
+                .map(|s| s.into_column())
+        })
+        .collect::<SpicyResult<Vec<_>>>()?;
+    DataFrame::new(height, cols).map_err(|e| SpicyError::Err(e.to_string()))
+}
+
 /// Relabel incoming datetime timezone tags to match `target` for `df.extend`.
 ///
 /// Same time unit, different tz tag: relabel incoming columns to the target tag
@@ -658,7 +748,37 @@ pub enum IpcEvalResult {
     TimedOut,
 }
 
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_owned()
+    }
+}
+
+/// Run inbound IPC eval, catching Rust panics so Sync still gets an error frame.
+fn eval_ipc_catch_panic(
+    state: &EngineState,
+    stack: &mut Stack,
+    query: &SpicyObj,
+    src: &str,
+) -> SpicyResult<SpicyObj> {
+    match catch_unwind(AssertUnwindSafe(|| state.eval_with_pre_hook(stack, query, src))) {
+        Ok(result) => result,
+        Err(payload) => {
+            let msg = panic_payload_message(payload);
+            error!("IPC eval panicked: {}", msg);
+            Err(SpicyError::EvalErr(format!("eval panicked: {msg}")))
+        }
+    }
+}
+
 /// Run `eval_with_pre_hook` on a worker thread when `eval_timeout_ms` is set.
+///
+/// Panics during eval are caught and returned as `Finished(Err(...))` so a Sync
+/// caller still receives a response (with or without a timeout).
 pub fn eval_ipc_with_timeout(
     state: &Arc<EngineState>,
     user: &str,
@@ -669,7 +789,7 @@ pub fn eval_ipc_with_timeout(
     let timeout_ms = state.eval_timeout_ms();
     if timeout_ms <= 0 {
         let mut stack = Stack::new(None, 0, handle, user);
-        return IpcEvalResult::Finished(state.eval_with_pre_hook(&mut stack, query, src));
+        return IpcEvalResult::Finished(eval_ipc_catch_panic(state, &mut stack, query, src));
     }
 
     let (tx, rx) = mpsc::sync_channel(1);
@@ -679,7 +799,7 @@ pub fn eval_ipc_with_timeout(
     let user = user.to_owned();
     std::thread::spawn(move || {
         let mut stack = Stack::new(None, 0, handle, &user);
-        let _ = tx.send(state.eval_with_pre_hook(&mut stack, &query, &src));
+        let _ = tx.send(eval_ipc_catch_panic(&state, &mut stack, &query, &src));
     });
 
     match rx.recv_timeout(Duration::from_millis(timeout_ms as u64)) {
@@ -749,6 +869,7 @@ pub fn handle_q_conn(
                     let _ = rw.write_all(&[1, 2, 0, 0]);
                     let _ = rw.write_all(&(err.len() as u32 + 8).to_le_bytes());
                     let _ = rw.write_all(&err);
+                    state.drop_pending_subscribers(handle);
                 } else {
                     error!("{}", err);
                 }
@@ -767,12 +888,15 @@ pub fn handle_q_conn(
                         let _ = rw.write(&[1, 2, 0, 0]);
                         let _ = rw.write_all(&((v8.len() + 8) as u32).to_le_bytes());
                         let _ = rw.write_all(&v8);
+                        // Subscribe handshake: go live only after Response is on the wire.
+                        state.activate_subscribers(handle);
                     }
                     Err(e) => {
                         let err = serde6::serialize(&SpicyObj::Err(e.to_string())).unwrap();
                         let _ = rw.write_all(&[1, 2, 0, 0]);
                         let _ = rw.write_all(&(err.len() as u32 + 8).to_le_bytes());
                         let _ = rw.write_all(&err);
+                        state.drop_pending_subscribers(handle);
                     }
                 },
                 Err(e) => {
@@ -782,6 +906,7 @@ pub fn handle_q_conn(
                     let _ = rw.write_all(&[1, 2, 0, 0]);
                     let _ = rw.write_all(&(err.len() as u32 + 8).to_le_bytes());
                     let _ = rw.write_all(&err);
+                    state.drop_pending_subscribers(handle);
                 }
             }
         } else if let Err(e) = res {
@@ -879,6 +1004,7 @@ pub fn handle_chili_conn(
                     let err_msg = RE_STYLE.replace_all(&err.to_string(), "").to_string();
                     let err = serde9::serialize_err(&err_msg);
                     let _ = rw.write_all(&err);
+                    state.drop_pending_subscribers(handle);
                 } else {
                     error!("{}", err);
                 }
@@ -891,11 +1017,14 @@ pub fn handle_chili_conn(
                 Ok(obj) => match serde9::serialize(&obj, !is_local) {
                     Ok(v8) => {
                         let _ = crate::write_chili_ipc_msg(rw, &v8, MessageType::Response);
+                        // Subscribe handshake: go live only after Response is on the wire.
+                        state.activate_subscribers(handle);
                     }
                     Err(e) => {
                         let err = serde9::serialize_err(&e.to_string());
                         let _ = rw.write_all(&err);
                         error!("failed to serialize response: {}", e);
+                        state.drop_pending_subscribers(handle);
                     }
                 },
                 Err(e) => {
@@ -903,6 +1032,7 @@ pub fn handle_chili_conn(
                     state.fire_on_bad_msg_hook(handle, &err_msg, None);
                     let err = serde9::serialize_err(&err_msg);
                     let _ = rw.write_all(&err);
+                    state.drop_pending_subscribers(handle);
                 }
             }
         } else if let Err(e) = res {
@@ -926,21 +1056,29 @@ pub fn convert_list_to_df(list: &[SpicyObj], df: &DataFrame) -> Result<DataFrame
         ));
     }
     let height = series.first().map(|s| s.len()).unwrap_or(0);
-    let column_names = df.get_column_names_owned();
-    DataFrame::new(
-        height,
-        series
-            .into_iter()
-            .enumerate()
-            .map(|(i, s)| {
-                s.clone()
-                    .rename(column_names[i].clone())
-                    .clone()
-                    .into_column()
-            })
-            .collect::<Vec<_>>(),
-    )
-    .map_err(|e| SpicyError::Err(e.to_string()))
+    let target_cols = df.columns();
+    let columns = series
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let target = &target_cols[i];
+            let mut s = if s.dtype() == target.dtype() {
+                s
+            } else {
+                s.cast(target.dtype()).map_err(|e| {
+                    SpicyError::Err(format!(
+                        "cannot cast column '{}' from {} to {}: {}",
+                        target.name(),
+                        s.dtype(),
+                        target.dtype(),
+                        e
+                    ))
+                })?
+            };
+            Ok(s.rename(target.name().clone()).clone().into_column())
+        })
+        .collect::<Result<Vec<_>, SpicyError>>()?;
+    DataFrame::new(height, columns).map_err(|e| SpicyError::Err(e.to_string()))
 }
 
 #[cfg(test)]

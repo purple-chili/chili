@@ -610,6 +610,8 @@ impl PyEngineState {
     }
 
     /// Increment the tick counter at `index` by `inc` and return the updated value.
+    ///
+    /// Increments are atomic across concurrent inbound connections.
     #[pyo3(signature = (index=0, inc=1))]
     fn tick(&self, py: Python<'_>, index: usize, inc: i64) -> PyResult<Py<PyAny>> {
         self.check_fork()?;

@@ -1,10 +1,10 @@
 use indexmap::IndexMap;
-use ndarray::{Array2, Axis, s};
+use ndarray::{s, Array2, Axis};
 use polars::chunked_array::ops::ChunkFillNullValue;
 use polars::datatypes::{DataType, TimeUnit::Milliseconds as ms, TimeUnit::Nanoseconds as ns};
 use polars::prelude::{
-    Categories, ChunkCompareIneq, Expr, FunctionExpr, NamedFrom, Operator, concat_list,
-    floor_div_series,
+    concat_list, floor_div_series, Categories, ChunkCompareIneq, Expr, FunctionExpr, NamedFrom,
+    Operator,
 };
 use polars::series::{ChunkCompareEq, Series};
 use polars_ops::series::{max_horizontal, min_horizontal};
@@ -21,7 +21,7 @@ use crate::util::{
     list_op_list,
 };
 use crate::{io::map_str_to_polars_dtype, math};
-use chili_core::{ArgType, SpicyError, SpicyObj, SpicyResult, validate_args};
+use chili_core::{validate_args, ArgType, SpicyError, SpicyObj, SpicyResult};
 
 pub const NS_IN_DAY: i64 = 86_400_000_000_000;
 pub const MS_IN_DAY: i64 = 86_400_000;
@@ -1163,9 +1163,7 @@ pub fn gt(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg0 = args[0];
     let arg1 = args[1];
     if arg0.is_expr() || arg1.is_expr() {
-        return Ok(SpicyObj::Expr(
-            arg0.as_expr().unwrap().gt(arg1.as_expr().unwrap()),
-        ));
+        return Ok(SpicyObj::Expr(arg0.as_expr()?.gt(arg1.as_expr()?)));
     }
     let c0 = arg0.get_type_code();
     let c1 = arg1.get_type_code();
@@ -1396,12 +1394,20 @@ pub fn gt(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         } else if arg0.is_matrix() && arg1.to_f64().is_ok() {
             let m0 = arg0.matrix().unwrap();
             Ok(SpicyObj::Matrix(m0.clone().mapv_into(|x| {
-                if x > arg1.to_f64().unwrap() { 1.0 } else { 0.0 }
+                if x > arg1.to_f64().unwrap() {
+                    1.0
+                } else {
+                    0.0
+                }
             })))
         } else if arg0.to_f64().is_ok() && arg1.is_matrix() {
             let m1 = arg1.matrix().unwrap();
             Ok(SpicyObj::Matrix(m1.clone().mapv_into(|x| {
-                if arg0.to_f64().unwrap() > x { 1.0 } else { 0.0 }
+                if arg0.to_f64().unwrap() > x {
+                    1.0
+                } else {
+                    0.0
+                }
             })))
         } else {
             Err(err())
@@ -1414,9 +1420,7 @@ pub fn gt(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
 pub fn lt_eq(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let op = "<=";
     if args[0].is_expr() || args[1].is_expr() {
-        return Ok(SpicyObj::Expr(
-            args[0].as_expr().unwrap().lt_eq(args[1].as_expr().unwrap()),
-        ));
+        return Ok(SpicyObj::Expr(args[0].as_expr()?.lt_eq(args[1].as_expr()?)));
     }
     let e = match gt(args) {
         Ok(args) => match not(&[&args]) {
@@ -1437,9 +1441,7 @@ pub fn lt(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg0 = args[0];
     let arg1 = args[1];
     if arg0.is_expr() || arg1.is_expr() {
-        return Ok(SpicyObj::Expr(
-            arg0.as_expr().unwrap().lt(arg1.as_expr().unwrap()),
-        ));
+        return Ok(SpicyObj::Expr(arg0.as_expr()?.lt(arg1.as_expr()?)));
     }
     let c0 = arg0.get_type_code();
     let c1 = arg1.get_type_code();
@@ -1670,12 +1672,20 @@ pub fn lt(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         } else if arg0.is_matrix() && arg1.to_f64().is_ok() {
             let m0 = arg0.matrix().unwrap();
             Ok(SpicyObj::Matrix(m0.clone().mapv_into(|x| {
-                if x < arg1.to_f64().unwrap() { 1.0 } else { 0.0 }
+                if x < arg1.to_f64().unwrap() {
+                    1.0
+                } else {
+                    0.0
+                }
             })))
         } else if arg0.to_f64().is_ok() && arg1.is_matrix() {
             let m1 = arg1.matrix().unwrap();
             Ok(SpicyObj::Matrix(m1.clone().mapv_into(|x| {
-                if arg0.to_f64().unwrap() < x { 1.0 } else { 0.0 }
+                if arg0.to_f64().unwrap() < x {
+                    1.0
+                } else {
+                    0.0
+                }
             })))
         } else {
             Err(err())
@@ -1688,9 +1698,7 @@ pub fn lt(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
 pub fn gt_eq(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let op = ">=";
     if args[0].is_expr() || args[1].is_expr() {
-        return Ok(SpicyObj::Expr(
-            args[0].as_expr().unwrap().gt_eq(args[1].as_expr().unwrap()),
-        ));
+        return Ok(SpicyObj::Expr(args[0].as_expr()?.gt_eq(args[1].as_expr()?)));
     }
     let e = match lt(args) {
         Ok(args) => match not(&[&args]) {
@@ -1731,9 +1739,7 @@ pub fn eq(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg0 = args[0];
     let arg1 = args[1];
     if arg0.is_expr() || arg1.is_expr() {
-        return Ok(SpicyObj::Expr(
-            arg0.as_expr().unwrap().eq_missing(arg1.as_expr().unwrap()),
-        ));
+        return Ok(SpicyObj::Expr(arg0.as_expr()?.eq_missing(arg1.as_expr()?)));
     }
     let c0 = arg0.get_type_code();
     let c1 = arg1.get_type_code();
@@ -1907,9 +1913,7 @@ pub fn eq(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
 pub fn ne(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let op = "!=";
     if args[0].is_expr() || args[1].is_expr() {
-        return Ok(SpicyObj::Expr(
-            args[0].as_expr().unwrap().neq(args[1].as_expr().unwrap()),
-        ));
+        return Ok(SpicyObj::Expr(args[0].as_expr()?.neq(args[1].as_expr()?)));
     }
     let e = match eq(args) {
         Ok(args) => match not(&[&args]) {
@@ -1931,10 +1935,7 @@ pub fn match_op(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg1 = args[1];
     if arg0.is_expr() || arg1.is_expr() {
         return Ok(SpicyObj::Expr(
-            args[0]
-                .as_expr()
-                .unwrap()
-                .eq_missing(args[1].as_expr().unwrap()),
+            args[0].as_expr()?.eq_missing(args[1].as_expr()?),
         ));
     }
     match arg0 {
@@ -1999,9 +2000,13 @@ pub fn not(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             }
             Ok(SpicyObj::Dict(res))
         }
-        SpicyObj::Matrix(m) => Ok(SpicyObj::Matrix(
-            m.clone().mapv_into(|x| if x == 0.0 { 1.0 } else { 0.0 }),
-        )),
+        SpicyObj::Matrix(m) => Ok(SpicyObj::Matrix(m.clone().mapv_into(|x| {
+            if x == 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        }))),
         // J::Matrix(_) => todo!(),
         _ => Err(SpicyError::UnsupportedUnaryOpErr(
             op.to_owned(),
@@ -2115,7 +2120,7 @@ pub fn take(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         let n = arg0
             .to_i64()
             .map_err(|_| SpicyError::new_arg_type_err(arg0, 0, &ArgType::Int))?;
-        let expr = arg1.as_expr().unwrap();
+        let expr = arg1.as_expr()?;
         if n >= 0 {
             return Ok(SpicyObj::Expr(expr.head(Some(n as usize))));
         } else {
@@ -2253,7 +2258,11 @@ pub fn take(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             SpicyObj::MixedList(l) => {
                 let skip = if n < 0 {
                     let r = n % (l.len() as i64);
-                    if r < 0 { r + l.len() as i64 } else { 0 }
+                    if r < 0 {
+                        r + l.len() as i64
+                    } else {
+                        0
+                    }
                 } else if n == 0 {
                     return Ok(SpicyObj::MixedList(vec![]));
                 } else {
@@ -3709,9 +3718,13 @@ pub fn fill(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             }
             SpicyObj::Matrix(m1) if c0 >= -12 => {
                 let f0 = arg0.to_f64().unwrap();
-                Ok(SpicyObj::Matrix(
-                    m1.clone().mapv_into(|v| if v.is_nan() { f0 } else { v }),
-                ))
+                Ok(SpicyObj::Matrix(m1.clone().mapv_into(|v| {
+                    if v.is_nan() {
+                        f0
+                    } else {
+                        v
+                    }
+                })))
             }
             _ => Err(err()),
         }
@@ -3749,7 +3762,11 @@ pub fn fill(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                         .zip(l0.iter())
                         .map(
                             |(a1, a0)| {
-                                if a1.is_null() { a0.clone() } else { a1.clone() }
+                                if a1.is_null() {
+                                    a0.clone()
+                                } else {
+                                    a1.clone()
+                                }
                             },
                         )
                         .collect(),

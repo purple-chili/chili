@@ -1227,23 +1227,34 @@ impl SpicyObj {
     pub fn parse_time(time: &str) -> SpicyResult<SpicyObj> {
         let err = || SpicyError::ParserErr(format!("Not a valid time, {}", time));
         let mut nano = "";
-        let time = if time.len() > 8 {
-            let v: Vec<&str> = time.split(".").collect();
+        let time = if time.contains('.') {
+            let v: Vec<&str> = time.split('.').collect();
             nano = v[1];
             v[0]
         } else {
             time
         };
-        let v: Vec<&str> = time.split(":").collect();
-        let hh = v[0].parse::<i64>().map_err(|_| err())?;
+        let v: Vec<&str> = time.split(':').collect();
+        let (hh, mm, ss) = match v.as_slice() {
+            // kdb-style short duration fragment: HH:MM (e.g. 0D00:05 → 5 minutes)
+            [h, m] => (
+                h.parse::<i64>().map_err(|_| err())?,
+                m.parse::<i64>().map_err(|_| err())?,
+                0i64,
+            ),
+            [h, m, s] => (
+                h.parse::<i64>().map_err(|_| err())?,
+                m.parse::<i64>().map_err(|_| err())?,
+                s.parse::<i64>().map_err(|_| err())?,
+            ),
+            _ => return Err(err()),
+        };
         if hh > 23 {
             return Err(err());
         }
-        let mm = v[1].parse::<i64>().map_err(|_| err())?;
         if mm > 59 {
             return Err(err());
         }
-        let ss = v[2].parse::<i64>().map_err(|_| err())?;
         if ss > 59 {
             return Err(err());
         }
@@ -1745,6 +1756,10 @@ mod tests {
             SpicyObj::parse_time("23:59:59.000123").unwrap(),
             SpicyObj::Time(86399000123000)
         );
+        assert_eq!(
+            SpicyObj::parse_time("00:05").unwrap(),
+            SpicyObj::Time(5 * 60 * 1_000_000_000)
+        );
         assert!(SpicyObj::parse_time("24:59:59.123456789").is_err())
     }
 
@@ -1761,6 +1776,14 @@ mod tests {
         assert_eq!(
             SpicyObj::parse_duration("100D23:59:59").unwrap(),
             SpicyObj::Duration(8726399000000000)
+        );
+        assert_eq!(
+            SpicyObj::parse_duration("0D00:05").unwrap(),
+            SpicyObj::Duration(5 * 60 * 1_000_000_000)
+        );
+        assert_eq!(
+            SpicyObj::parse_duration("0D00:05:00").unwrap(),
+            SpicyObj::parse_duration("0D00:05").unwrap()
         );
         assert!(SpicyObj::parse_duration("100D23:60:59.123456789").is_err())
     }

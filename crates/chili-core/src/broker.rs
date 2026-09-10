@@ -23,8 +23,9 @@ fn subscribe(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> Spi
     validate_args(args, &[ArgType::Int, ArgType::StrLike])?;
     let handle = args[0].to_i64().unwrap();
     let topics = args[1].to_str_vec().unwrap();
+    // Pending until the sync Response is written (see activate_subscribers).
     for topic in topics {
-        state.add_subscriber(topic, handle)?;
+        state.add_subscriber_ex(topic, handle, None, false)?;
     }
     // update connection type to publishing
     state.handle_subscriber(&handle)?;
@@ -64,7 +65,7 @@ fn subscribe_filtered(
             values.into_iter().map(|s| s.to_owned()).collect(),
         ))
     };
-    state.add_subscriber_filtered(topic, handle, filter)?;
+    state.add_subscriber_ex(topic, handle, filter, false)?;
     state.handle_subscriber(&handle)?;
     Ok(SpicyObj::Null)
 }

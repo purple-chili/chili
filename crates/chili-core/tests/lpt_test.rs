@@ -68,14 +68,19 @@ fn read_tplog_seq_cols(path: &str) -> Vec<Vec<u64>> {
 }
 
 #[test]
-fn lpt_requires_msg_handle() {
+fn lpt_requires_integer_handle() {
     let engine = EngineState::initialize();
     let err = engine
-        .lpt(&SpicyObj::Symbol("t1".into()), &SpicyObj::I64(1), &idx(0))
+        .lpt(
+            &SpicyObj::Symbol("t1".into()),
+            &SpicyObj::I64(1),
+            &idx(0),
+            &SpicyObj::Null,
+        )
         .unwrap_err();
     assert!(
-        err.to_string().contains(".tick.msgHandle"),
-        "expected missing-handle error, got {err}"
+        err.to_string().contains("i64") || err.to_string().to_lowercase().contains("type"),
+        "expected type error for null handle, got {err}"
     );
 }
 
@@ -87,10 +92,9 @@ fn lpt_writes_log_and_increments_tick0() {
 
     let engine = EngineState::initialize();
     let h = open_log(&engine, path_str);
-    engine.set_var(".tick.msgHandle", SpicyObj::I64(h)).unwrap();
 
     let n = engine
-        .lpt(&SpicyObj::Symbol("t1".into()), &SpicyObj::I64(7), &idx(0))
+        .lpt(&SpicyObj::Symbol("t1".into()), &SpicyObj::I64(7), &idx(0), &SpicyObj::I64(h))
         .unwrap();
     assert_eq!(n, SpicyObj::I64(1));
     assert_eq!(engine.get_tick_count(0).unwrap(), 1);
@@ -108,7 +112,6 @@ fn concurrent_lpt_serializes_log_and_tick() {
 
     let engine = Arc::new(EngineState::initialize());
     let h = open_log(&engine, &path_str);
-    engine.set_var(".tick.msgHandle", SpicyObj::I64(h)).unwrap();
 
     let threads = 4;
     let per_thread = 50;
@@ -120,7 +123,7 @@ fn concurrent_lpt_serializes_log_and_tick() {
                 for i in 0..per_thread {
                     let v = (t * per_thread + i) as i64;
                     engine
-                        .lpt(&SpicyObj::Symbol("t1".into()), &SpicyObj::I64(v), &idx(0))
+                        .lpt(&SpicyObj::Symbol("t1".into()), &SpicyObj::I64(v), &idx(0), &SpicyObj::I64(h))
                         .expect("lpt");
                 }
             })
@@ -144,15 +147,13 @@ fn lpt_tick_index_selects_counter_slot() {
 
     let engine = EngineState::initialize();
     let log_h = open_log(&engine, path_str);
-    engine
-        .set_var(".tick.msgHandle", SpicyObj::I64(log_h))
-        .unwrap();
 
     let n = engine
         .lpt(
             &SpicyObj::Symbol("t1".into()),
             &SpicyObj::I64(1),
             &idx(log_h),
+            &SpicyObj::I64(log_h),
         )
         .unwrap();
     assert_eq!(n.to_i64().unwrap(), 1);
@@ -168,13 +169,13 @@ fn lpt_stamp_col_uses_row_count_and_contiguous_seq() {
 
     let engine = EngineState::initialize();
     let h = open_log(&engine, path_str);
-    engine.set_var(".tick.msgHandle", SpicyObj::I64(h)).unwrap();
 
     let n = engine
         .lpt(
             &SpicyObj::Symbol("t1".into()),
             &frame(vec![10, 11, 12, 13, 14]),
             &col_seq(),
+            &SpicyObj::I64(h),
         )
         .unwrap();
     assert_eq!(n.to_i64().unwrap(), 5);
@@ -185,6 +186,7 @@ fn lpt_stamp_col_uses_row_count_and_contiguous_seq() {
             &SpicyObj::Symbol("t1".into()),
             &frame(vec![20, 21, 22, 23, 24]),
             &col_seq(),
+            &SpicyObj::I64(h),
         )
         .unwrap();
     assert_eq!(n.to_i64().unwrap(), 10);
@@ -201,7 +203,6 @@ fn concurrent_lpt_stamp_seqs_are_unique_and_gap_free() {
 
     let engine = Arc::new(EngineState::initialize());
     let h = open_log(&engine, &path_str);
-    engine.set_var(".tick.msgHandle", SpicyObj::I64(h)).unwrap();
 
     let threads = 4;
     let per_thread = 10;
@@ -217,6 +218,7 @@ fn concurrent_lpt_stamp_seqs_are_unique_and_gap_free() {
                             &SpicyObj::Symbol("t1".into()),
                             &frame(vec![1, 2, 3, 4, 5]),
                             &col_seq(),
+                            &SpicyObj::I64(h),
                         )
                         .expect("lpt stamp");
                 }
@@ -240,13 +242,64 @@ fn lpt_stamp_requires_dataframe() {
     let path = dir.path().join("2026.08.14");
     let engine = EngineState::initialize();
     let h = open_log(&engine, path.to_str().unwrap());
-    engine.set_var(".tick.msgHandle", SpicyObj::I64(h)).unwrap();
 
     let err = engine
-        .lpt(&SpicyObj::Symbol("t1".into()), &SpicyObj::I64(1), &col_seq())
+        .lpt(&SpicyObj::Symbol("t1".into()), &SpicyObj::I64(1), &col_seq(), &SpicyObj::I64(h))
         .unwrap_err();
     assert!(
         err.to_string().contains("dataframe"),
         "expected dataframe type error, got {err}"
     );
+}
+
+#[test]
+fn concurrent_lpt_explicit_handles_do_not_cross_wire() {
+    let dir = tempfile::tempdir().unwrap();
+    let p1 = dir.path().join("t1.log");
+    let p2 = dir.path().join("t2.log");
+    let p1s = p1.to_str().unwrap().to_owned();
+    let p2s = p2.to_str().unwrap().to_owned();
+
+    let engine = Arc::new(EngineState::initialize());
+    let h1 = open_log(&engine, &p1s);
+    let h2 = open_log(&engine, &p2s);
+
+    let per = 100i64;
+    let t1 = {
+        let engine = Arc::clone(&engine);
+        thread::spawn(move || {
+            for i in 0..per {
+                engine
+                    .lpt(
+                        &SpicyObj::Symbol("t1".into()),
+                        &SpicyObj::I64(i),
+                        &idx(0),
+                        &SpicyObj::I64(h1),
+                    )
+                    .expect("lpt t1");
+            }
+        })
+    };
+    let t2 = {
+        let engine = Arc::clone(&engine);
+        thread::spawn(move || {
+            for i in 0..per {
+                engine
+                    .lpt(
+                        &SpicyObj::Symbol("t2".into()),
+                        &SpicyObj::I64(i),
+                        &idx(0),
+                        &SpicyObj::I64(h2),
+                    )
+                    .expect("lpt t2");
+            }
+        })
+    };
+    t1.join().unwrap();
+    t2.join().unwrap();
+
+    let (c1, _, _) = utils::count_sequence_file_messages(&p1s, false, false).expect("t1");
+    let (c2, _, _) = utils::count_sequence_file_messages(&p2s, false, false).expect("t2");
+    assert_eq!(c1, per);
+    assert_eq!(c2, per);
 }

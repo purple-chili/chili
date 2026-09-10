@@ -100,6 +100,33 @@ pub fn eval_index_assignment(
     }
 }
 
+/// Evaluate the callee / operator of a call under query column context.
+///
+/// Bare ids that match a column normally become `col(name)`. In call position we
+/// prefer a **builtin** fn of that name instead, so `count sym` keeps working when
+/// the table has a `count` column. The column remains available via `'count'` or
+/// in operand position. Non-builtin bindings never override the column.
+fn eval_callee(
+    state: &EngineState,
+    stack: &mut Stack,
+    node: &AstNode,
+    src: &str,
+    columns: Option<&Vec<String>>,
+) -> SpicyResult<SpicyObj> {
+    if let AstNode::Id { name, .. } = node
+        && let Some(cols) = columns
+        && cols.contains(name)
+        && let Ok(obj) = state.get_var(name)
+        && obj
+            .fn_()
+            .map(|f| f.is_built_in_fn())
+            .unwrap_or(false)
+    {
+        return Ok(obj);
+    }
+    eval_by_node(state, stack, node, src, columns)
+}
+
 pub fn eval_by_node(
     state: &EngineState,
     stack: &mut Stack,
@@ -109,7 +136,7 @@ pub fn eval_by_node(
 ) -> SpicyResult<SpicyObj> {
     match node {
         AstNode::UnaryExp { op: f, exp } => {
-            let obj = eval_by_node(state, stack, f, src, columns)?;
+            let obj = eval_callee(state, stack, f, src, columns)?;
             let exp = eval_by_node(state, stack, exp, src, columns)?;
             eval_call(state, stack, &obj, &vec![&exp], &f.get_pos(), src)
         }
@@ -117,7 +144,7 @@ pub fn eval_by_node(
         AstNode::BinaryExp { op: f2, lhs, rhs } => {
             let lhs = eval_by_node(state, stack, lhs, src, columns)?;
             let rhs = eval_by_node(state, stack, rhs, src, columns)?;
-            let obj = eval_by_node(state, stack, f2, src, columns)?;
+            let obj = eval_callee(state, stack, f2, src, columns)?;
             eval_call(state, stack, &obj, &vec![&lhs, &rhs], &f2.get_pos(), src)
         }
         AstNode::AssignmentExp { id, exp } => {
@@ -174,7 +201,7 @@ pub fn eval_by_node(
         AstNode::FnCall {
             pos: _, f, args, ..
         } => {
-            let obj = eval_by_node(state, stack, f, src, columns)?;
+            let obj = eval_callee(state, stack, f, src, columns)?;
             let args: Result<Vec<SpicyObj>, SpicyError> = args
                 .iter()
                 .map(|a| eval_by_node(state, stack, a, src, columns))
