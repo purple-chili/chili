@@ -922,6 +922,8 @@ pub fn handle_q_conn(
 fn finish_ipc_conn(state: &EngineState, user: &str, handle: i64) {
     state.fire_on_conn_close_hook(user, handle);
     let _ = state.disconnect_handle(&handle);
+    // Release any handshake buffer if the peer left before activation.
+    state.drop_pending_subscribers(handle);
     if let Ok(callback) = state.get_callback(&handle)
         && !callback.is_empty()
     {

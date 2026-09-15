@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.9] - 2026-09-15
+
+### Changed
+
+- `.broker.subscribe` / `.broker.subscribeFiltered` return the replay bound (`tick[0]`, read in the same `lpt_lock` section as the pending registration) instead of null. `.tick.subscribe` / `.tick.subscribeFiltered` hand that bound to the subscriber as `info[1]`; a separate `tick[0; 0]` read after registration is no longer the bound
+- `.broker.subscribe` / `.broker.unsubscribe` accept any str/sym list for `topics` — str, sym, str/sym series, or a mixed list of str/sym (what `.tick.subscribe` passes)
+
+### Fixed
+
+- Subscribe handshake gap — a frame published between the replay bound and `activate_subscribers` reached neither the replay nor the live stream (0.10.8 regression from the handshake tear fix). `publish` / `lpt` now buffer frames for pending handles in publish order; `activate_subscribers` writes the buffer right after the sync Response, before the handle goes live, under the `topic_map` guard `publish` already holds across its writes. Every frame after the bound reaches the subscriber exactly once
+- Pending-handshake buffer is released on failed / timed-out subscribe and on peer disconnect, and is bounded by `subscriber_queue_max` when set (overflow sheds the handle like a slow consumer)
+
 ## [0.10.8] - 2026-09-10
 
 ### Added

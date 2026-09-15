@@ -11,6 +11,14 @@ use crate::{
 };
 
 // message broker functions
+
+/// Topic list argument: str | sym | str/sym series | mixed list of str/sym.
+fn topic_list(arg: &SpicyObj) -> SpicyResult<Vec<&str>> {
+    arg.to_str_vec().map_err(|_| {
+        SpicyError::MismatchedTypeErr("str(s) | sym(s)".to_owned(), arg.get_type_name())
+    })
+}
+
 fn publish(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     validate_args(args, &[ArgType::StrOrSym, ArgType::StrOrSym, ArgType::Any])?;
     let table = args[1].str().unwrap();
@@ -19,21 +27,24 @@ fn publish(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> Spicy
     Ok(SpicyObj::Null)
 }
 
+/// Register `handle` on `topics` (pending until the sync Response is written,
+/// see `activate_subscribers`) and return the replay bound `tick[0]` read in
+/// the same `lpt_lock` section, so callers hand subscribers a bound that no
+/// concurrent `lpt` can slip past.
 fn subscribe(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
-    validate_args(args, &[ArgType::Int, ArgType::StrLike])?;
+    validate_args(args, &[ArgType::Int, ArgType::Any])?;
     let handle = args[0].to_i64().unwrap();
-    let topics = args[1].to_str_vec().unwrap();
-    // Pending until the sync Response is written (see activate_subscribers).
-    for topic in topics {
-        state.add_subscriber_ex(topic, handle, None, false)?;
-    }
+    // str | sym | str/sym series | mixed list of str/sym (what `.tick.subscribe` passes).
+    let topics = topic_list(args[1])?;
+    let bound = state.subscribe_pending(&topics, handle, None)?;
     // update connection type to publishing
     state.handle_subscriber(&handle)?;
-    Ok(SpicyObj::Null)
+    Ok(SpicyObj::I64(bound))
 }
 
-/// Register a subscriber on one topic with an optional row filter.
-/// Empty `values` means no filter (same as `.broker.subscribe`).
+/// Register a subscriber on one topic with an optional row filter and return
+/// the replay bound `tick[0]` (same contract as `.broker.subscribe`).
+/// Empty `values` means no filter.
 fn subscribe_filtered(
     state: &EngineState,
     _stack: &mut Stack,
@@ -65,9 +76,9 @@ fn subscribe_filtered(
             values.into_iter().map(|s| s.to_owned()).collect(),
         ))
     };
-    state.add_subscriber_ex(topic, handle, filter, false)?;
+    let bound = state.subscribe_pending(&[topic], handle, filter)?;
     state.handle_subscriber(&handle)?;
-    Ok(SpicyObj::Null)
+    Ok(SpicyObj::I64(bound))
 }
 
 fn unsubscribe(
@@ -75,9 +86,9 @@ fn unsubscribe(
     _stack: &mut Stack,
     args: &[&SpicyObj],
 ) -> SpicyResult<SpicyObj> {
-    validate_args(args, &[ArgType::Int, ArgType::StrLike])?;
+    validate_args(args, &[ArgType::Int, ArgType::Any])?;
     let handle = args[0].to_i64().unwrap();
-    let topics = args[1].to_str_vec().unwrap();
+    let topics = topic_list(args[1])?;
     for topic in topics {
         state.remove_subscriber(topic, handle)?;
     }

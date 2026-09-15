@@ -36,16 +36,18 @@
 
 .tick.subscribe: {[topics]
   topics: $[count topics; topics; key .tick.schema];
-  // this is reserved for current stack
-  // this.h is the handle for the IPC connection of current stack
-  .broker.subscribe[this.h; ] each topics;
-  (.tick.msgLog; tick[0; 0]; .tick.schema)
+  // this.h is the handle for the IPC connection of current stack.
+  // .broker.subscribe registers this.h pending and returns the replay bound
+  // (tick[0; 0]) from the same lpt_lock section: every frame after the bound
+  // is buffered for this.h and written right after this response.
+  bound: .broker.subscribe[this.h; topics];
+  (.tick.msgLog; bound; .tick.schema)
 };
 
 // Register a per-handle row filter for one topic.
 .tick.subscribeFiltered: {[topic; column; values]
-  .broker.subscribeFiltered[this.h; topic; column; values];
-  (.tick.msgLog; tick[0; 0]; .tick.schema)
+  bound: .broker.subscribeFiltered[this.h; topic; column; values];
+  (.tick.msgLog; bound; .tick.schema)
 };
 
 .tick.unsubscribe: {[topics]

@@ -107,6 +107,17 @@ enum WriteTarget {
     Queued(QueuedWriter),
 }
 
+/// Outcome of resolving a subscriber handle to a write target.
+enum TargetLookup {
+    Ready(WriteTarget),
+    /// Handle marked disconnected: skip silently (entry is cleaned up elsewhere).
+    Disconnected,
+    /// Handle unusable: shed it.
+    Failed,
+    /// Handle no longer in the map: remove the topic entry.
+    Stale,
+}
+
 /// Per-handle row filter: only rows where `column` is in `values` are sent.
 /// `key` deduplicates identical filters for serialization.
 #[derive(Clone, Debug)]
@@ -213,6 +224,12 @@ pub struct EngineState {
     /// Serializes `lpt` (log-write + publish + tick) so tickerplant fan-in
     /// keeps log order, broadcast order, and `tick[0]` in lockstep.
     lpt_lock: Mutex<()>,
+    /// Serialized frames published to a handle whose subscriptions are still
+    /// pending (subscribe sync Response not yet written), in publish order.
+    /// Drained by [`activate_subscribers`] before the handle goes live.
+    /// Only touched while holding the `topic_map` write guard
+    /// (lock order: `topic_map → pending_frames`).
+    pending_frames: Mutex<HashMap<i64, Vec<Vec<Vec<u8>>>>>,
 }
 
 impl Default for EngineState {
@@ -281,6 +298,7 @@ impl EngineState {
             tcp_listener: Mutex::new(None),
             listener_stopping: std::sync::atomic::AtomicBool::new(false),
             lpt_lock: Mutex::new(()),
+            pending_frames: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1841,8 +1859,33 @@ impl EngineState {
         Ok(())
     }
 
-    /// Mark all topic entries for `h` live so `publish` may write to them.
+    /// Register `h` as a pending subscriber on `topics` and return the replay
+    /// bound (`tick[0]`) read in the same `lpt_lock` critical section.
+    ///
+    /// Every `lpt` that completed before this call is at or below the bound
+    /// and comes from the log replay. Every `lpt` that runs after it sees the
+    /// pending entry, buffers its frame for `h`, and [`activate_subscribers`]
+    /// writes it after the sync Response. No frame falls between the two.
+    pub fn subscribe_pending(
+        &self,
+        topics: &[&str],
+        h: i64,
+        filter: Option<SubFilter>,
+    ) -> SpicyResult<i64> {
+        let _gate = self.lpt_lock.lock();
+        for topic in topics {
+            self.add_subscriber_ex(topic, h, filter.clone(), false)?;
+        }
+        self.get_tick_count(0)
+    }
+
+    /// Mark all topic entries for `h` live so `publish` may write to them, and
+    /// flush frames buffered while `h` was pending, in publish order.
     /// Call only after the subscribe sync Response is on the wire.
+    ///
+    /// The flush runs under the `topic_map` write guard — the same guard
+    /// `publish` holds across its own writes — so a concurrent publish cannot
+    /// overtake the buffered frames.
     pub fn activate_subscribers(&self, h: i64) {
         let mut topic_map = self.topic_map.write();
         for subs in topic_map.values_mut() {
@@ -1852,14 +1895,52 @@ impl EngineState {
                 }
             }
         }
+        let frames = self.pending_frames.lock().remove(&h).unwrap_or_default();
+        if frames.is_empty() {
+            return;
+        }
+        let lookup = {
+            let handle = self.handle.read();
+            Self::lookup_write_target(&handle, h)
+        };
+        let failed = match lookup {
+            TargetLookup::Ready(target) => frames
+                .iter()
+                .any(|bytes| !Self::write_frame(h, &target, bytes)),
+            TargetLookup::Failed => true,
+            TargetLookup::Disconnected | TargetLookup::Stale => {
+                debug!(
+                    "handle {} gone before activation, dropping {} buffered frame(s)",
+                    h,
+                    frames.len()
+                );
+                false
+            }
+        };
+        drop(topic_map);
+        if failed {
+            self.shed_subscribers(&[h]);
+        }
     }
 
-    /// Drop not-yet-live subscriptions for `h` (failed subscribe sync).
+    /// Drop not-yet-live subscriptions for `h` (failed subscribe sync) and
+    /// any frames buffered for it.
     pub fn drop_pending_subscribers(&self, h: i64) {
         let mut topic_map = self.topic_map.write();
         for subs in topic_map.values_mut() {
             subs.retain(|s| s.handle != h || s.live);
         }
+        self.pending_frames.lock().remove(&h);
+    }
+
+    /// Number of frames buffered for a pending handle (introspection / tests).
+    pub fn pending_frame_count(&self, h: i64) -> usize {
+        let _topic_map = self.topic_map.read();
+        self.pending_frames
+            .lock()
+            .get(&h)
+            .map(|v| v.len())
+            .unwrap_or(0)
     }
 
     pub fn remove_subscriber(&self, topic: &str, h: i64) -> SpicyResult<()> {
@@ -1918,16 +1999,17 @@ impl EngineState {
         message: &SpicyObj,
     ) -> SpicyResult<()> {
         let topic_map = self.topic_map.write();
-        let subscribers: Vec<Subscriber> = match topic_map.get(table) {
-            Some(subscribers) => subscribers.iter().filter(|s| s.live).cloned().collect(),
-            None => {
-                debug!("no subscribers for table '{}', skip publish", table);
-                return Ok(());
-            }
-        };
+        let (subscribers, pending): (Vec<Subscriber>, Vec<Subscriber>) =
+            match topic_map.get(table) {
+                Some(subscribers) => subscribers.iter().cloned().partition(|s| s.live),
+                None => {
+                    debug!("no subscribers for table '{}', skip publish", table);
+                    return Ok(());
+                }
+            };
 
-        if subscribers.is_empty() {
-            debug!("no live subscribers for table '{}', skip publish", table);
+        if subscribers.is_empty() && pending.is_empty() {
+            debug!("no subscribers for table '{}', skip publish", table);
             return Ok(());
         }
 
@@ -1940,7 +2022,7 @@ impl EngineState {
         };
         let mut payload_cache: HashMap<Option<String>, Vec<Vec<u8>>> = HashMap::new();
         let mut filter_by_key: HashMap<String, SubFilter> = HashMap::new();
-        for sub in &subscribers {
+        for sub in subscribers.iter().chain(pending.iter()) {
             let cache_key = sub.filter.as_ref().map(|f| f.key.clone());
             if let Some(f) = &sub.filter {
                 filter_by_key
@@ -1965,72 +2047,52 @@ impl EngineState {
             for sub in &subscribers {
                 let subscriber = sub.handle;
                 let cache_key = sub.filter.as_ref().map(|f| f.key.clone());
-                if let Some(v) = handle.get(&subscriber) {
-                    if v.conn_type == ConnType::Disconnected {
+                match Self::lookup_write_target(&handle, subscriber) {
+                    TargetLookup::Ready(target) => targets.push((subscriber, target, cache_key)),
+                    TargetLookup::Disconnected => {}
+                    TargetLookup::Failed => failed.push(subscriber),
+                    TargetLookup::Stale => stale_subscribers.push(subscriber),
+                }
+            }
+            // Pending handshake: buffer the frame; activate_subscribers writes
+            // it after the sync Response. Bounded by subscriber_queue_max when set.
+            if !pending.is_empty() {
+                let queue_max = self
+                    .subscriber_queue_max
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let mut pending_frames = self.pending_frames.lock();
+                for sub in &pending {
+                    let subscriber = sub.handle;
+                    let alive = match handle.get(&subscriber) {
+                        Some(v) => v.conn_type != ConnType::Disconnected,
+                        None => false,
+                    };
+                    if !alive {
+                        // Peer left mid-handshake; nothing will activate it.
+                        pending_frames.remove(&subscriber);
+                        stale_subscribers.push(subscriber);
                         continue;
                     }
-                    if let Some(q) = v.queued.as_ref() {
-                        if q.disconnected.load(std::sync::atomic::Ordering::Relaxed) {
-                            failed.push(subscriber);
-                        } else {
-                            targets.push((subscriber, WriteTarget::Queued(q.clone()), cache_key));
-                        }
-                    } else {
-                        match v.rw.as_ref() {
-                            Some(rw) => targets.push((
-                                subscriber,
-                                WriteTarget::Direct(Arc::clone(rw)),
-                                cache_key,
-                            )),
-                            None => {
-                                warn!("handle {} is disconnected", subscriber);
-                                failed.push(subscriber);
-                            }
-                        }
+                    let buf = pending_frames.entry(subscriber).or_default();
+                    if queue_max > 0 && buf.len() >= queue_max as usize {
+                        warn!(
+                            "subscriber {} pending-handshake buffer full (slow handshake), shedding",
+                            subscriber
+                        );
+                        pending_frames.remove(&subscriber);
+                        failed.push(subscriber);
+                        continue;
                     }
-                } else {
-                    warn!(
-                        "subscriber {} is not found, removing from topic map",
-                        subscriber
-                    );
-                    stale_subscribers.push(subscriber);
+                    let cache_key = sub.filter.as_ref().map(|f| f.key.clone());
+                    let bytes = payload_cache.get(&cache_key).expect("payload cached above");
+                    buf.push(bytes.clone());
                 }
             }
         }
         for (subscriber, target, cache_key) in targets {
             let bytes = payload_cache.get(&cache_key).expect("payload cached above");
-            match target {
-                WriteTarget::Direct(rw_arc) => {
-                    let mut rw = rw_arc.lock();
-                    if let Err(e) =
-                        crate::write_chili_ipc_msg(&mut *rw.stream, bytes, MessageType::Async)
-                    {
-                        warn!(
-                            "failed to write to handle {} - err {}, disconnecting...",
-                            subscriber, e
-                        );
-                        drop(rw);
-                        failed.push(subscriber);
-                    }
-                }
-                WriteTarget::Queued(q) => match q.sender.try_send(bytes.clone()) {
-                    Ok(()) => {
-                        q.depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                        warn!(
-                            "subscriber {} outbound queue full (slow consumer), shedding",
-                            subscriber
-                        );
-                        q.disconnected
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                        failed.push(subscriber);
-                    }
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        warn!("subscriber {} writer thread gone, shedding", subscriber);
-                        failed.push(subscriber);
-                    }
-                },
+            if !Self::write_frame(subscriber, &target, bytes) {
+                failed.push(subscriber);
             }
         }
         drop(topic_map);
@@ -2040,22 +2102,97 @@ impl EngineState {
                 subs.retain(|s| !stale_subscribers.contains(&s.handle));
             }
         }
-        if !failed.is_empty() {
-            let mut handle = self.handle.write();
-            for subscriber in failed {
-                if let Some(hd) = handle.get_mut(&subscriber) {
-                    hd.conn_type = ConnType::Disconnected;
-                    if let Some(s) = hd.shutdown_handle.as_ref() {
-                        let _ = s.shutdown(std::net::Shutdown::Both);
-                    }
-                    if let Some(q) = hd.queued.as_ref() {
-                        q.disconnected
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+        self.shed_subscribers(&failed);
+        Ok(())
+    }
+
+    /// Resolve the outbound target for `subscriber` under the handle-map guard.
+    fn lookup_write_target(handle: &IndexMap<i64, Handle>, subscriber: i64) -> TargetLookup {
+        let Some(v) = handle.get(&subscriber) else {
+            warn!(
+                "subscriber {} is not found, removing from topic map",
+                subscriber
+            );
+            return TargetLookup::Stale;
+        };
+        if v.conn_type == ConnType::Disconnected {
+            return TargetLookup::Disconnected;
+        }
+        if let Some(q) = v.queued.as_ref() {
+            if q.disconnected.load(std::sync::atomic::Ordering::Relaxed) {
+                TargetLookup::Failed
+            } else {
+                TargetLookup::Ready(WriteTarget::Queued(q.clone()))
+            }
+        } else {
+            match v.rw.as_ref() {
+                Some(rw) => TargetLookup::Ready(WriteTarget::Direct(Arc::clone(rw))),
+                None => {
+                    warn!("handle {} is disconnected", subscriber);
+                    TargetLookup::Failed
                 }
             }
         }
-        Ok(())
+    }
+
+    /// Write one Async frame to `target`. Returns `false` when the subscriber
+    /// must be shed (write error, queue full, or writer thread gone).
+    fn write_frame(subscriber: i64, target: &WriteTarget, bytes: &[Vec<u8>]) -> bool {
+        match target {
+            WriteTarget::Direct(rw_arc) => {
+                let mut rw = rw_arc.lock();
+                if let Err(e) =
+                    crate::write_chili_ipc_msg(&mut *rw.stream, bytes, MessageType::Async)
+                {
+                    warn!(
+                        "failed to write to handle {} - err {}, disconnecting...",
+                        subscriber, e
+                    );
+                    return false;
+                }
+                true
+            }
+            WriteTarget::Queued(q) => match q.sender.try_send(bytes.to_vec()) {
+                Ok(()) => {
+                    q.depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    true
+                }
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    warn!(
+                        "subscriber {} outbound queue full (slow consumer), shedding",
+                        subscriber
+                    );
+                    q.disconnected
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    false
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    warn!("subscriber {} writer thread gone, shedding", subscriber);
+                    false
+                }
+            },
+        }
+    }
+
+    /// Mark `failed` subscriber handles disconnected and shut their sockets.
+    /// Must not be called while holding `topic_map` (takes the handle write guard).
+    fn shed_subscribers(&self, failed: &[i64]) {
+        if failed.is_empty() {
+            return;
+        }
+        let mut handle = self.handle.write();
+        for subscriber in failed {
+            if let Some(hd) = handle.get_mut(subscriber) {
+                hd.conn_type = ConnType::Disconnected;
+                if let Some(s) = hd.shutdown_handle.as_ref() {
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                }
+                if let Some(q) = hd.queued.as_ref() {
+                    q.disconnected
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
     }
 
     pub fn signal_eod(&self, args: &SpicyObj) -> SpicyResult<()> {
