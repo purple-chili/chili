@@ -573,13 +573,41 @@ class ChiliEngine:
         self.engine.stop_tcp_listener()
 
     def set_subscriber_queue_max(self, n: int) -> None:
-        """Shed a subscriber whose outbound write queue exceeds ``n`` frames.
+        """Outbound queue mode and frame bound for Publishing subscribers.
 
-        When ``n > 0``, each Publishing subscriber gets a bounded channel and
-        writer thread; publish uses non-blocking ``try_send``. A full queue
-        disconnects the subscriber. ``0`` (default) disables queue shedding.
+        Each Publishing subscriber gets an unbounded queue and a writer
+        thread, so ``publish`` never blocks on a slow consumer (kdb+ ``.z.W``
+        shape). ``n`` sets the frame bound:
+
+        - ``0`` (default): no frame bound. Memory grows with the backlog;
+          watch ``stats()["queue_depth_by_handle"]`` / ``queue_bytes_by_handle``.
+        - ``n > 0``: shed the subscriber once its queue holds more than ``n``
+          frames (subject to :meth:`set_subscriber_queue_grace_ms`).
+        - ``n < 0``: legacy direct write on the publishing thread. A stalled
+          subscriber then blocks every publisher.
+
+        Applies to subscribers promoted after the call. See also
+        :meth:`set_subscriber_queue_max_bytes`.
         """
         self.engine.set_subscriber_queue_max(n)
+
+    def set_subscriber_queue_max_bytes(self, n: int) -> None:
+        """Byte bound on a Publishing subscriber's queue (``0`` = none).
+
+        Counts serialized frame bytes waiting in the queue. Over the bound the
+        subscriber is shed, subject to :meth:`set_subscriber_queue_grace_ms`.
+        """
+        self.engine.set_subscriber_queue_max_bytes(n)
+
+    def set_subscriber_queue_grace_ms(self, ms: int) -> None:
+        """How long a queue may stay over a bound before its subscriber is shed.
+
+        ``0`` (default) sheds at the first breach. With ``ms > 0`` a transient
+        stall is tolerated: the subscriber is shed only once the queue has
+        stayed over the frame or byte bound for ``ms`` milliseconds, checked
+        on each publish. Dropping back under a bound resets the clock.
+        """
+        self.engine.set_subscriber_queue_grace_ms(ms)
 
     def set_eval_timeout_ms(self, ms: int) -> None:
         """Wall-clock limit for inbound IPC eval in milliseconds.

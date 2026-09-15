@@ -31,6 +31,7 @@ def test_no_gap_between_replay_and_live_under_publish_churn():
     port = _free_port()
     tp = ChiliEngine(pepper=True)
     stop = threading.Event()
+    pause = threading.Event()
 
     with tempfile.TemporaryDirectory() as log_dir:
         schema = pl.DataFrame({"n": pl.Series([], dtype=pl.Int64)})
@@ -43,6 +44,9 @@ def test_no_gap_between_replay_and_live_under_publish_churn():
         def publisher():
             i = 0
             while not stop.is_set():
+                if pause.is_set():
+                    time.sleep(0.001)
+                    continue
                 tp.publish("trade", pl.DataFrame({"n": [i]}))
                 i += 1
 
@@ -52,7 +56,15 @@ def test_no_gap_between_replay_and_live_under_publish_churn():
         gaps: list[tuple[int, int]] = []
         dups = 0
         try:
-            for _ in range(40):
+            for i in range(40):
+                # Roll the log so each fresh subscriber replays only the current
+                # segment; the publisher never stalls now, so the log grows fast.
+                # Pause publishing around the roll: .tick.rollLog resets tick[0]
+                # in two statements outside lpt_lock.
+                pause.set()
+                time.sleep(0.005)
+                tp.roll_tick_log(log_dir + "/", f"seg{i}")
+                pause.clear()
                 s = ChiliEngine(pepper=True)
                 s.subscribe(f"chili://127.0.0.1:{port}", ["trade"])
                 time.sleep(0.02)

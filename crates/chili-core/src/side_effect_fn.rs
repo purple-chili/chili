@@ -309,6 +309,22 @@ fn subscribing(
     state.handle_publisher(&handle).map(|_| SpicyObj::Null)
 }
 
+/// Start reading an outgoing handle in hold mode: frames are parked in this
+/// process until `.handle.release`. Call before `replay` so the backlog of a
+/// slow replay sits here, not in the publisher's outbound queue.
+fn holding(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    let handle = args[0].to_i64()?;
+    state
+        .handle_publisher_ex(&handle, true)
+        .map(|_| SpicyObj::Null)
+}
+
+/// Apply parked frames in order and go live. Returns the number applied.
+fn release(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    let handle = args[0].to_i64()?;
+    state.release_held(handle).map(SpicyObj::I64)
+}
+
 fn del(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let id = args[0].str()?;
     state.del_var(id)
@@ -756,6 +772,24 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 Some(Box::new(subscribing)),
                 1,
                 ".handle.subscribing",
+                &["handle"],
+            ),
+        ),
+        (
+            ".handle.holding".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(holding)),
+                1,
+                ".handle.holding",
+                &["handle"],
+            ),
+        ),
+        (
+            ".handle.release".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(release)),
+                1,
+                ".handle.release",
                 &["handle"],
             ),
         ),

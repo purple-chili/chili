@@ -42,6 +42,7 @@ impl Write for CountingStream {
 #[test]
 fn pending_subscriber_does_not_receive_publish() {
     let engine = EngineState::initialize();
+    engine.set_subscriber_queue_max(-1); // direct writes so the stream can be asserted synchronously
     let wrote = Arc::new(AtomicBool::new(false));
     let h = match engine
         .set_handle(
@@ -98,6 +99,7 @@ fn pending_subscriber_does_not_receive_publish() {
 #[test]
 fn live_add_subscriber_still_receives_immediately() {
     let engine = EngineState::initialize();
+    engine.set_subscriber_queue_max(-1); // direct writes so the stream can be asserted synchronously
     let wrote = Arc::new(AtomicBool::new(false));
     let h = match engine
         .set_handle(
@@ -137,6 +139,7 @@ fn live_add_subscriber_still_receives_immediately() {
 #[test]
 fn drop_pending_removes_inactive_only() {
     let engine = EngineState::initialize();
+    engine.set_subscriber_queue_max(-1); // direct writes so the stream can be asserted synchronously
     let wrote_trade = Arc::new(AtomicBool::new(false));
     let h = match engine
         .set_handle(
@@ -286,6 +289,7 @@ fn publish(engine: &EngineState, table: &str, v: i64) {
 #[test]
 fn pending_frames_are_flushed_on_activation_in_order_before_live() {
     let engine = EngineState::initialize();
+    engine.set_subscriber_queue_max(-1); // direct writes so the stream can be asserted synchronously
     let (h, stream) = recording_handle(&engine);
     let bound = engine
         .subscribe_pending(&["trade", "quote"], h, None)
@@ -315,6 +319,7 @@ fn pending_frames_are_flushed_on_activation_in_order_before_live() {
 #[test]
 fn lpt_between_bound_and_activation_is_delivered_exactly_once() {
     let engine = EngineState::initialize();
+    engine.set_subscriber_queue_max(-1); // direct writes so the stream can be asserted synchronously
     let dir = tempfile::tempdir().unwrap();
     let log_path = dir.path().join("tplog");
     let log = match engine
@@ -359,6 +364,7 @@ fn lpt_between_bound_and_activation_is_delivered_exactly_once() {
 #[test]
 fn drop_pending_discards_buffered_frames() {
     let engine = EngineState::initialize();
+    engine.set_subscriber_queue_max(-1); // direct writes so the stream can be asserted synchronously
     let (h, stream) = recording_handle(&engine);
     engine.subscribe_pending(&["trade"], h, None).unwrap();
     publish(&engine, "trade", 1);
@@ -377,6 +383,7 @@ fn drop_pending_discards_buffered_frames() {
 #[test]
 fn pending_buffer_is_capped_by_subscriber_queue_max() {
     let engine = EngineState::initialize();
+    engine.set_subscriber_queue_max(-1); // direct writes so the stream can be asserted synchronously
     let (h, stream) = recording_handle(&engine);
     engine.set_subscriber_queue_max(2);
     engine.subscribe_pending(&["trade"], h, None).unwrap();
@@ -398,6 +405,7 @@ fn pending_buffer_is_capped_by_subscriber_queue_max() {
 #[test]
 fn filtered_pending_frames_keep_the_filter() {
     let engine = EngineState::initialize();
+    engine.set_subscriber_queue_max(-1); // direct writes so the stream can be asserted synchronously
     let (h, stream) = recording_handle(&engine);
     let filter = chili_core::SubFilter::new("v".into(), vec!["2".into()]);
     engine

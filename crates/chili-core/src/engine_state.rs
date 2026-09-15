@@ -89,17 +89,38 @@ pub struct Handle {
     pub shutdown_handle: Option<std::net::TcpStream>,
     /// Bounded outbound queue when subscriber queue shedding is enabled.
     pub queued: Option<QueuedWriter>,
+    /// Subscriber-side hold buffer (Subscribing handles started with
+    /// `.handle.holding`): Async frames read while `holding` are parked here
+    /// instead of evaluated, so a log replay can finish first and the boot
+    /// backlog sits in this process rather than in the publisher's queue.
+    pub hold: Option<Arc<Mutex<HoldState>>>,
 }
 
-/// Bounded outbound channel and dedicated writer thread for a Publishing subscriber.
+/// See [`Handle::hold`]. The reader thread and [`EngineState::release_held`]
+/// serialize on the mutex, so frames are applied in arrival order exactly once.
+pub struct HoldState {
+    pub holding: bool,
+    pub frames: Vec<SpicyObj>,
+}
+
+/// Unbounded outbound channel and dedicated writer thread for a Publishing
+/// subscriber (kdb+ `.z.W` shape). Bounds are policy, applied by
+/// [`EngineState::queue_over_bound`] after each enqueue: frames
+/// (`subscriber_queue_max`), bytes (`subscriber_queue_max_bytes`), and a grace
+/// window (`subscriber_queue_grace_ms`) the queue must stay over a bound before
+/// the subscriber is shed.
 #[derive(Clone)]
 pub struct QueuedWriter {
-    /// Bounded sender; `try_send` a whole serialized frame. `Full` means shed.
-    pub sender: std::sync::mpsc::SyncSender<Vec<Vec<u8>>>,
-    /// Set by the writer thread on write error, or by the engine on a full queue.
+    /// Unbounded sender; one whole serialized frame per message.
+    pub sender: std::sync::mpsc::Sender<Vec<Vec<u8>>>,
+    /// Set by the writer thread on write error, or by the engine when shedding.
     pub disconnected: Arc<std::sync::atomic::AtomicBool>,
-    /// Frames enqueued but not yet written; incremented on `try_send`, decremented in the writer thread.
+    /// Frames enqueued but not yet written; incremented on send, decremented in the writer thread.
     pub depth: Arc<std::sync::atomic::AtomicI64>,
+    /// Serialized bytes enqueued but not yet written.
+    pub bytes: Arc<std::sync::atomic::AtomicI64>,
+    /// Unix millis when the queue first went over a bound; `0` when under.
+    pub over_since_ms: Arc<std::sync::atomic::AtomicI64>,
 }
 
 enum WriteTarget {
@@ -213,8 +234,15 @@ pub struct EngineState {
     /// When true, a scheduled job that errors on fire is deactivated instead of
     /// rescheduling. Default false preserves log-and-keep-firing behaviour.
     jobs_deactivate_on_error: RwLock<bool>,
-    /// Max outbound frames queued per Publishing subscriber; `0` disables shedding.
+    /// Outbound queue mode / frame bound per Publishing subscriber:
+    /// `< 0` direct blocking write on the publishing thread (legacy);
+    /// `0` queued with no frame bound (default); `> 0` queued, shed above n frames.
     subscriber_queue_max: std::sync::atomic::AtomicI64,
+    /// Byte bound on a Publishing subscriber's queue; `0` = none.
+    subscriber_queue_max_bytes: std::sync::atomic::AtomicI64,
+    /// How long a queue must stay over a bound before its subscriber is shed;
+    /// `0` = shed at the first breach.
+    subscriber_queue_grace_ms: std::sync::atomic::AtomicI64,
     /// Wall-clock limit for inbound IPC eval (`0` = disabled).
     eval_timeout_ms: std::sync::atomic::AtomicI64,
     /// Listening socket retained so `stop_tcp_listener` / `shutdown` can close it.
@@ -294,6 +322,8 @@ impl EngineState {
             on_bad_msg_hook: RwLock::new(None),
             jobs_deactivate_on_error: RwLock::new(false),
             subscriber_queue_max: std::sync::atomic::AtomicI64::new(0),
+            subscriber_queue_max_bytes: std::sync::atomic::AtomicI64::new(0),
+            subscriber_queue_grace_ms: std::sync::atomic::AtomicI64::new(0),
             eval_timeout_ms: std::sync::atomic::AtomicI64::new(0),
             tcp_listener: Mutex::new(None),
             listener_stopping: std::sync::atomic::AtomicBool::new(false),
@@ -1189,6 +1219,10 @@ impl EngineState {
         }
 
         let is_local = host.starts_with("localhost") || host.starts_with("127.0.0.1");
+        // Keep a dup so disconnect/shutdown can `shutdown(Both)` the socket even
+        // after the stream has moved into a subscriber reader thread; otherwise
+        // that thread (and the peer's side) stays alive forever.
+        let shutdown_dup = stream.try_clone().ok();
         let h = self.set_handle(
             Some(Box::new(stream)),
             &format!("{}://{}:{}", ipc_type, host, port),
@@ -1198,6 +1232,9 @@ impl EngineState {
             ConnType::Outgoing,
             h,
         )?;
+        if let Some(s) = shutdown_dup {
+            self.set_shutdown_handle(h.i64().unwrap(), s);
+        }
         if let Some(callback) = callback {
             self.set_callback(h.i64().unwrap(), callback)?;
         }
@@ -1356,15 +1393,47 @@ impl EngineState {
         }
         // Drop the accept-path writer Arc so its FD is released with the map entry.
         h.rw = None;
-        if let Some(q) = h.queued.as_ref() {
+        // Drop the queue sender too: the writer thread parked in `recv()` exits
+        // and releases the socket it owns.
+        if let Some(q) = h.queued.take() {
             q.disconnected
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
-    /// Set max outbound queue depth for Publishing subscribers (`0` = off).
+    /// Outbound queue mode / frame bound for Publishing subscribers:
+    /// `< 0` direct blocking write, `0` queued unbounded (default), `> 0` shed above n frames.
+    /// Applies to handles promoted after the call.
     pub fn set_subscriber_queue_max(&self, n: i64) {
         self.subscriber_queue_max
             .store(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Byte bound on a Publishing subscriber's queue (`0` = none).
+    pub fn set_subscriber_queue_max_bytes(&self, n: i64) {
+        self.subscriber_queue_max_bytes
+            .store(n.max(0), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Grace window: how long a queue must stay over a bound before the
+    /// subscriber is shed (`0` = at the first breach).
+    pub fn set_subscriber_queue_grace_ms(&self, ms: i64) {
+        self.subscriber_queue_grace_ms
+            .store(ms.max(0), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn subscriber_queue_max(&self) -> i64 {
+        self.subscriber_queue_max
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn subscriber_queue_max_bytes(&self) -> i64 {
+        self.subscriber_queue_max_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn subscriber_queue_grace_ms(&self) -> i64 {
+        self.subscriber_queue_grace_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Set inbound IPC eval wall-clock timeout in milliseconds (`0` = off).
@@ -1418,6 +1487,7 @@ impl EngineState {
                 on_disconnected: None,
                 shutdown_handle: None,
                 queued: None,
+                hold: None,
             },
         );
         Ok(SpicyObj::I64(h))
@@ -1442,7 +1512,22 @@ impl EngineState {
         }
     }
 
+    /// Start reading a Subscribing (outgoing) handle: frames are evaluated as
+    /// they arrive. See [`handle_publisher_ex`] to start in hold mode.
     pub fn handle_publisher(&self, h: &i64) -> SpicyResult<()> {
+        self.handle_publisher_ex(h, false)
+    }
+
+    /// Start the reader thread for an outgoing handle. With `hold`, Async
+    /// frames are parked in [`Handle::hold`] until [`release_held`] applies
+    /// them and switches the handle live (`.handle.holding` / `.handle.release`).
+    pub fn handle_publisher_ex(&self, h: &i64, hold: bool) -> SpicyResult<()> {
+        let hold_arc = hold.then(|| {
+            Arc::new(Mutex::new(HoldState {
+                holding: true,
+                frames: Vec::new(),
+            }))
+        });
         let mut handles = self.handle.write();
         let publisher = handles.shift_remove(h);
 
@@ -1476,19 +1561,21 @@ impl EngineState {
                         ipc_type,
                         conn_type: ConnType::Subscribing,
                         on_disconnected: handle.on_disconnected,
-                        shutdown_handle: None,
+                        // Carried over so shutdown can unblock the reader thread.
+                        shutdown_handle: handle.shutdown_handle,
                         // Subscribing (OUTGOING) handle — never queue-shed.
                         queued: None,
+                        hold: hold_arc.clone(),
                     },
                 );
                 let user = self.user.clone();
                 if ipc_type == IpcType::Q {
                     thread::spawn(move || {
-                        handle_q_conn(&mut rw_box, is_local, h, arc_self, &user);
+                        handle_q_conn(&mut rw_box, is_local, h, arc_self, &user, hold_arc);
                     });
                 } else if ipc_type == IpcType::Chili {
                     thread::spawn(move || {
-                        handle_chili_conn(&mut rw_box, is_local, h, arc_self, &user);
+                        handle_chili_conn(&mut rw_box, is_local, h, arc_self, &user, hold_arc);
                     });
                 } else {
                     return Err(SpicyError::EvalErr(format!(
@@ -1906,7 +1993,7 @@ impl EngineState {
         let failed = match lookup {
             TargetLookup::Ready(target) => frames
                 .iter()
-                .any(|bytes| !Self::write_frame(h, &target, bytes)),
+                .any(|bytes| !self.write_frame(h, &target, bytes)),
             TargetLookup::Failed => true,
             TargetLookup::Disconnected | TargetLookup::Stale => {
                 debug!(
@@ -2013,12 +2100,14 @@ impl EngineState {
             return Ok(());
         }
 
-        // One serialization per distinct filter (plus one for unfiltered).
+        // One serialization per distinct filter (plus one for unfiltered),
+        // flattened into a single buffer: one heap allocation per queued frame.
         let serialize_frame = |frame_msg: &SpicyObj| -> SpicyResult<Vec<Vec<u8>>> {
-            serde9::serialize(
+            let chunks = serde9::serialize(
                 &SpicyObj::MixedList(vec![upd_name.clone(), table_obj.clone(), frame_msg.clone()]),
                 false,
-            )
+            )?;
+            Ok(vec![chunks.concat()])
         };
         let mut payload_cache: HashMap<Option<String>, Vec<Vec<u8>>> = HashMap::new();
         let mut filter_by_key: HashMap<String, SubFilter> = HashMap::new();
@@ -2055,10 +2144,14 @@ impl EngineState {
                 }
             }
             // Pending handshake: buffer the frame; activate_subscribers writes
-            // it after the sync Response. Bounded by subscriber_queue_max when set.
+            // it after the sync Response. Bounded by the frame / byte bounds
+            // when set (no grace: the handshake window is short).
             if !pending.is_empty() {
                 let queue_max = self
                     .subscriber_queue_max
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let max_bytes = self
+                    .subscriber_queue_max_bytes
                     .load(std::sync::atomic::Ordering::Relaxed);
                 let mut pending_frames = self.pending_frames.lock();
                 for sub in &pending {
@@ -2073,25 +2166,30 @@ impl EngineState {
                         stale_subscribers.push(subscriber);
                         continue;
                     }
+                    let cache_key = sub.filter.as_ref().map(|f| f.key.clone());
+                    let bytes = payload_cache.get(&cache_key).expect("payload cached above");
                     let buf = pending_frames.entry(subscriber).or_default();
-                    if queue_max > 0 && buf.len() >= queue_max as usize {
+                    let over_frames = queue_max > 0 && buf.len() >= queue_max as usize;
+                    let over_bytes = max_bytes > 0 && {
+                        let held: usize = buf.iter().flatten().map(Vec::len).sum();
+                        (held + bytes.iter().map(Vec::len).sum::<usize>()) as i64 > max_bytes
+                    };
+                    if over_frames || over_bytes {
                         warn!(
-                            "subscriber {} pending-handshake buffer full (slow handshake), shedding",
+                            "subscriber {} pending-handshake buffer over bound (slow handshake), shedding",
                             subscriber
                         );
                         pending_frames.remove(&subscriber);
                         failed.push(subscriber);
                         continue;
                     }
-                    let cache_key = sub.filter.as_ref().map(|f| f.key.clone());
-                    let bytes = payload_cache.get(&cache_key).expect("payload cached above");
                     buf.push(bytes.clone());
                 }
             }
         }
         for (subscriber, target, cache_key) in targets {
             let bytes = payload_cache.get(&cache_key).expect("payload cached above");
-            if !Self::write_frame(subscriber, &target, bytes) {
+            if !self.write_frame(subscriber, &target, bytes) {
                 failed.push(subscriber);
             }
         }
@@ -2136,8 +2234,8 @@ impl EngineState {
     }
 
     /// Write one Async frame to `target`. Returns `false` when the subscriber
-    /// must be shed (write error, queue full, or writer thread gone).
-    fn write_frame(subscriber: i64, target: &WriteTarget, bytes: &[Vec<u8>]) -> bool {
+    /// must be shed (write error, queue over bound past grace, or writer thread gone).
+    fn write_frame(&self, subscriber: i64, target: &WriteTarget, bytes: &[Vec<u8>]) -> bool {
         match target {
             WriteTarget::Direct(rw_arc) => {
                 let mut rw = rw_arc.lock();
@@ -2152,26 +2250,60 @@ impl EngineState {
                 }
                 true
             }
-            WriteTarget::Queued(q) => match q.sender.try_send(bytes.to_vec()) {
-                Ok(()) => {
-                    q.depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    true
+            WriteTarget::Queued(q) => {
+                let len: usize = bytes.iter().map(Vec::len).sum();
+                if q.sender.send(bytes.to_vec()).is_err() {
+                    warn!("subscriber {} writer thread gone, shedding", subscriber);
+                    return false;
                 }
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    warn!(
-                        "subscriber {} outbound queue full (slow consumer), shedding",
-                        subscriber
-                    );
+                q.depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                q.bytes
+                    .fetch_add(len as i64, std::sync::atomic::Ordering::Relaxed);
+                if self.queue_over_bound(subscriber, q) {
                     q.disconnected
                         .store(true, std::sync::atomic::Ordering::Relaxed);
-                    false
+                    return false;
                 }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    warn!("subscriber {} writer thread gone, shedding", subscriber);
-                    false
-                }
-            },
+                true
+            }
         }
+    }
+
+    /// Queue bound policy, evaluated after each enqueue. Over a frame or byte
+    /// bound: shed at once when `subscriber_queue_grace_ms` is 0, otherwise
+    /// only once the queue has stayed over a bound for that long. Back under a
+    /// bound resets the clock.
+    fn queue_over_bound(&self, subscriber: i64, q: &QueuedWriter) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        let max_frames = self.subscriber_queue_max.load(Relaxed);
+        let max_bytes = self.subscriber_queue_max_bytes.load(Relaxed);
+        let depth = q.depth.load(Relaxed);
+        let bytes = q.bytes.load(Relaxed);
+        let over = (max_frames > 0 && depth > max_frames) || (max_bytes > 0 && bytes > max_bytes);
+        if !over {
+            q.over_since_ms.store(0, Relaxed);
+            return false;
+        }
+        let grace = self.subscriber_queue_grace_ms.load(Relaxed);
+        let now = unix_millis();
+        let since = q.over_since_ms.load(Relaxed);
+        if grace > 0 && since == 0 {
+            q.over_since_ms.store(now, Relaxed);
+            return false;
+        }
+        if grace > 0 && now - since < grace {
+            return false;
+        }
+        warn!(
+            "subscriber {} outbound queue over bound ({} frames / {} bytes; bounds {} / {}) for {} ms (slow consumer), shedding",
+            subscriber,
+            depth,
+            bytes,
+            max_frames,
+            max_bytes,
+            if since == 0 { 0 } else { now - since }
+        );
+        true
     }
 
     /// Mark `failed` subscriber handles disconnected and shut their sockets.
@@ -2187,7 +2319,8 @@ impl EngineState {
                 if let Some(s) = hd.shutdown_handle.as_ref() {
                     let _ = s.shutdown(std::net::Shutdown::Both);
                 }
-                if let Some(q) = hd.queued.as_ref() {
+                // Drop the sender so the writer thread exits and closes its socket.
+                if let Some(q) = hd.queued.take() {
                     q.disconnected
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -2242,56 +2375,13 @@ impl EngineState {
                 }
             }
         }
+        let bytes = vec![bytes.concat()];
         for (h, target) in targets {
-            match target {
-                WriteTarget::Direct(rw_arc) => {
-                    let mut rw = rw_arc.lock();
-                    if let Err(e) =
-                        utils::write_chili_ipc_msg(&mut *rw.stream, &bytes, MessageType::Async)
-                    {
-                        warn!(
-                            "failed to signal EOD to handle {} - err {}, disconnecting...",
-                            h, e
-                        );
-                        drop(rw);
-                        failed.push(h);
-                    }
-                }
-                WriteTarget::Queued(q) => match q.sender.try_send(bytes.clone()) {
-                    Ok(()) => {
-                        q.depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                        warn!(
-                            "subscriber {} outbound queue full on EOD (slow consumer), shedding",
-                            h
-                        );
-                        q.disconnected
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                        failed.push(h);
-                    }
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        warn!("subscriber {} writer thread gone on EOD, shedding", h);
-                        failed.push(h);
-                    }
-                },
+            if !self.write_frame(h, &target, &bytes) {
+                failed.push(h);
             }
         }
-        if !failed.is_empty() {
-            let mut handle = self.handle.write();
-            for h in failed {
-                if let Some(hd) = handle.get_mut(&h) {
-                    hd.conn_type = ConnType::Disconnected;
-                    if let Some(s) = hd.shutdown_handle.as_ref() {
-                        let _ = s.shutdown(std::net::Shutdown::Both);
-                    }
-                    if let Some(q) = hd.queued.as_ref() {
-                        q.disconnected
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
-            }
-        }
+        self.shed_subscribers(&failed);
         Ok(())
     }
 
@@ -2315,27 +2405,35 @@ impl EngineState {
 
         handle.conn_type = ConnType::Publishing;
 
-        if queue_max > 0 {
+        // `< 0`: legacy direct blocking write on the publishing thread.
+        if queue_max >= 0 {
             let rw_arc = handle.rw.take().ok_or_else(|| {
                 SpicyError::Err("subscriber handle has no write socket to queue".into())
             })?;
-            let rw_box = Arc::try_unwrap(rw_arc)
-                .map_err(|arc| {
+            let rw_box = match Arc::try_unwrap(rw_arc) {
+                Ok(m) => m.into_inner().stream,
+                Err(arc) => {
+                    // An in-flight sync/async on this handle still holds the
+                    // writer: keep the direct path rather than fail the subscribe.
+                    warn!(
+                        "handle {} writer still shared; subscriber stays on the direct write path",
+                        h
+                    );
                     handle.rw = Some(arc);
-                    SpicyError::Err("handle rw still shared; cannot start writer thread".into())
-                })?
-                .into_inner()
-                .stream;
+                    return Ok(());
+                }
+            };
             let shutdown_dup = handle
                 .shutdown_handle
                 .as_ref()
                 .and_then(|s| s.try_clone().ok());
             let disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let depth = Arc::new(std::sync::atomic::AtomicI64::new(0));
-            let (sender, receiver) =
-                std::sync::mpsc::sync_channel::<Vec<Vec<u8>>>(queue_max as usize);
+            let bytes = Arc::new(std::sync::atomic::AtomicI64::new(0));
+            let (sender, receiver) = std::sync::mpsc::channel::<Vec<Vec<u8>>>();
             let writer_disc = Arc::clone(&disconnected);
             let writer_depth = Arc::clone(&depth);
+            let writer_bytes = Arc::clone(&bytes);
             let writer_h = *h;
             thread::spawn(move || {
                 let mut rw_box = rw_box;
@@ -2346,6 +2444,8 @@ impl EngineState {
                     let write_res =
                         crate::write_chili_ipc_msg(&mut *rw_box, &frame, MessageType::Async);
                     writer_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    let len: usize = frame.iter().map(Vec::len).sum();
+                    writer_bytes.fetch_sub(len as i64, std::sync::atomic::Ordering::Relaxed);
                     if let Err(e) = write_res {
                         warn!(
                             "subscriber-queue writer for handle {} failed to write ({}), shedding",
@@ -2363,10 +2463,47 @@ impl EngineState {
                 sender,
                 disconnected,
                 depth,
+                bytes,
+                over_since_ms: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             });
         }
 
         Ok(())
+    }
+
+    /// Apply frames parked by a holding subscriber handle, in arrival order,
+    /// then switch it live. Returns the number of frames applied. The reader
+    /// thread waits on the hold mutex meanwhile, so no live frame can be
+    /// evaluated ahead of a parked one. Apply errors go to the bad-msg hook
+    /// and do not stop the drain.
+    pub fn release_held(&self, h: i64) -> SpicyResult<i64> {
+        let hold = {
+            let handles = self.handle.read();
+            handles.get(&h).and_then(|hd| hd.hold.clone())
+        }
+        .ok_or_else(|| SpicyError::Err(format!("handle {} is not a holding subscriber", h)))?;
+        let mut st = hold.lock();
+        let frames = std::mem::take(&mut st.frames);
+        let n = frames.len() as i64;
+        for frame in frames {
+            let mut stack = Stack::new(None, 0, h, &self.user);
+            if let Err(err) = self.eval_with_pre_hook(&mut stack, &frame, "") {
+                let msg = err.to_string();
+                error!("failed to apply held message on handle {}: {}", h, msg);
+                self.fire_on_bad_msg_hook(h, &msg, None);
+            }
+        }
+        st.holding = false;
+        Ok(n)
+    }
+
+    /// Frames currently parked for a holding handle (0 when not holding).
+    pub fn held_frame_count(&self, h: i64) -> usize {
+        let hold = {
+            let handles = self.handle.read();
+            handles.get(&h).and_then(|hd| hd.hold.clone())
+        };
+        hold.map(|a| a.lock().frames.len()).unwrap_or(0)
     }
 
     pub fn list_topic_map(&self) -> SpicyResult<DataFrame> {
@@ -3421,22 +3558,31 @@ impl EngineState {
             )),
         );
 
-        let (handle_nums, queue_depths, total_queue_depth) = {
+        let (handle_nums, queue_depths, total_queue_depth, queue_bytes, total_queue_bytes) = {
             let handles = self.handle.read();
             let mut nums = Vec::with_capacity(handles.len());
             let mut depths = Vec::with_capacity(handles.len());
+            let mut bytes_v = Vec::with_capacity(handles.len());
             let mut total: i64 = 0;
+            let mut total_bytes: i64 = 0;
             for (k, v) in handles.iter() {
-                let d = v
+                let (d, b) = v
                     .queued
                     .as_ref()
-                    .map(|q| q.depth.load(std::sync::atomic::Ordering::Relaxed).max(0))
-                    .unwrap_or(0);
+                    .map(|q| {
+                        (
+                            q.depth.load(std::sync::atomic::Ordering::Relaxed).max(0),
+                            q.bytes.load(std::sync::atomic::Ordering::Relaxed).max(0),
+                        )
+                    })
+                    .unwrap_or((0, 0));
                 nums.push(*k);
                 depths.push(d);
+                bytes_v.push(b);
                 total += d;
+                total_bytes += b;
             }
-            (nums, depths, total)
+            (nums, depths, total, bytes_v, total_bytes)
         };
         status.insert(
             "handle_count".into(),
@@ -3451,6 +3597,11 @@ impl EngineState {
             SpicyObj::Series(Series::new("queue_depth".into(), queue_depths)),
         );
         status.insert("queue_depth_total".into(), SpicyObj::I64(total_queue_depth));
+        status.insert(
+            "queue_bytes_by_handle".into(),
+            SpicyObj::Series(Series::new("queue_bytes".into(), queue_bytes)),
+        );
+        status.insert("queue_bytes_total".into(), SpicyObj::I64(total_queue_bytes));
 
         // `-1` when the current process cannot be read.
         let rss_bytes: i64 = match sysinfo::get_current_pid() {
@@ -3674,6 +3825,7 @@ impl EngineState {
                         h_i64,
                         state_tcp,
                         &auth_info.username,
+                        None,
                     )
                 });
             } else {
@@ -3684,6 +3836,7 @@ impl EngineState {
                         h_i64,
                         state_tcp,
                         &auth_info.username,
+                        None,
                     )
                 });
             }
@@ -3797,4 +3950,11 @@ pub enum ConnType {
     File = 5,
     Sequence = 6,
     New = 7,
+}
+
+fn unix_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }

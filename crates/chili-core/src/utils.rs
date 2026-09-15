@@ -817,6 +817,7 @@ pub fn handle_q_conn(
     handle: i64,
     state: Arc<EngineState>,
     user: &str,
+    hold: Option<Arc<parking_lot::Mutex<crate::engine_state::HoldState>>>,
 ) {
     state.fire_on_conn_open_hook(user, handle);
     let mut header = [0u8; 8];
@@ -849,6 +850,17 @@ pub fn handle_q_conn(
                 continue;
             }
         };
+
+        // Subscriber hold mode: park Async frames until `.handle.release`.
+        if message_type == MessageType::Async
+            && let Some(hold) = hold.as_ref()
+        {
+            let mut st = hold.lock();
+            if st.holding {
+                st.frames.push(obj);
+                continue;
+            }
+        }
 
         debug!("evaluate q IPC message: {:?}", obj);
         let src_path = if state.is_repl_use_chili_syntax() {
@@ -958,6 +970,7 @@ pub fn handle_chili_conn(
     handle: i64,
     state: Arc<EngineState>,
     user: &str,
+    hold: Option<Arc<parking_lot::Mutex<crate::engine_state::HoldState>>>,
 ) {
     state.fire_on_conn_open_hook(user, handle);
     let mut header = [0u8; 16];
@@ -988,6 +1001,17 @@ pub fn handle_chili_conn(
                 continue;
             }
         };
+
+        // Subscriber hold mode: park Async frames until `.handle.release`.
+        if message_type == MessageType::Async
+            && let Some(hold) = hold.as_ref()
+        {
+            let mut st = hold.lock();
+            if st.holding {
+                st.frames.push(any);
+                continue;
+            }
+        }
 
         let src_path = if state.is_repl_use_chili_syntax() {
             format!("ipc{}.chi", handle)

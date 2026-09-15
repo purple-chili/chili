@@ -85,6 +85,21 @@ fn conn_type_of(engine: &Arc<EngineState>, h: i64) -> Option<String> {
 
 /// `(upd; table)` heads for a publish. The payload is built per-iteration since
 /// `publish` borrows `&SpicyObj`.
+/// `stats()` as a map, or panic.
+fn stats_dict(engine: &Arc<EngineState>) -> indexmap::IndexMap<String, SpicyObj> {
+    match engine.stats().expect("stats") {
+        SpicyObj::Dict(d) => d,
+        other => panic!("expected Dict, got {}", other.get_type_name()),
+    }
+}
+
+fn stat_i64(engine: &Arc<EngineState>, key: &str) -> i64 {
+    match stats_dict(engine).get(key) {
+        Some(SpicyObj::I64(n)) => *n,
+        other => panic!("stats[{key}] = {other:?}"),
+    }
+}
+
 fn upd_table() -> (SpicyObj, SpicyObj) {
     (
         SpicyObj::Symbol("upd".into()),
@@ -213,25 +228,112 @@ fn healthy_subscriber_keeps_receiving_while_slow_one_is_shed() {
     );
 }
 
-/// Control: with the queue bound OFF (the default, 0), a Publishing subscriber
-/// uses the Direct (blocking-write) path — no writer thread, no `queued`
-/// shape — exactly the pre-2b behaviour. We just assert the opt-in is genuinely
-/// opt-in: a fresh handle is Incoming, not pre-shed.
+/// Default (0): queued with no frame bound, kdb+ style. A stopped subscriber
+/// never blocks the publisher and is never shed; its backlog is visible in stats.
 #[test]
-fn queue_bound_off_by_default_leaves_handle_live() {
+fn default_queue_is_unbounded_and_never_blocks() {
     let (engine, port) = start_server(0);
-    let _peer = connect_subscriber(port, false);
+    let _slow = connect_subscriber(port, true);
     let h = await_incoming_handles(&engine, 1)[0];
-    assert_eq!(
-        conn_type_of(&engine, h).as_deref(),
-        Some("Incoming"),
-        "with the queue bound off, the accepted handle stays a live Incoming handle"
-    );
-    // Promotion with the bound off must succeed and stay on the Direct path.
     engine.handle_subscriber(&h).expect("promote to Publishing");
+    engine
+        .add_subscriber("trade", h)
+        .expect("register on topic");
+
+    let (upd, table) = upd_table();
+    for _ in 0..64 {
+        let t0 = Instant::now();
+        engine
+            .publish(&upd, &table, "trade", &big_payload())
+            .expect("publish");
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "publish must not block on a stalled subscriber in the default mode"
+        );
+    }
     assert_eq!(
         conn_type_of(&engine, h).as_deref(),
         Some("Publishing"),
-        "promotion with the bound off keeps the handle live (Direct path)"
+        "no bound: a stalled subscriber is held, not shed"
+    );
+    let depth = stat_i64(&engine, "queue_depth_total");
+    let bytes = stat_i64(&engine, "queue_bytes_total");
+    assert!(depth > 0 && bytes > 0, "backlog must be visible in stats");
+}
+
+/// `-1` is the legacy direct write path: no writer thread, no queue.
+#[test]
+fn direct_mode_is_opt_in_with_negative_bound() {
+    let (engine, port) = start_server(-1);
+    let _peer = connect_subscriber(port, false);
+    let h = await_incoming_handles(&engine, 1)[0];
+    engine.handle_subscriber(&h).expect("promote to Publishing");
+    assert_eq!(conn_type_of(&engine, h).as_deref(), Some("Publishing"));
+    assert_eq!(
+        stat_i64(&engine, "queue_depth_total"),
+        0,
+        "direct mode has no queue"
+    );
+}
+
+/// Byte bound: 512 KiB frames against a 1 MiB bound shed on the third frame.
+#[test]
+fn byte_bound_sheds_stalled_subscriber() {
+    let (engine, port) = start_server(0);
+    engine.set_subscriber_queue_max_bytes(1024 * 1024);
+    let _slow = connect_subscriber(port, true);
+    let h = await_incoming_handles(&engine, 1)[0];
+    engine.handle_subscriber(&h).expect("promote to Publishing");
+    engine
+        .add_subscriber("trade", h)
+        .expect("register on topic");
+
+    let (upd, table) = upd_table();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut shed = false;
+    for _ in 0..64 {
+        let _ = engine.publish(&upd, &table, "trade", &big_payload());
+        if conn_type_of(&engine, h).as_deref() == Some("Disconnected") {
+            shed = true;
+            break;
+        }
+        assert!(Instant::now() < deadline, "byte-bound shed never fired");
+    }
+    assert!(shed, "queue over the byte bound must shed the subscriber");
+}
+
+/// Grace window: a burst over the frame bound is tolerated until the queue has
+/// stayed over it for `grace_ms`; then the next publish sheds.
+#[test]
+fn grace_window_tolerates_transient_breach_then_sheds() {
+    let (engine, port) = start_server(4);
+    engine.set_subscriber_queue_grace_ms(400);
+    let _slow = connect_subscriber(port, true);
+    let h = await_incoming_handles(&engine, 1)[0];
+    engine.handle_subscriber(&h).expect("promote to Publishing");
+    engine
+        .add_subscriber("trade", h)
+        .expect("register on topic");
+
+    let (upd, table) = upd_table();
+    let t0 = Instant::now();
+    for _ in 0..16 {
+        engine
+            .publish(&upd, &table, "trade", &big_payload())
+            .expect("publish");
+    }
+    if t0.elapsed() < Duration::from_millis(300) {
+        assert_eq!(
+            conn_type_of(&engine, h).as_deref(),
+            Some("Publishing"),
+            "over the bound but inside the grace window: not shed"
+        );
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let _ = engine.publish(&upd, &table, "trade", &big_payload());
+    assert_eq!(
+        conn_type_of(&engine, h).as_deref(),
+        Some("Disconnected"),
+        "still over the bound after the grace window: shed"
     );
 }

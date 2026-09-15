@@ -6,9 +6,12 @@ upd: {[table; data] table upsert data; tick[this.h; 1]; };
   .handle.onDisconnected[h; `.sub.recover];
   info: h (`.tick.subscribe; topics);
   (set) each info[2];
-  // .log.info ("broker info"; info);
+  // Read live frames into a local hold buffer while replaying up to the
+  // bound, so the backlog of a slow replay sits here rather than in the
+  // tickerplant's outbound queue. .handle.release applies it in order.
+  .handle.holding[h];
   replay[info[0]; 0; info[1]; (); 1b; h];
-  .handle.subscribing[h];
+  .handle.release[h];
 };
 
 // Subscribe to one topic with a per-handle row filter.
@@ -22,8 +25,9 @@ upd: {[table; data] table upsert data; tick[this.h; 1]; };
   .handle.onDisconnected[h; `.sub.recover];
   info: h (`.tick.subscribeFiltered; topic; column; values);
   (set) each info[2];
+  .handle.holding[h];
   replay[info[0]; 0; info[1]; (); 1b; h];
-  .handle.subscribing[h];
+  .handle.release[h];
 };
 
 // this function will be called when the connection is lost, retry every minute until no error
@@ -32,6 +36,7 @@ upd: {[table; data] table upsert data; tick[this.h; 1]; };
   info: $[null get[`.sub.filterTopic];
     handle (`.tick.subscribe; .sub.topics);
     handle (`.tick.subscribeFiltered; .sub.filterTopic; .sub.filterColumn; .sub.filterValues)];
+  .handle.holding[handle];
   replay[info[0]; tick[0; 0]; info[1]; (); 1b; handle];
-  .handle.subscribing[handle];
+  .handle.release[handle];
 };

@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.10] - 2026-09-15
+
+### Added
+
+- Subscriber-side hold buffer — `.handle.holding[h]` starts the reader for an outgoing handle with live frames parked in this process; `.handle.release[h]` applies them in arrival order and goes live (returns the count). Stock `.sub.init` / `.sub.initFiltered` / `.sub.recover` now hold before `replay` and release after it, so the backlog of a slow replay (cold boot of a chained tickerplant) sits in the subscriber, not in the tickerplant's outbound queue
+- Subscriber queue bounds as policy on an unbounded queue: `set_subscriber_queue_max_bytes` (serialized bytes; `0` = none) alongside the frame bound, and `set_subscriber_queue_grace_ms` — a queue must stay over a bound for that long before its subscriber is shed (`0` = at the first breach, as before)
+- `stats()` reports `queue_bytes_by_handle` / `queue_bytes_total` next to the frame depths (kdb+ `.z.W` equivalent)
+
+### Changed
+
+- Publishing subscribers default to a queued writer thread with **no bound** (`subscriber_queue_max = 0`), so `publish` / `lpt` never block on a slow consumer; memory grows with the backlog and is visible in `stats()`. The blocking direct write on the publishing thread, which held `lpt_lock` across a stalled socket, is now opt-in with `subscriber_queue_max < 0`. If a handle's writer is still shared at subscribe time the handle stays on the direct path with a warning instead of failing the subscribe
+- Published frames are serialized into one contiguous buffer per distinct filter (one heap allocation per queued frame instead of one per serialized chunk)
+- Disconnecting or shedding a queued subscriber drops its queue sender, so the writer thread exits and releases the socket it owns
+- Outgoing TCP handles keep a shutdown dup, carried onto the Subscribing entry, so `shutdown` / disconnect actually closes a subscriber's socket and its reader thread exits; previously a subscriber engine's shutdown left the reader thread, its socket, and the publisher's side of the connection alive
+
 ## [0.10.9] - 2026-09-15
 
 ### Changed

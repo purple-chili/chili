@@ -469,10 +469,25 @@ impl PyEngineState {
         Ok(self.inner.get_on_bad_msg_hook())
     }
 
-    /// Set max outbound queue depth for Publishing subscribers (`0` = off).
+    /// Outbound queue mode / frame bound for Publishing subscribers:
+    /// `< 0` direct blocking write, `0` queued unbounded (default), `> 0` shed above n frames.
     fn set_subscriber_queue_max(&self, n: i64) -> PyResult<()> {
         self.check_fork()?;
         self.inner.set_subscriber_queue_max(n);
+        Ok(())
+    }
+
+    /// Byte bound on a Publishing subscriber's queue (`0` = none).
+    fn set_subscriber_queue_max_bytes(&self, n: i64) -> PyResult<()> {
+        self.check_fork()?;
+        self.inner.set_subscriber_queue_max_bytes(n);
+        Ok(())
+    }
+
+    /// Grace window in ms a queue must stay over a bound before the subscriber is shed (`0` = at once).
+    fn set_subscriber_queue_grace_ms(&self, ms: i64) -> PyResult<()> {
+        self.check_fork()?;
+        self.inner.set_subscriber_queue_grace_ms(ms);
         Ok(())
     }
 
