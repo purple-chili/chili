@@ -693,12 +693,31 @@ impl EngineState {
     }
 
     pub fn upsert_var(&self, id: &str, arg: &SpicyObj) -> SpicyResult<SpicyObj> {
+        self.upsert_var_with_limit(id, arg, None)
+    }
+
+    /// Append rows and retain the last `n` rows under the same write lock.
+    /// Returns the number of incoming rows, including rows discarded by the limit.
+    pub fn upsertn_var(&self, id: &str, arg: &SpicyObj, n: usize) -> SpicyResult<SpicyObj> {
+        self.upsert_var_with_limit(id, arg, Some(n))
+    }
+
+    fn upsert_var_with_limit(
+        &self,
+        id: &str,
+        arg: &SpicyObj,
+        limit: Option<usize>,
+    ) -> SpicyResult<SpicyObj> {
         let mut vars = self.vars.write();
         let obj = match vars.get_mut(id) {
             Some(obj) => obj,
             None => {
                 if arg.is_df() {
-                    vars.insert(id.to_owned(), arg.clone());
+                    let value = match limit {
+                        Some(n) => SpicyObj::DataFrame(arg.df()?.tail(Some(n))),
+                        None => arg.clone(),
+                    };
+                    vars.insert(id.to_owned(), value);
                     return Ok(SpicyObj::I64(arg.size() as i64));
                 } else {
                     return Err(SpicyError::Err(format!(
@@ -708,7 +727,7 @@ impl EngineState {
                 }
             }
         };
-        match obj.mut_df() {
+        let result = match obj.mut_df() {
             Ok(df) => match arg {
                 SpicyObj::DataFrame(records) => {
                     let records = crate::utils::coerce_extend_tz(df, records);
@@ -730,7 +749,14 @@ impl EngineState {
             Err(_) => Err(SpicyError::Err(
                 "only allows to upsert data to dataframe id".to_owned(),
             )),
+        }?;
+        if let Some(n) = limit {
+            let df = obj.mut_df()?;
+            if df.height() > n {
+                *df = df.tail(Some(n));
+            }
         }
+        Ok(result)
     }
 
     pub fn insert_var(&self, id: &str, args: &SpicyObj, by: &[&str]) -> SpicyResult<SpicyObj> {

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-09-19
+
+### Added
+
+- `upsertn[table; data; n]` — append dataframe or list data and retain at most the last `n` rows in append order. A table symbol updates global state atomically and returns the incoming row count; a dataframe value returns a new dataframe without changing the original. Zero retains an empty dataframe with the same schema; negative limits are rejected. Creating a table requires dataframe data.
+
+### Fixed
+
+- `upsert[df; data]` now includes incoming dataframe rows in its returned dataframe. Previously, it extended a temporary clone and discarded it. The original dataframe remains unchanged.
+
 ## [0.10.10] - 2026-09-15
 
 ### Added

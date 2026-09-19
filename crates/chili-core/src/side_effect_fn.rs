@@ -112,8 +112,7 @@ fn upsert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyR
         match arg1 {
             SpicyObj::DataFrame(df1) => {
                 let df1 = crate::utils::coerce_extend_tz(&df, df1);
-                df.clone()
-                    .extend(&df1)
+                df.extend(&df1)
                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                 Ok(SpicyObj::DataFrame(df))
             }
@@ -131,6 +130,20 @@ fn upsert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyR
             "Expect data type 'sym' or 'df' for '1' argument , got '{}'.",
             arg0.get_type_name()
         )))
+    }
+}
+
+fn upsertn(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::Any, ArgType::DataFrameOrList, ArgType::Int])?;
+    let n = args[2].to_i64()?;
+    let n = usize::try_from(n).map_err(|_| {
+        SpicyError::EvalErr(format!("upsertn requires a non-negative row limit, got {n}"))
+    })?;
+    if args[0].is_sym() {
+        state.upsertn_var(args[0].str()?, args[1], n)
+    } else {
+        let result = upsert(state, stack, &args[..2])?;
+        Ok(SpicyObj::DataFrame(result.df()?.tail(Some(n))))
     }
 }
 
@@ -611,6 +624,15 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 2,
                 "upsert",
                 &["id", "value"],
+            ),
+        ),
+        (
+            "upsertn".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(upsertn)),
+                3,
+                "upsertn",
+                &["table", "data", "n"],
             ),
         ),
         (

@@ -90,3 +90,7 @@ chili-op = { path = "../chili-op" }
 [[bench]]
 name = "parse_cache"
 harness = false
+
+[[bench]]
+name = "upsertn"
+harness = false
