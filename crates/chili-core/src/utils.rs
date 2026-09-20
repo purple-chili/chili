@@ -658,6 +658,44 @@ pub fn extend_df_atomic(df: &mut DataFrame, records: &DataFrame) -> SpicyResult<
     }
 }
 
+/// Append only rows that survive a rolling limit. Build the result separately
+/// so an extend error (including one after an earlier column succeeded) cannot
+/// discard or modify the original table. Callers perform their usual input
+/// conversion before this step, including conversion of discarded input rows.
+pub(crate) fn bounded_append_df(
+    df: &DataFrame,
+    records: &DataFrame,
+    n: usize,
+) -> polars::prelude::PolarsResult<DataFrame> {
+    let mut result = df.tail(Some(n.saturating_sub(records.height())));
+    let records = records.tail(Some(n));
+    // Keep extend even for an empty result/batch: it validates column count,
+    // order, names and dtype compatibility when every row will be discarded.
+    result.extend(&records)?;
+    Ok(result)
+}
+
+/// Use trim-first for replacement batches and oversized tables. Ordinary
+/// partial updates retain the in-place append path: building a separate result
+/// would keep both full tables alive and increase copying and peak memory.
+pub(crate) fn extend_df_bounded_atomic(
+    df: &mut DataFrame,
+    records: &DataFrame,
+    n: usize,
+) -> SpicyResult<()> {
+    if records.height() >= n || df.height() > n {
+        *df = bounded_append_df(df, records, n).map_err(|e| {
+            SpicyError::Err(format!("extend failed (target left unchanged): {e}"))
+        })?;
+    } else {
+        extend_df_atomic(df, records)?;
+        if df.height() > n {
+            *df = df.tail(Some(n));
+        }
+    }
+    Ok(())
+}
+
 /// Cast incoming columns to match `target` dtypes (by name) before extend.
 /// Avoids the common String→Categorical tear on symbol/fn-style columns.
 pub fn coerce_extend_dtypes(target: &DataFrame, incoming: &DataFrame) -> SpicyResult<DataFrame> {

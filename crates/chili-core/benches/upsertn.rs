@@ -6,8 +6,11 @@ use std::{hint::black_box, time::Duration};
 
 use chili_core::{EngineState, SpicyObj, Stack};
 use chili_op::BUILT_IN_FN;
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group};
 use polars::prelude::*;
+
+#[path = "support/upsertn_resources.rs"]
+mod resources;
 
 const LIMIT: usize = 1000;
 const METHODS: [(&str, &str); 3] = [
@@ -51,14 +54,18 @@ fn frame(start: usize, rows: usize) -> DataFrame {
 }
 
 fn engine(batch: usize) -> EngineState {
+    engine_with_limit(batch, LIMIT)
+}
+
+fn engine_with_limit(batch: usize, limit: usize) -> EngineState {
     let mut state = EngineState::initialize();
     state.enable_pepper();
     state.register_fn(&BUILT_IN_FN);
     state
-        .set_var("t", SpicyObj::DataFrame(frame(0, LIMIT)))
+        .set_var("t", SpicyObj::DataFrame(frame(0, limit)))
         .unwrap();
     state
-        .set_var("data", SpicyObj::DataFrame(frame(LIMIT, batch)))
+        .set_var("data", SpicyObj::DataFrame(frame(limit, batch)))
         .unwrap();
     state
 }
@@ -120,4 +127,13 @@ fn bench_upsertn(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_upsertn);
-criterion_main!(benches);
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--resources") {
+        resources::main(&args[2..]);
+    } else {
+        benches();
+        Criterion::default().configure_from_args().final_summary();
+    }
+}

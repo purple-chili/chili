@@ -758,13 +758,21 @@ impl EngineState {
                 SpicyObj::DataFrame(records) => {
                     let records = crate::utils::coerce_extend_tz(df, records);
                     let records = crate::utils::coerce_extend_dtypes(df, &records)?;
-                    crate::utils::extend_df_atomic(df, &records)?;
+                    if let Some(n) = limit {
+                        crate::utils::extend_df_bounded_atomic(df, &records, n)?;
+                    } else {
+                        crate::utils::extend_df_atomic(df, &records)?;
+                    }
                     Ok(SpicyObj::I64(records.height() as i64))
                 }
                 SpicyObj::MixedList(list) => {
                     let df1 = convert_list_to_df(list, df)?;
                     let df1 = crate::utils::coerce_extend_tz(df, &df1);
-                    crate::utils::extend_df_atomic(df, &df1)?;
+                    if let Some(n) = limit {
+                        crate::utils::extend_df_bounded_atomic(df, &df1, n)?;
+                    } else {
+                        crate::utils::extend_df_atomic(df, &df1)?;
+                    }
                     Ok(SpicyObj::I64(df1.height() as i64))
                 }
                 _ => Err(SpicyError::Err(format!(
@@ -776,12 +784,6 @@ impl EngineState {
                 "only allows to upsert data to dataframe id".to_owned(),
             )),
         }?;
-        if let Some(n) = limit {
-            let df = obj.mut_df()?;
-            if df.height() > n {
-                *df = df.tail(Some(n));
-            }
-        }
         Ok(result)
     }
 

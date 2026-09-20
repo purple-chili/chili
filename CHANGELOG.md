@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.1] - 2026-09-20
+
+### Changed
+
+- `upsertn` now trims before appending when an incoming batch fills the limit or a stored table is already oversized, skipping rows that cannot survive. Ordinary partial table updates retain in-place appending to avoid extra copying; dataframe-value calls trim a separate result first. Schema validation, incoming-row counts, atomic table updates, and unchanged dataframe inputs are preserved.
+
 ## [0.11.0] - 2026-09-19
 
 ### Added

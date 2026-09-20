@@ -133,17 +133,37 @@ fn upsert(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyR
     }
 }
 
-fn upsertn(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
-    validate_args(args, &[ArgType::Any, ArgType::DataFrameOrList, ArgType::Int])?;
+fn upsertn(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    validate_args(
+        args,
+        &[ArgType::Any, ArgType::DataFrameOrList, ArgType::Int],
+    )?;
     let n = args[2].to_i64()?;
     let n = usize::try_from(n).map_err(|_| {
-        SpicyError::EvalErr(format!("upsertn requires a non-negative row limit, got {n}"))
+        SpicyError::EvalErr(format!(
+            "upsertn requires a non-negative row limit, got {n}"
+        ))
     })?;
     if args[0].is_sym() {
         state.upsertn_var(args[0].str()?, args[1], n)
+    } else if args[0].is_df() {
+        let df = args[0].df()?;
+        let records = match args[1] {
+            SpicyObj::DataFrame(records) => records.clone(),
+            SpicyObj::MixedList(list) => convert_list_to_df(list, df)?,
+            _ => unreachable!(),
+        };
+        let records = crate::utils::coerce_extend_tz(df, &records);
+        // Preserve value-upsert dtype rules; symbol upserts separately coerce
+        // incoming dtypes to the stored table's schema.
+        let result = crate::utils::bounded_append_df(df, &records, n)
+            .map_err(|e| SpicyError::Err(e.to_string()))?;
+        Ok(SpicyObj::DataFrame(result))
     } else {
-        let result = upsert(state, stack, &args[..2])?;
-        Ok(SpicyObj::DataFrame(result.df()?.tail(Some(n))))
+        Err(SpicyError::EvalErr(format!(
+            "Expect data type 'sym' or 'df' for '1' argument , got '{}'.",
+            args[0].get_type_name()
+        )))
     }
 }
 
