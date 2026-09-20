@@ -1,4 +1,27 @@
 use crate::assert_eq_tokens;
+use chili_parser::Token;
+use chumsky::Parser;
+
+#[test]
+fn line_comments_end_at_newline_or_end_of_input() {
+    for src in [
+        "//",
+        "// comment",
+        "// comment\n",
+        "// comment\r\n",
+        "// 雪 /* text",
+    ] {
+        let tokens = Token::lexer().parse(src).into_result().unwrap();
+        assert_eq!(
+            tokens,
+            vec![(Token::Comment(src.into()), (0..src.len()).into())]
+        );
+    }
+    let src = "// comment\n42";
+    let tokens = Token::lexer().parse(src).into_result().unwrap();
+    assert_eq!(tokens.len(), 2);
+    assert_eq!(tokens[1], (Token::Int("42".into()), (11..13).into()));
+}
 
 #[test]
 fn test_float() {

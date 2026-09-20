@@ -19,6 +19,7 @@
 //! | `polars.Series`        | `Series`          |
 //! | `polars.DataFrame`     | `DataFrame`       |
 //! | `polars.LazyFrame`     | `LazyFrame`       |
+//! | `polars.Expr`          | `Expr`            |
 //! | `None`                 | `Null`            |
 
 use std::process;
@@ -82,6 +83,38 @@ fn unwrap_return(mut o: SpicyObj) -> SpicyObj {
     o
 }
 
+// Use named JSON variants for expressions. PyExpr's binary serialization can
+// silently decode an aggregation as a different operation across Polars versions.
+fn expr_from_py(any: &Bound<'_, PyAny>) -> PyResult<SpicyObj> {
+    let kwargs = PyDict::new(any.py());
+    kwargs.set_item("format", "json")?;
+    let json = any
+        .getattr("meta")?
+        .call_method("serialize", (), Some(&kwargs))?
+        .extract::<String>()?;
+    serde_json::from_str(&json)
+        .map(SpicyObj::Expr)
+        .map_err(|e| {
+            TypeMismatchError::new_err(format!(
+                "Cannot convert polars.Expr to Chili; incompatible expression format: {e}"
+            ))
+        })
+}
+
+fn expr_to_py(py: Python<'_>, expr: polars::prelude::Expr) -> PyResult<Py<PyAny>> {
+    let json = serde_json::to_string(&expr).map_err(|e| {
+        TypeMismatchError::new_err(format!("Cannot serialize Chili expression: {e}"))
+    })?;
+    let source = py.import("io")?.getattr("StringIO")?.call1((json,))?;
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("format", "json")?;
+    Ok(py
+        .import("polars")?
+        .getattr("Expr")?
+        .call_method("deserialize", (source,), Some(&kwargs))?
+        .unbind())
+}
+
 /// Convert a Python object into the equivalent [`SpicyObj`].
 ///
 /// Order matters: `PyBool` must be checked before `PyInt` (bool is a
@@ -111,6 +144,8 @@ fn spicy_from_py_bound(any: &Bound<'_, PyAny>) -> PyResult<SpicyObj> {
     } else if any.hasattr(intern!(any.py(), "_df"))? {
         let df = any.extract::<PyDataFrame>()?.into();
         Ok(SpicyObj::DataFrame(df))
+    } else if any.hasattr(intern!(any.py(), "_pyexpr"))? {
+        expr_from_py(any)
     } else if any.is_none() {
         Ok(SpicyObj::Null)
     } else if any.is_instance_of::<PyDateTime>() {
@@ -268,6 +303,7 @@ fn spicy_to_py(py: Python<'_>, obj: SpicyObj) -> PyResult<Py<PyAny>> {
         SpicyObj::Series(s) => Ok(PySeries(s).into_pyobject(py)?.into_any().unbind()),
         SpicyObj::Err(msg) => Err(ChiliError::new_err(msg)),
         SpicyObj::LazyFrame(lf) => Ok(PyLazyFrame(lf).into_pyobject(py)?.into_any().unbind()),
+        SpicyObj::Expr(expr) => expr_to_py(py, expr),
         other => Ok(other.to_string().into_pyobject(py)?.into_any().unbind()),
     }
 }
@@ -654,7 +690,7 @@ impl PyEngineState {
         self.inner.is_repl_use_chili_syntax()
     }
 
-    /// Call a registered engine function by name with positional arguments.
+    /// Call a registered engine function with exactly its remaining argument count.
     fn fn_call(&self, py: Python<'_>, func: &str, args: Bound<'_, PyList>) -> PyResult<Py<PyAny>> {
         self.check_fork()?;
         let args = args
@@ -662,7 +698,7 @@ impl PyEngineState {
             .map(|a| spicy_from_py_bound(&a))
             .collect::<Result<Vec<SpicyObj>, PyErr>>()?;
         let args = args.iter().collect::<Vec<&SpicyObj>>();
-        let obj = py.detach(move || map_spicy_error(self.inner.fn_call(func, &args)));
+        let obj = py.detach(move || map_spicy_error(self.inner.fn_call_exact(func, &args)));
         spicy_to_py(py, obj?)
     }
 

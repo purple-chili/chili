@@ -185,11 +185,36 @@ const PARSE_CACHE_CAPACITY: usize = 256;
 /// Handle numbers must be in the range 0..MAX_HANDLE_NUM.
 const MAX_HANDLE_NUM: usize = 1024;
 
+enum ImportStatus {
+    Loading(thread::ThreadId),
+    Loaded,
+}
+
+/// Failed imports (including unwinding panics) must remain retryable.
+struct ImportGuard<'a> {
+    imports: &'a Mutex<HashMap<usize, ImportStatus>>,
+    source_id: usize,
+    succeeded: bool,
+}
+
+impl Drop for ImportGuard<'_> {
+    fn drop(&mut self) {
+        let mut imports = self.imports.lock();
+        if self.succeeded {
+            imports.insert(self.source_id, ImportStatus::Loaded);
+        } else {
+            imports.remove(&self.source_id);
+        }
+    }
+}
+
 pub struct EngineState {
     debug: bool,
     vars: RwLock<HashMap<String, SpicyObj>>,
     par_df: RwLock<HashMap<String, PartitionedDataFrame>>,
     source: RwLock<Vec<(String, String)>>,
+    /// Import state keyed by stable source ID, separate from diagnostic sources.
+    imports: Mutex<HashMap<usize, ImportStatus>>,
     // handle number, rw, is_local, version, ipc type
     handle: RwLock<IndexMap<i64, Handle>>,
     tick_count: RwLock<Vec<i64>>,
@@ -301,6 +326,7 @@ impl EngineState {
             vars: RwLock::new(vars),
             par_df: RwLock::new(HashMap::new()),
             source: RwLock::new(source),
+            imports: Mutex::new(HashMap::new()),
             handle: RwLock::new(IndexMap::new()),
             tick_count: RwLock::new(vec![0i64; MAX_HANDLE_NUM]),
             job: RwLock::new(IndexMap::new()),
@@ -2764,23 +2790,47 @@ impl EngineState {
         let src = fs::read_to_string(&full_path)
             .map_err(|e| SpicyError::EvalErr(format!("failed to read '{}', {}", &full_path, e)))?;
 
-        if self
-            .source
-            .read()
-            .iter()
-            .any(|(p, s)| p == &full_path && s == &src)
+        let source_id = self.set_source(&full_path, &src)?;
         {
-            info!("source '{}' already loaded", full_path);
-            return Ok(SpicyObj::Null);
+            let mut imports = self.imports.lock();
+            match imports.get(&source_id) {
+                Some(ImportStatus::Loaded) => {
+                    info!("source '{}' already loaded", full_path);
+                    return Ok(SpicyObj::Null);
+                }
+                Some(ImportStatus::Loading(owner)) if *owner == thread::current().id() => {
+                    // A recursive import on this thread: retain circular-import protection.
+                    return Ok(SpicyObj::Null);
+                }
+                Some(ImportStatus::Loading(_)) => {
+                    // Do not report success while another thread may still fail.
+                    return Err(SpicyError::EvalErr(format!(
+                        "source '{}' import already in progress on another thread",
+                        full_path
+                    )));
+                }
+                None => {
+                    imports.insert(source_id, ImportStatus::Loading(thread::current().id()));
+                }
+            }
         }
+        // Release the import lock before parsing/evaluation, which may import other files.
+        let mut guard = ImportGuard {
+            imports: &self.imports,
+            source_id,
+            succeeded: false,
+        };
 
         debug!("loading '{}'", full_path);
         let nodes = self
             .parse(&full_path, &src)
             .map_err(|e| SpicyError::Err(format!("failed to parse '{}'\n{}", full_path, e)))?;
 
-        self.eval_ast(nodes, &full_path, &src)
-            .map_err(|e| SpicyError::EvalErr(format!("'{}'\n{}", full_path, e)))
+        let result = self
+            .eval_ast(nodes, &full_path, &src)
+            .map_err(|e| SpicyError::EvalErr(format!("'{}'\n{}", full_path, e)));
+        guard.succeeded = result.is_ok();
+        result
     }
 
     /// Resolve a package import path to an absolute file path.
@@ -2914,10 +2964,30 @@ impl EngineState {
     }
 
     pub fn fn_call(&self, func: &str, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+        self.fn_call_inner(func, args, false)
+    }
+
+    /// Host calls must supply exactly the function's remaining arguments.
+    /// Named IPC handles retain their existing call behavior.
+    pub fn fn_call_exact(&self, func: &str, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+        self.fn_call_inner(func, args, true)
+    }
+
+    fn fn_call_inner(
+        &self,
+        func: &str,
+        args: &[&SpicyObj],
+        exact: bool,
+    ) -> SpicyResult<SpicyObj> {
         let func = self.get_var(func)?;
         let mut stack = Stack::new(None, 0, 0, "");
         match func {
-            SpicyObj::Fn(f) => eval_fn_call(self, &mut stack, &f, &args.to_vec()),
+            SpicyObj::Fn(f) => {
+                if exact && args.len() != f.arg_num {
+                    return Err(SpicyError::MismatchedArgNumErr(f.arg_num, args.len()));
+                }
+                eval_fn_call(self, &mut stack, &f, &args.to_vec())
+            }
             SpicyObj::I64(_) => eval_call(self, &mut stack, &func, &args.to_vec(), &None, ""),
             _ => Err(SpicyError::EvalErr(format!(
                 "Not able to call '{}'",

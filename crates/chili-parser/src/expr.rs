@@ -329,22 +329,24 @@ impl Expr {
                     list.clone(),
                     bracket.clone(),
                 ))
-                .then(args.map_with(|v, e| (v, e.span())))
-                .map_with(|(f, args), e| {
-                    if args.0.len() == 1 && args.0[0].is_delayed_arg() {
-                        Expr::Call {
-                            span: e.span(),
-                            f: Box::new(f),
-                            args: (vec![], args.0[0].span()),
+                .foldl_with(
+                    args.map_with(|v, e| (v, e.span())).repeated().at_least(1),
+                    |f, args, e| {
+                        if args.0.len() == 1 && args.0[0].is_delayed_arg() {
+                            Expr::Call {
+                                span: e.span(),
+                                f: Box::new(f),
+                                args: (vec![], args.0[0].span()),
+                            }
+                        } else {
+                            Expr::Call {
+                                span: e.span(),
+                                f: Box::new(f),
+                                args,
+                            }
                         }
-                    } else {
-                        Expr::Call {
-                            span: e.span(),
-                            f: Box::new(f),
-                            args,
-                        }
-                    }
-                })
+                    },
+                )
                 .labelled("call")
                 .boxed();
 
@@ -796,24 +798,27 @@ impl Expr {
                     .or(fn_.clone())
                     .or(op_as_id)
                     .or(df.clone())
-                    .or(list.clone())
+                    // `(x)` groups a call target; explicit `(x;)` remains a list.
                     .or(bracket.clone())
-                    .then(args.map_with(|v, e| (v, e.span())))
-                    .map_with(|(f, args), e| {
-                        if args.0.len() == 1 && args.0[0].is_delayed_arg() {
-                            Expr::Call {
-                                span: e.span(),
-                                f: Box::new(f),
-                                args: (vec![], args.0[0].span()),
+                    .or(list.clone())
+                    .foldl_with(
+                        args.map_with(|v, e| (v, e.span())).repeated().at_least(1),
+                        |f, args, e| {
+                            if args.0.len() == 1 && args.0[0].is_delayed_arg() {
+                                Expr::Call {
+                                    span: e.span(),
+                                    f: Box::new(f),
+                                    args: (vec![], args.0[0].span()),
+                                }
+                            } else {
+                                Expr::Call {
+                                    span: e.span(),
+                                    f: Box::new(f),
+                                    args,
+                                }
                             }
-                        } else {
-                            Expr::Call {
-                                span: e.span(),
-                                f: Box::new(f),
-                                args,
-                            }
-                        }
-                    })
+                        },
+                    )
                     .labelled("call")
                     .boxed();
 

@@ -126,19 +126,24 @@ impl Func {
     }
 
     pub fn project(&self, args: &[&SpicyObj]) -> Self {
-        let mut part_args = Vec::with_capacity(self.params.len());
-        let mut missing_index: Vec<usize> = Vec::new();
-        for i in 0..self.params.len() {
-            if let Some(obj) = args.get(i) {
-                part_args.push((*obj).clone());
-                if obj.is_delayed_arg() {
-                    missing_index.push(i);
-                }
-            } else {
-                part_args.push(SpicyObj::DelayedArg);
-                missing_index.push(i);
-            }
+        let mut part_args = self
+            .part_args
+            .clone()
+            .unwrap_or_else(|| vec![SpicyObj::DelayedArg; self.params.len()]);
+        // A projection's arguments fill its remaining holes, preserving values
+        // bound by earlier applications.
+        for (slot, obj) in part_args
+            .iter_mut()
+            .filter(|slot| slot.is_delayed_arg())
+            .zip(args)
+        {
+            *slot = (*obj).clone();
         }
+        let missing_index: Vec<usize> = part_args
+            .iter()
+            .enumerate()
+            .filter_map(|(i, obj)| obj.is_delayed_arg().then_some(i))
+            .collect();
         let arg_num = missing_index.len();
         Self {
             part_args: Some(part_args),

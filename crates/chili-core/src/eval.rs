@@ -157,7 +157,11 @@ pub fn eval_by_node(
             Ok(obj)
         }
         AstNode::IndexAssignmentExp { id, indices, exp } => {
-            let left = state.get_var(id)?;
+            let left = if stack.is_in_fn() && !id.starts_with('.') {
+                stack.get_var(id).or_else(|_| state.get_var(id))?
+            } else {
+                state.get_var(id)?
+            };
             let right = eval_by_node(state, stack, exp, src, columns)?;
             let indices = indices
                 .iter()
@@ -371,12 +375,14 @@ pub fn eval_by_node(
             catches,
         } => {
             let mut is_err = false;
+            let mut result = SpicyObj::Null;
             for node in tries {
                 match eval_by_node(state, stack, node, src, columns) {
                     Ok(obj) => {
                         if obj.is_return() {
                             return Ok(obj);
                         }
+                        result = obj;
                     }
                     Err(e) => {
                         is_err = true;
@@ -390,14 +396,16 @@ pub fn eval_by_node(
                 }
             }
             if is_err {
+                result = SpicyObj::Null;
                 for node in catches {
                     let obj = eval_by_node(state, stack, node, src, columns)?;
                     if obj.is_return() {
                         return Ok(obj);
                     }
+                    result = obj;
                 }
             }
-            Ok(SpicyObj::Null)
+            Ok(result)
         }
         AstNode::Return(node) => {
             let obj = eval_by_node(state, stack, node, src, columns)?;
@@ -656,6 +664,12 @@ pub fn eval_call(
                 }
             }
         }
+        SpicyObj::Series(_) => {
+            if args.len() != 1 {
+                return Err(SpicyError::MismatchedArgNumErr(1, args.len()));
+            }
+            at(&[f, args[0]])
+        }
         SpicyObj::Dict(_) => {
             if args.len() == 1 {
                 at(&[f, args[0]])
@@ -779,7 +793,7 @@ pub fn at(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                         .map(|i| {
                             if let Some(i) = i {
                                 let i = if i < 0 { i + s_len } else { i };
-                                if i < 0 || i > s_len { None } else { Some(i) }
+                                if i < 0 || i >= s_len { None } else { Some(i) }
                             } else {
                                 None
                             }

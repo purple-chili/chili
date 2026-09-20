@@ -3,6 +3,7 @@
 import polars as pl
 import pytest
 from chili import ChiliEngine
+from chili.engine_state import TypeMismatchError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -378,6 +379,45 @@ class TestVarListing:
 
 
 class TestFnCall:
+    @pytest.mark.parametrize("args", [[], [1], [1, 2], [1, 2, 3, 4]])
+    def test_user_function_requires_exact_arity(self, pepper_engine, args):
+        pepper_engine.eval("f: {[a;b;c] a+b+c};")
+        with pytest.raises(
+            TypeMismatchError,
+            match=rf"Expect 3 argument\(s\), {len(args)} given",
+        ):
+            pepper_engine.fn_call("f", args)
+        assert pepper_engine.fn_call("f", [1, 2, 3]) == 6
+
+    @pytest.mark.parametrize("args", [[], [1, 2]])
+    def test_builtin_requires_exact_arity(self, engine, args):
+        with pytest.raises(TypeMismatchError, match=r"Expect 1 argument\(s\)"):
+            engine.fn_call("type", args)
+
+    def test_pepper_projection_remains_callable_by_name(self, pepper_engine):
+        pepper_engine.eval("f: {[a;b;c] a+b+c}; p: f[1;2];")
+        assert pepper_engine.eval("p[3]") == 6
+        assert pepper_engine.fn_call("p", [3]) == 6
+        for args in [[], [3, 4]]:
+            with pytest.raises(TypeMismatchError, match=r"Expect 1 argument\(s\)"):
+                pepper_engine.fn_call("p", args)
+
+    def test_projection_with_placeholder(self, pepper_engine):
+        pepper_engine.eval("f: {[a;b;c] a+b+c}; p: f[1;;3];")
+        assert pepper_engine.fn_call("p", [2]) == 6
+
+    def test_zero_argument_function(self, pepper_engine):
+        pepper_engine.eval("f: {[] 42};")
+        assert pepper_engine.fn_call("f", []) == 42
+        with pytest.raises(TypeMismatchError, match=r"Expect 0 argument\(s\), 1 given"):
+            pepper_engine.fn_call("f", [1])
+
+    def test_function_return_value_is_not_rejected(self, pepper_engine):
+        pepper_engine.eval("factory: {[] {[x] x+1}};")
+        result = pepper_engine.fn_call("factory", [])
+        # Callable Python wrappers are not part of arity validation.
+        assert result == "{[x] x+1}"
+
     def test_fn_call_type(self, engine: ChiliEngine):
         """Call the built-in 'type' function to check a value's type name."""
         result = engine.fn_call("type", [42])

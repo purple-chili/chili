@@ -177,6 +177,46 @@ impl fmt::Display for Token {
 }
 
 impl Token {
+    fn split_adjacent_minus(tokens: Vec<(Self, Span)>) -> Vec<(Self, Span)> {
+        let mut result: Vec<(Self, Span)> = Vec::with_capacity(tokens.len());
+        for (mut token, mut span) in tokens {
+            let follows_value = result.last().is_some_and(|(previous, previous_span)| {
+                previous_span.end == span.start
+                    && matches!(
+                        previous,
+                        Self::Null(_)
+                            | Self::Bool(_)
+                            | Self::Hex(_)
+                            | Self::Timestamp(_)
+                            | Self::Datetime(_)
+                            | Self::Duration(_)
+                            | Self::Date(_)
+                            | Self::Time(_)
+                            | Self::Int(_)
+                            | Self::Float(_)
+                            | Self::Symbol(_)
+                            | Self::Str(_)
+                            | Self::Column(_)
+                            | Self::Id(_)
+                            | Self::Punc(')' | ']' | '}')
+                    )
+            });
+            if follows_value
+                && let Self::Int(value) | Self::Float(value) | Self::Duration(value) = &mut token
+                && value.starts_with('-')
+            {
+                // No separating whitespace: `x-1` is subtraction. Preserve
+                // whitespace-separated vectors/arguments and any later signs
+                // in a numeric-series token (e.g. `x-1 -2`).
+                value.remove(0);
+                result.push((Self::Op("-".into()), (span.start..span.start + 1).into()));
+                span.start += 1;
+            }
+            result.push((token, span));
+        }
+        result
+    }
+
     pub fn is_keyword(&self) -> bool {
         matches!(
             self,
@@ -618,10 +658,13 @@ impl Token {
             .map(|s: &str| Token::Id(s.to_string()))
             .boxed();
 
-        // parse operators
-        let op = one_of("+*-/!<>=:.$?@~_&|#^%")
-            .repeated()
-            .at_least(1)
+        // Mixed-character operators are explicit; repetition only consumes
+        // the same character, leaving e.g. the minus in `*-1` for the number.
+        let repeated_op = one_of("+*-/!<>=:.$?@~_&|#^%")
+            .ignore_with_ctx(just(' ').configure(|cfg, c: &char| cfg.seq(*c)).repeated())
+            .to_slice();
+        let op = choice((just("!="), just("<="), just(">=")))
+            .or(repeated_op)
             .to_slice()
             .map(|s: &str| Token::Op(s.to_string()))
             .boxed();
@@ -631,7 +674,7 @@ impl Token {
 
         let comment = just("//")
             .then(any().and_is(just('\n').not()).repeated())
-            .then(just('\n'))
+            .then_ignore(just('\n').ignored().or(end()))
             .to_slice()
             .map(|s: &str| Token::Comment(s.to_string()))
             .boxed();
@@ -676,7 +719,8 @@ impl Token {
             // If we encounter an error, skip and attempt to lex the next character as a token instead
             .recover_with(skip_then_retry_until(any().ignored(), end()))
             .repeated()
-            .collect()
+            .collect::<Vec<_>>()
+            .map(Self::split_adjacent_minus)
     }
 }
 

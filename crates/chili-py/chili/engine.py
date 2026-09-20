@@ -272,6 +272,10 @@ class ChiliEngine:
     def import_source_path(self, relative: str, path: str) -> Any:
         """Import and evaluate a Chili/Pepper source file.
 
+        Successfully imported unchanged source is skipped. Failed imports
+        can be retried; side effects before a runtime error are not rolled back.
+        A concurrent import of the same source on another thread raises an error.
+
         Args:
             relative: Base path used to resolve relative imports inside
                       the source file.  Pass ``""`` when importing a
@@ -279,7 +283,8 @@ class ChiliEngine:
             path: File system path to the source file.
 
         Returns:
-            The result of evaluating the file.
+            The result of evaluating the file, or None when skipped (already
+            imported successfully, or a recursive import on the same thread).
         """
         return self.engine.import_source_path(relative, path)
 
@@ -384,12 +389,18 @@ class ChiliEngine:
     def fn_call(self, func: str, args: list[Any]) -> Any:
         """Call a registered engine function by name.
 
+        Supply exactly the function's remaining arguments. To create a
+        projection, use Pepper ``eval`` and bind it to a name first.
+
         Args:
             func: Function name as registered in the engine.
             args: Positional arguments (converted from Python automatically).
 
         Returns:
             The function's return value, converted to a Python type.
+
+        Raises:
+            TypeMismatchError: The argument count does not match the function.
         """
         return self.engine.fn_call(func, args)
 

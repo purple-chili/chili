@@ -6,10 +6,27 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Chained calls now apply successive argument groups left to right: Pepper supports `f[1;2][3]`, and Chili supports `f(...)(...)` with its existing arity rules. This also supports calling returned functions and chaining collection lookups.
+- Series support single-argument call indexing (`v[1]`, `v 1`, and Chili's `v(1)`) using the same rules as `v @ index`, including integer-vector and negative indices. Multiple arguments are rejected.
+- Python bindings now map `polars.Expr` to and from Chili expressions, including expressions inside lists and dictionaries. Functional queries accept explicit Polars columns, filters, and aggregations; plain strings remain literal values.
 - `upsertn[table; data; n]` — append dataframe or list data and retain at most the last `n` rows in append order. A table symbol updates global state atomically and returns the incoming row count; a dataframe value returns a new dataframe without changing the original. Zero retains an empty dataframe with the same schema; negative limits are rejected. Creating a table requires dataframe data.
 
 ### Fixed
 
+- `//` line comments now terminate at end of input as well as at a newline, so trailing comments in eval strings and source files no longer get interpreted as operators and names when the final newline is absent.
+- Pepper now treats `(x)` as grouping when used as a call target, fixing parenthesized dictionary lookups such as `(d)["key"]` and calls such as `(f[1;2])[3]`. Explicit list targets `(x;)`, `(x;y)`, and `()` retain their list behavior.
+- Partially applying an existing projection now preserves its bound arguments and fills only its remaining argument positions. Repeated application such as `f[1][2][3]` no longer loses earlier values.
+- Series indexing with an integer vector now returns null for an index equal to the series length instead of panicking; this applies to both `@` and series call syntax.
+- Namespaced globals adjacent to query operators now retain their leading dot (`date=.t.d`, `date>=.t.start`). The operator lexer fix also resolves these lookups in partition predicates.
+- Binary fill (`^`) now supports scalar operands: a null right operand is replaced by the left value, and a non-null right operand is preserved. Unsupported operand combinations now report a binary `^` error with both types instead of a misleading unary `fill` error.
+- Indexed assignment now resolves function-local dictionaries and dictionary parameters before globals. A same-named global no longer replaces the local dictionary's contents; ordinary assignments inside functions remain local, while explicitly dotted names update globals.
+- Compact subtraction such as `5-1`, `n-1`, and `f[]-1` now treats a minus immediately following a value as subtraction. Whitespace-separated negative arguments and vectors (`f -1`, `1 -1`) retain their behavior.
+- Operator-token repetition now consumes only identical characters, so negative operands can follow operators without spaces (`n*-1`, `n+-1`, and `n>=-1`). Repeated operators such as `++` remain intact, and mixed comparison operators `!=`, `<=`, and `>=` are recognized explicitly.
+- Failed source imports can now be retried without editing the file. Import completion is tracked separately from source registration, so parse and runtime errors no longer cause subsequent imports to be silently skipped. Successfully imported unchanged source is still skipped, circular imports still terminate, and concurrent attempts to import the same source report an import-in-progress error.
+- `try`/`catch` now returns the last value of the executed branch instead of always returning null. Empty branches still return null, and explicit function returns and catch errors continue to propagate.
+- Recasting an existing symbol to `sym` or `cat` now preserves its value instead of adding a display backtick, including symbols inside mixed lists. Mixed lists retain their shape; use a Polars categorical Series from Python for a typed symbol series.
+- Casting a scalar symbol to `str` now returns its underlying value without the display backtick, matching symbol-series casts. Symbol display formatting is unchanged.
+- Python `fn_call` now raises `TypeMismatchError` when too few or too many arguments are supplied, instead of returning projection text. Pepper expressions still support partial application, and named projections can be called from Python with their remaining arguments.
 - `upsert[df; data]` now includes incoming dataframe rows in its returned dataframe. Previously, it extended a temporary clone and discarded it. The original dataframe remains unchanged.
 
 ## [0.10.10] - 2026-09-15

@@ -6,6 +6,40 @@ mod util;
 
 use crate::util::create_state;
 
+#[test]
+fn negative_operands_after_operators_work_in_both_syntaxes() {
+    for (chili, path) in [(false, "repl.pep"), (true, "repl.chi")] {
+        let state = create_state(chili);
+        for (src, expected) in [
+            ("n: 5; n*-1", SpicyObj::I64(-5)),
+            ("n: 5; n+-1", SpicyObj::I64(4)),
+            ("n:-1; n", SpicyObj::I64(-1)),
+            ("n: 5; n>=-1", SpicyObj::Boolean(true)),
+            ("n: 5; n<=-1", SpicyObj::Boolean(false)),
+            ("n: 5; n!=-1", SpicyObj::Boolean(true)),
+        ] {
+            let nodes = parse(src, 0, path).unwrap();
+            assert_eq!(
+                state.eval_ast(nodes, "", src).unwrap(),
+                expected,
+                "{path}: {src}"
+            );
+        }
+    }
+}
+
+#[test]
+fn repeated_append_operator_accepts_negative_operand() {
+    let state = create_state(false);
+    let src = "1 2++-1";
+    let nodes = parse(src, 0, "repl.pep").unwrap();
+    let result = state.eval_ast(nodes, "", src).unwrap();
+    assert_eq!(
+        result.as_vec().unwrap(),
+        vec![SpicyObj::I64(1), SpicyObj::I64(2), SpicyObj::I64(-1)]
+    );
+}
+
 mod pepper_tests {
     use super::*;
 

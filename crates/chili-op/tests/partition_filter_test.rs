@@ -189,6 +189,44 @@ fn equality_returns_matching_partition_for_every_date() {
 }
 
 #[test]
+fn namespaced_globals_in_partition_predicates_keep_leading_dot() {
+    let hdb = setup_hdb();
+    let engine = make_engine();
+    engine.load_par_df(hdb.path()).unwrap();
+    engine
+        .set_var(".t.d", SpicyObj::Date(D_2024_01_03))
+        .unwrap();
+    // A similarly named variable must not be mistaken for the explicit global.
+    engine.set_var("t.d", SpicyObj::Date(D_2024_01_08)).unwrap();
+    engine
+        .set_var(".t.end", SpicyObj::Date(D_2024_01_05))
+        .unwrap();
+
+    for path in ["test.pep", "test.chi"] {
+        for (query, expected_query) in [
+            (
+                "select from ohlcv where date=.t.d",
+                "select from ohlcv where date=2024.01.03",
+            ),
+            (
+                "select from ohlcv where date>=.t.d, date<=.t.end",
+                "select from ohlcv where date>=2024.01.03, date<=2024.01.05",
+            ),
+        ] {
+            let result = engine
+                .eval(
+                    &mut Stack::new(None, 0, 0, ""),
+                    &SpicyObj::String(query.into()),
+                    path,
+                )
+                .unwrap();
+            let expected = eval_query(&engine, expected_query);
+            assert_eq!(result, SpicyObj::DataFrame(expected), "{path}: {query}");
+        }
+    }
+}
+
+#[test]
 fn equality_missing_partition_returns_empty() {
     let hdb = setup_hdb();
     let engine = make_engine();

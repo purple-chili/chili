@@ -2829,7 +2829,7 @@ pub fn cast(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 }
             }
             "sym" | "cat" => {
-                if arg1.is_str() {
+                if arg1.is_str() || arg1.is_sym() {
                     Ok(SpicyObj::Symbol(arg1.str().unwrap().to_owned()))
                 } else if arg1.is_atom() {
                     Ok(SpicyObj::Symbol(arg1.to_string()))
@@ -2859,7 +2859,7 @@ pub fn cast(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 } else if arg1.is_float() {
                     Ok(SpicyObj::String(format!("{}", arg1.to_f64().unwrap())))
                 } else if arg1.is_sym() {
-                    Ok(SpicyObj::String(arg1.to_string()))
+                    Ok(SpicyObj::String(arg1.str()?.to_owned()))
                 } else {
                     match arg1 {
                         SpicyObj::Series(s1) => Ok(SpicyObj::Series(
@@ -3684,8 +3684,21 @@ pub fn fill(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if arg0.is_expr() || arg1.is_expr() {
         return Ok(SpicyObj::Expr(arg1.as_expr()?.fill_null(arg0.as_expr()?)));
     }
+    if (arg0.is_atom() || arg0.is_null()) && (arg1.is_atom() || arg1.is_null()) {
+        return Ok(if arg1.is_null() {
+            arg0.clone()
+        } else {
+            arg1.clone()
+        });
+    }
     let c0 = arg0.get_type_code();
-    let err = || SpicyError::UnsupportedUnaryOpErr("fill".to_owned(), arg0.get_type_name());
+    let err = || {
+        SpicyError::UnsupportedBinaryOpErr(
+            "^".to_owned(),
+            arg0.get_type_name(),
+            arg1.get_type_name(),
+        )
+    };
     if c0 < 0 {
         match arg1 {
             SpicyObj::MixedList(l1) => Ok(SpicyObj::MixedList(
