@@ -97,6 +97,59 @@ impl Expr {
     }
 }
 
+/// Build a call node; `f()` parses as one delayed argument and means no arguments.
+fn make_call(f: Expr, args: (Vec<Expr>, Span), span: Span) -> Expr {
+    if args.0.len() == 1 && args.0[0].is_delayed_arg() {
+        Expr::Call {
+            span,
+            f: Box::new(f),
+            args: (vec![], args.0[0].span()),
+        }
+    } else {
+        Expr::Call {
+            span,
+            f: Box::new(f),
+            args,
+        }
+    }
+}
+
+/// `lhs : value` once the left operand is parsed: an assignment when the target
+/// is a name or an indexed name, otherwise the plain binary it always was.
+fn make_assign(
+    lhs: Expr,
+    colon: (Token, Span),
+    value: Expr,
+    span: Span,
+    on_empty_indices: &mut dyn FnMut(Span),
+) -> Expr {
+    match lhs {
+        Expr::Id((Token::Id(_), _)) => Expr::Assign {
+            span,
+            id: Box::new(lhs),
+            indices: vec![],
+            value: Box::new(value),
+        },
+        Expr::Call { f, args, .. } if matches!(*f, Expr::Id((Token::Id(_), _))) => {
+            if args.0.is_empty() {
+                on_empty_indices(args.1);
+            }
+            Expr::Assign {
+                span,
+                id: f,
+                indices: args.0,
+                value: Box::new(value),
+            }
+        }
+        other => Expr::Binary {
+            span,
+            lhs: Box::new(other),
+            op: colon,
+            rhs: Box::new(value),
+        },
+    }
+}
+
 impl Expr {
     pub fn parser_chili<'a, I>()
     -> impl Parser<'a, I, Expr, extra::Err<Rich<'a, Token, Span>>> + Clone
@@ -155,52 +208,8 @@ impl Expr {
                     .labelled("list")
                     .boxed();
 
-                let indices = inline_expr
-                    .clone()
-                    .separated_by(just(Token::Punc(',')))
-                    .allow_trailing()
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(args_open.clone()), just(args_close.clone()))
-                    .validate(|indices, e, emitter| {
-                        if indices.is_empty() {
-                            emitter.emit(Rich::custom(
-                                e.span(),
-                                "required at least one index for indices assignment",
-                            ));
-                        }
-                        indices
-                    })
-                    .labelled("indices")
-                    .boxed();
 
-                let id_with_indices = id
-                    .then(indices.clone().map_with(|v, e| (v, e.span())))
-                    .map_with(|(id, indices), e| Expr::Call {
-                        span: e.span(),
-                        f: id.boxed(),
-                        args: indices,
-                    });
 
-                let assign = id_with_indices
-                    .or(id)
-                    .then_ignore(just(Token::Op(":".to_string())))
-                    .then(inline_expr.clone())
-                    .map_with(|(id, value), e| {
-                        let (id, indices) = if let Expr::Call { f, args, .. } = id {
-                            (f, args.0)
-                        } else {
-                            (id.boxed(), (vec![]))
-                        };
-                        Expr::Assign {
-                            span: e.span(),
-                            id,
-                            indices,
-                            value: value.boxed(),
-                        }
-                    })
-                    .labelled("assignment")
-                    .as_context()
-                    .boxed();
 
                 let pair = id
                     .then_ignore(just(Token::Op(":".to_string())))
@@ -321,32 +330,35 @@ impl Expr {
                     .labelled("arguments")
                     .boxed();
 
+                // A callable followed by zero or more argument lists. Zero is
+                // allowed so `(x)`, `[..]`, a function literal ... are parsed once
+                // here instead of once as a failed call and again as themselves
+                // (that re-parse made nesting exponential). An operator is only
+                // an operand when it is actually called.
+                let op_call = op_as_id.foldl_with(
+                    args.clone()
+                        .map_with(|v, e| (v, e.span()))
+                        .repeated()
+                        .at_least(1),
+                    |f, args, e| make_call(f, args, e.span()),
+                );
                 let call = choice((
                     id,
                     fn_.clone(),
-                    op_as_id,
                     df.clone(),
+                    // `[[..]]` alone is a matrix; with arguments it stays the
+                    // indexed list of lists it has always been.
+                    matrix
+                        .clone()
+                        .then_ignore(just(args_open.clone()).not()),
                     list.clone(),
                     bracket.clone(),
                 ))
                 .foldl_with(
-                    args.map_with(|v, e| (v, e.span())).repeated().at_least(1),
-                    |f, args, e| {
-                        if args.0.len() == 1 && args.0[0].is_delayed_arg() {
-                            Expr::Call {
-                                span: e.span(),
-                                f: Box::new(f),
-                                args: (vec![], args.0[0].span()),
-                            }
-                        } else {
-                            Expr::Call {
-                                span: e.span(),
-                                f: Box::new(f),
-                                args,
-                            }
-                        }
-                    },
+                    args.map_with(|v, e| (v, e.span())).repeated(),
+                    |f, args, e| make_call(f, args, e.span()),
                 )
+                .or(op_call)
                 .labelled("call")
                 .boxed();
 
@@ -415,40 +427,55 @@ impl Expr {
                 let operand = choice((
                     query.clone(),
                     if_else.clone(),
-                    fn_.clone(),
                     call.clone(),
-                    bracket.clone(),
                     term.clone(),
                 ))
                 .labelled("operand")
                 .boxed();
 
-                let binary = operand
-                    .clone()
-                    .foldl_with(op.then(operand).repeated().at_least(1), |a, (op, b), e| {
-                        Expr::Binary {
-                            span: e.span(),
-                            lhs: Box::new(a),
-                            op,
-                            rhs: Box::new(b),
-                        }
-                    })
-                    .labelled("binary")
-                    .as_context()
-                    .boxed();
+                // One operand, then what follows decides: `: value` is an
+                // assignment, `op operand ...` a left-to-right binary chain,
+                // nothing the operand itself. Every operand is parsed once.
+                enum Tail {
+                    Assign((Token, Span), Expr),
+                    Ops(Vec<((Token, Span), Expr)>),
+                }
+                let colon = select! {
+                    Token::Op(op) = e if op == ":" => (Token::Op(op), e.span())
+                };
+                let tail = choice((
+                    colon
+                        .then(inline_expr.clone())
+                        .map(|(colon, value)| Tail::Assign(colon, value)),
+                    op.then(operand.clone())
+                        .repeated()
+                        .collect::<Vec<_>>()
+                        .map(Tail::Ops),
+                ));
 
-                choice((
-                    query.clone(),
-                    if_else.clone(),
-                    fn_.clone(),
-                    assign.clone(),
-                    binary.clone(),
-                    call.clone(),
-                    bracket.clone(),
-                    term.clone(),
-                ))
-                .labelled("inline_expr")
-                .boxed()
+                operand
+                    .then(tail)
+                    .validate(|(first, tail), e, emitter| match tail {
+                        Tail::Assign(colon, value) => {
+                            make_assign(first, colon, value, e.span(), &mut |span| {
+                                emitter.emit(Rich::custom(
+                                    span,
+                                    "required at least one index for indices assignment",
+                                ))
+                            })
+                        }
+                        Tail::Ops(ops) => ops.into_iter().fold(first, |lhs, (op, rhs)| {
+                            let span: Span = (lhs.span().start..rhs.span().end).into();
+                            Expr::Binary {
+                                span,
+                                lhs: Box::new(lhs),
+                                op,
+                                rhs: Box::new(rhs),
+                            }
+                        }),
+                    })
+                    .labelled("inline_expr")
+                    .boxed()
                 // end of inline_expr
             });
 
@@ -526,27 +553,25 @@ impl Expr {
                 .ignore_then(inline_expr.clone())
                 .map_with(|expr, e| Expr::Raise(Box::new((expr, e.span()))));
 
-            let unterminated_statement =
-                choice((inline_expr.clone(), return_.clone(), raise_.clone()))
-                    .map_with(|s, e| Expr::Statement(Box::new((s, e.span()))))
-                    .boxed();
+            // The body is parsed once, then `;` is optional: with it the
+            // statement is a plain expression, without it the statement carries
+            // its value (the last one is what a block returns). Parsing the body
+            // twice — once expecting `;`, once not — doubled the work at every
+            // level of block nesting.
+            let simple_statement = choice((inline_expr.clone(), return_, raise_))
+                .then(just(Token::Punc(';')).or_not())
+                .map_with(|(s, terminator), e| {
+                    if terminator.is_some() {
+                        s
+                    } else {
+                        Expr::Statement(Box::new((s, e.span())))
+                    }
+                })
+                .boxed();
 
-            let terminated_statement = inline_expr
-                .clone()
-                .or(return_)
-                .or(raise_)
-                .clone()
-                .then_ignore(just(Token::Punc(';')));
-
-            choice((
-                if_.clone(),
-                while_.clone(),
-                try_.clone(),
-                terminated_statement.clone(),
-                unterminated_statement.clone(),
-            ))
-            .labelled("statement")
-            .boxed()
+            choice((if_.clone(), while_.clone(), try_.clone(), simple_statement))
+                .labelled("statement")
+                .boxed()
         });
 
         statement
@@ -620,52 +645,8 @@ impl Expr {
                     .labelled("list")
                     .boxed();
 
-                let indices = inline_expr
-                    .clone()
-                    .separated_by(just(Token::Punc(';')))
-                    .allow_trailing()
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(args_open.clone()), just(args_close.clone()))
-                    .validate(|indices, e, emitter| {
-                        if indices.is_empty() {
-                            emitter.emit(Rich::custom(
-                                e.span(),
-                                "required at least one index for indices assignment",
-                            ));
-                        }
-                        indices
-                    })
-                    .labelled("indices")
-                    .boxed();
 
-                let id_with_indices = id
-                    .then(indices.clone().map_with(|v, e| (v, e.span())))
-                    .map_with(|(id, indices), e| Expr::Call {
-                        span: e.span(),
-                        f: id.boxed(),
-                        args: indices,
-                    });
 
-                let assign = id_with_indices
-                    .or(id)
-                    .then_ignore(just(Token::Op(":".to_string())))
-                    .then(inline_expr.clone())
-                    .map_with(|(id, value), e| {
-                        let (id, indices) = if let Expr::Call { f, args, .. } = id {
-                            (f, args.0)
-                        } else {
-                            (id.boxed(), vec![])
-                        };
-                        Expr::Assign {
-                            span: e.span(),
-                            id,
-                            indices,
-                            value: value.boxed(),
-                        }
-                    })
-                    .labelled("assignment")
-                    .as_context()
-                    .boxed();
 
                 let pair = id
                     .then_ignore(just(Token::Op(":".to_string())))
@@ -794,31 +775,28 @@ impl Expr {
                     .labelled("arguments")
                     .boxed();
 
+                // Zero or more argument lists, so a callable that is not called
+                // is parsed once here rather than failing as a call and being
+                // parsed again (see the Chili grammar). An operator is only an
+                // operand when it is actually called.
+                let op_call = op_as_id.foldl_with(
+                    args.clone()
+                        .map_with(|v, e| (v, e.span()))
+                        .repeated()
+                        .at_least(1),
+                    |f, args, e| make_call(f, args, e.span()),
+                );
                 let call = id
                     .or(fn_.clone())
-                    .or(op_as_id)
                     .or(df.clone())
                     // `(x)` groups a call target; explicit `(x;)` remains a list.
                     .or(bracket.clone())
                     .or(list.clone())
                     .foldl_with(
-                        args.map_with(|v, e| (v, e.span())).repeated().at_least(1),
-                        |f, args, e| {
-                            if args.0.len() == 1 && args.0[0].is_delayed_arg() {
-                                Expr::Call {
-                                    span: e.span(),
-                                    f: Box::new(f),
-                                    args: (vec![], args.0[0].span()),
-                                }
-                            } else {
-                                Expr::Call {
-                                    span: e.span(),
-                                    f: Box::new(f),
-                                    args,
-                                }
-                            }
-                        },
+                        args.map_with(|v, e| (v, e.span())).repeated(),
+                        |f, args, e| make_call(f, args, e.span()),
                     )
+                    .or(op_call)
                     .labelled("call")
                     .boxed();
 
@@ -895,53 +873,59 @@ impl Expr {
                     .ignore_then(block.clone())
                     .map_with(|v, e| Expr::IfElse((v.0, e.span())));
 
-                let operand = choice((
-                    if_else.clone(),
-                    call.clone(),
-                    fn_.clone(),
-                    bracket.clone(),
-                    term.clone(),
-                ));
+                let operand = choice((if_else.clone(), call.clone(), term.clone())).boxed();
 
-                let binary = operand
-                    .clone()
-                    .then(op)
-                    .repeated()
-                    .at_least(1)
-                    .foldr_with(inline_expr.clone(), |(a, op), b, e| Expr::Binary {
-                        span: e.span(),
-                        lhs: Box::new(a),
-                        op,
-                        rhs: Box::new(b),
-                    })
-                    .labelled("binary")
-                    .as_context()
-                    .boxed();
-
-                let unary = operand
-                    .then(inline_expr.clone())
-                    .map_with(|(op, rhs), e| Expr::Unary {
-                        span: e.span(),
-                        op: op.boxed(),
-                        rhs: rhs.boxed(),
-                    })
-                    .labelled("unary")
-                    .as_context()
-                    .boxed();
-
-                choice((
-                    query.clone(),
-                    if_else.clone(),
-                    assign.clone(),
-                    binary.clone(),
-                    unary.clone(),
-                    call.clone(),
-                    fn_.clone(),
-                    bracket.clone(),
-                    term.clone(),
+                // One operand, then what follows decides — evaluation is right to
+                // left, so the rest of the line is always one expression:
+                //   `: rest`  assignment      `op rest`  binary
+                //   `rest`    application     nothing    the operand itself
+                // Every operand is parsed once.
+                enum Tail {
+                    Assign((Token, Span), Expr),
+                    Binary((Token, Span), Expr),
+                    Unary(Expr),
+                }
+                let colon = select! {
+                    Token::Op(op) = e if op == ":" => (Token::Op(op), e.span())
+                };
+                let tail = choice((
+                    colon
+                        .then(inline_expr.clone())
+                        .map(|(colon, value)| Tail::Assign(colon, value)),
+                    op.then(inline_expr.clone())
+                        .map(|(op, rhs)| Tail::Binary(op, rhs)),
+                    inline_expr.clone().map(Tail::Unary),
                 ))
-                .labelled("inline_expr")
-                .boxed()
+                .or_not();
+
+                let applied = operand
+                    .then(tail)
+                    .validate(|(first, tail), e, emitter| match tail {
+                        None => first,
+                        Some(Tail::Assign(colon, value)) => {
+                            make_assign(first, colon, value, e.span(), &mut |span| {
+                                emitter.emit(Rich::custom(
+                                    span,
+                                    "required at least one index for indices assignment",
+                                ))
+                            })
+                        }
+                        Some(Tail::Binary(op, rhs)) => Expr::Binary {
+                            span: e.span(),
+                            lhs: Box::new(first),
+                            op,
+                            rhs: Box::new(rhs),
+                        },
+                        Some(Tail::Unary(rhs)) => Expr::Unary {
+                            span: e.span(),
+                            op: Box::new(first),
+                            rhs: Box::new(rhs),
+                        },
+                    });
+
+                choice((query.clone(), applied))
+                    .labelled("inline_expr")
+                    .boxed()
                 // end of inline_expr
             });
 

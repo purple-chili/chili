@@ -153,7 +153,11 @@ pub fn sum(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         | SpicyObj::F64(_)
         | SpicyObj::Null => Ok(arg0.clone()),
         SpicyObj::Matrix(m) => Ok(SpicyObj::F64(m.sum())),
-        SpicyObj::Dict(d) => sum(&d.values().collect::<Vec<_>>()),
+        // Sum of the values: fold with `add`, which handles every numeric pairing.
+        SpicyObj::Dict(d) => d.values().try_fold(SpicyObj::I64(0), |acc, v| {
+            let v = sum(&[v])?;
+            crate::operator::add(&[&acc, &v])
+        }),
         _ => Err(SpicyError::UnsupportedUnaryOpErr(
             "sum".to_owned(),
             arg0.get_type_name(),
@@ -1098,7 +1102,7 @@ pub fn shift(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                     [&vec![SpicyObj::Null; period], &l[..l.len() - period]].concat(),
                 ))
             } else {
-                let period = period as usize;
+                let period = period.unsigned_abs() as usize;
                 Ok(SpicyObj::MixedList(
                     [&l[period..], &vec![SpicyObj::Null; period]].concat(),
                 ))
@@ -1166,7 +1170,10 @@ pub fn product(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         | SpicyObj::F64(_)
         | SpicyObj::Null => Ok(arg0.clone()),
         SpicyObj::Matrix(m) => Ok(SpicyObj::F64(m.product())),
-        SpicyObj::Dict(d) => product(&d.values().collect::<Vec<_>>()),
+        SpicyObj::Dict(d) => d.values().try_fold(SpicyObj::I64(1), |acc, v| {
+            let v = product(&[v])?;
+            crate::operator::mul(&[&acc, &v])
+        }),
         _ => Err(SpicyError::UnsupportedUnaryOpErr(
             "product".to_owned(),
             arg0.get_type_name(),

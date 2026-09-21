@@ -1000,8 +1000,9 @@ impl SpicyObj {
                             -5 => s,
                             -6 => s.cast(&DataType::Date).unwrap(),
                             -7 => s.cast(&DataType::Time).unwrap(),
+                            // datetime atoms are milliseconds everywhere else
                             -8 => s
-                                .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+                                .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
                                 .unwrap(),
                             -9 => s
                                 .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
@@ -1670,7 +1671,7 @@ pub fn get_series_len(series: &Series) -> Result<usize, SpicyError> {
                 .downcast_ref::<LargeListArray>()
                 .unwrap();
             let length = array.offsets().len();
-            let values_length = array.len();
+            let values_length = array.values().len();
             match data_type.as_ref() {
                 PolarsDataType::Boolean => Ok(values_length + 6 * length + 6),
                 PolarsDataType::UInt8 => Ok(values_length + 6 * length + 6),

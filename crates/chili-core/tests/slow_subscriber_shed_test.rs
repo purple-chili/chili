@@ -337,3 +337,39 @@ fn grace_window_tolerates_transient_breach_then_sheds() {
         "still over the bound after the grace window: shed"
     );
 }
+
+/// A frame larger than the byte bound starts the grace clock. If the subscriber
+/// drains it, that episode is over: a second such frame long after must get a
+/// fresh grace window, not be shed on a clock started minutes ago.
+#[test]
+fn drained_queue_restarts_the_grace_clock() {
+    let (engine, port) = start_server(0);
+    engine.set_subscriber_queue_max_bytes(64 * 1024);
+    engine.set_subscriber_queue_grace_ms(300);
+
+    let healthy = connect_subscriber(port, false);
+    let mut reader = healthy.try_clone().expect("clone");
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 64 * 1024];
+        while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+    });
+    let h = await_incoming_handles(&engine, 1)[0];
+    engine.handle_subscriber(&h).expect("promote to Publishing");
+    engine.add_subscriber("trade", h).expect("register on topic");
+
+    let (upd, table) = upd_table();
+    // 512 KiB frame: over the 64 KiB bound the moment it is queued.
+    engine
+        .publish(&upd, &table, "trade", &big_payload())
+        .expect("publish");
+    // Far longer than the grace window; the reader drains the queue meanwhile.
+    std::thread::sleep(Duration::from_millis(700));
+    engine
+        .publish(&upd, &table, "trade", &big_payload())
+        .expect("publish");
+    assert_eq!(
+        conn_type_of(&engine, h).as_deref(),
+        Some("Publishing"),
+        "a subscriber that drained its queue must not be shed on a stale clock"
+    );
+}

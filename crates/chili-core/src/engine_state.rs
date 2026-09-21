@@ -94,6 +94,10 @@ pub struct Handle {
     /// instead of evaluated, so a log replay can finish first and the boot
     /// backlog sits in this process rather than in the publisher's queue.
     pub hold: Option<Arc<Mutex<HoldState>>>,
+    /// Unique per registered connection. Handle numbers are reused (`1 + max`),
+    /// so a connection thread tears down its handle only while the number still
+    /// belongs to the connection it served.
+    pub conn_id: u64,
 }
 
 /// See [`Handle::hold`]. The reader thread and [`EngineState::release_held`]
@@ -111,8 +115,8 @@ pub struct HoldState {
 /// the subscriber is shed.
 #[derive(Clone)]
 pub struct QueuedWriter {
-    /// Unbounded sender; one whole serialized frame per message.
-    pub sender: std::sync::mpsc::Sender<Vec<Vec<u8>>>,
+    /// Unbounded sender; one whole message per item.
+    pub sender: std::sync::mpsc::Sender<Outbound>,
     /// Set by the writer thread on write error, or by the engine when shedding.
     pub disconnected: Arc<std::sync::atomic::AtomicBool>,
     /// Frames enqueued but not yet written; incremented on send, decremented in the writer thread.
@@ -121,6 +125,42 @@ pub struct QueuedWriter {
     pub bytes: Arc<std::sync::atomic::AtomicI64>,
     /// Unix millis when the queue first went over a bound; `0` when under.
     pub over_since_ms: Arc<std::sync::atomic::AtomicI64>,
+}
+
+/// One outbound message for a connection's single serialized write path.
+/// Replies written by the connection thread and Async frames written by
+/// `publish` share a socket, so both go through the same writer (the handle's
+/// `rw` mutex, or the queued writer thread) and can never interleave.
+pub enum Outbound {
+    /// serde9 chunks, framed with a chili IPC header of the given type.
+    Chili(Vec<Vec<u8>>, MessageType),
+    /// Bytes that already carry their own framing (q replies, error frames).
+    Raw(Vec<u8>),
+}
+
+impl Outbound {
+    fn byte_len(&self) -> usize {
+        match self {
+            Outbound::Chili(chunks, _) => chunks.iter().map(Vec::len).sum(),
+            Outbound::Raw(bytes) => bytes.len(),
+        }
+    }
+
+    fn write_to(&self, stream: &mut dyn ReadWrite) -> std::io::Result<()> {
+        match self {
+            Outbound::Chili(chunks, t) => crate::write_chili_ipc_msg(stream, chunks, *t),
+            Outbound::Raw(bytes) => stream.write_all(bytes),
+        }
+    }
+}
+
+/// Why [`EngineState::write_reply`] did not write.
+pub enum ReplyError {
+    /// The handle has no engine-side writer (not in the map, or a Subscribing
+    /// handle whose reader thread owns the socket): the caller is the only
+    /// writer and may use its own stream. The message is handed back.
+    NoWriter(Outbound),
+    Io(std::io::Error),
 }
 
 enum WriteTarget {
@@ -283,6 +323,8 @@ pub struct EngineState {
     /// Only touched while holding the `topic_map` write guard
     /// (lock order: `topic_map → pending_frames`).
     pending_frames: Mutex<HashMap<i64, Vec<Vec<Vec<u8>>>>>,
+    /// Source of [`Handle::conn_id`].
+    next_conn_id: std::sync::atomic::AtomicU64,
 }
 
 impl Default for EngineState {
@@ -355,6 +397,7 @@ impl EngineState {
             listener_stopping: std::sync::atomic::AtomicBool::new(false),
             lpt_lock: Mutex::new(()),
             pending_frames: Mutex::new(HashMap::new()),
+            next_conn_id: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
@@ -438,12 +481,17 @@ impl EngineState {
 
     /// Force-close every handle (shutdown streams, clear the map). Idempotent.
     pub fn disconnect_all_handles(&self) {
-        let mut handles = self.handle.write();
-        for (_, hd) in handles.iter_mut() {
-            Self::shutdown_handle_io(hd);
-            hd.queued = None;
+        {
+            let mut handles = self.handle.write();
+            for (_, hd) in handles.iter_mut() {
+                Self::shutdown_handle_io(hd);
+                hd.queued = None;
+            }
+            handles.clear();
         }
-        handles.clear();
+        // Numbers start over after this: no subscription may outlive its handle.
+        self.topic_map.write().clear();
+        self.pending_frames.lock().clear();
     }
 
     pub fn get_displayed_vars(&self) -> SpicyResult<HashMap<String, String>> {
@@ -1007,10 +1055,8 @@ impl EngineState {
         let mut pb_counter: u64 = 0;
         for i in msgs_size.iter().take(end as usize).skip(start as usize) {
             let size = *i;
-            let mut msg = vec![0u8; size as usize];
-
-            msgs_file
-                .read_exact(&mut msg)
+            // The size comes from the sidecar file: never allocate on its word.
+            let msg = utils::read_len_from(&mut msgs_file, size as u64)
                 .map_err(|e| SpicyError::EvalErr(e.to_string()))?;
             let table_name = read_q_table_name(&msg)?;
 
@@ -1129,14 +1175,18 @@ impl EngineState {
                 continue;
             }
             read_msg_count += 1;
-            let mut buffer = vec![0u8; size as usize];
-            if let Err(e) = reader.read_exact(&mut buffer) {
-                warn!(
-                    "torn frame at index {}: {} — stopping replay at last good frame",
-                    i, e
-                );
-                break;
-            }
+            // The size comes from the log: a corrupt length is a torn frame,
+            // never an allocation.
+            let buffer = match utils::read_len_from(&mut reader, size as u64) {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(
+                        "torn frame at index {}: {} — stopping replay at last good frame",
+                        i, e
+                    );
+                    break;
+                }
+            };
             let list = match std::panic::catch_unwind(|| serde9::deserialize(&buffer, &mut 0)) {
                 Ok(Ok(l)) => l,
                 Ok(Err(e)) => {
@@ -1235,6 +1285,16 @@ impl EngineState {
                 } else if schema == "chili" {
                     (IpcType::Chili, path, 9)
                 } else if schema == "file" {
+                    // Two writers on one log keep independent offsets and the
+                    // second open truncates at the last complete frame: refuse.
+                    if let Some((open_h, _)) = self.handle.read().iter().find(|(_, hd)| {
+                        hd.uri == uri && hd.conn_type != ConnType::Disconnected
+                    }) {
+                        return Err(SpicyError::Err(format!(
+                            "'{}' is already open as handle {}",
+                            uri, open_h
+                        )));
+                    }
                     let (rw, conn_type, msg_count) = utils::prepare_file_writer(path)?;
                     let h = self.set_handle(
                         Some(rw),
@@ -1245,7 +1305,14 @@ impl EngineState {
                         conn_type,
                         0,
                     )?;
-                    self.tick(*h.i64().unwrap() as usize, msg_count)?;
+                    // Absolute, not additive: a reused handle number must not
+                    // inherit the previous file's count. Roll the handle back if
+                    // the counter slot is out of range.
+                    let hn = *h.i64().unwrap();
+                    if let Err(e) = self.set_tick_count(hn as usize, msg_count) {
+                        let _ = self.close_handle(&hn);
+                        return Err(e);
+                    }
                     return Ok(h);
                 } else {
                     return Err(err);
@@ -1260,12 +1327,14 @@ impl EngineState {
             Ok(s) => s,
             Err(e) => return Err(SpicyError::Err(e.to_string())),
         };
-        stream.set_nodelay(true).unwrap();
+        // Non-fatal: the connection still works, just with Nagle delays.
+        let _ = stream.set_nodelay(true);
 
         let remote_version = send_auth(&mut stream, &user, &password, version)?;
 
         if remote_version != version {
-            stream.shutdown(std::net::Shutdown::Both).unwrap();
+            // The peer may already have reset the socket (ENOTCONN).
+            let _ = stream.shutdown(std::net::Shutdown::Both);
             return Err(SpicyError::Err(format!(
                 "mismatched version, remote: {}, local: {}, use `q:// for q process",
                 remote_version, version
@@ -1307,12 +1376,55 @@ impl EngineState {
                 warn!("close_handle flush failed on handle {}: {}", handle_num, e);
             }
         }
-        let mut handle = self.handle.write();
-        handle.shift_remove(handle_num);
+        {
+            let mut handle = self.handle.write();
+            // Dropping a dup does not close a socket another thread still owns:
+            // shut it down so the peer is disconnected and any connection or
+            // reader thread on it exits.
+            if let Some(mut hd) = handle.shift_remove(handle_num) {
+                Self::shutdown_handle_io(&mut hd);
+            }
+        }
+        self.purge_subscriber(*handle_num);
         Ok(SpicyObj::Null)
     }
 
+    /// `conn_id` of the connection currently registered under `h`.
+    pub fn conn_id(&self, h: i64) -> Option<u64> {
+        self.handle.read().get(&h).map(|hd| hd.conn_id)
+    }
+
+    /// Remove every subscription and handshake buffer of `h`. Handle numbers
+    /// are reused, so a dead subscriber must not stay in the topic map. Takes
+    /// `topic_map`; never call it while holding the handle map.
+    pub fn purge_subscriber(&self, h: i64) {
+        let mut topic_map = self.topic_map.write();
+        for subs in topic_map.values_mut() {
+            subs.retain(|s| s.handle != h);
+        }
+        self.pending_frames.lock().remove(&h);
+    }
+
     pub fn rotate_handle(&self, handle_num: &i64, uri: &str) -> SpicyResult<SpicyObj> {
+        self.rotate_handle_ex(handle_num, uri, None)
+    }
+
+    /// Rotate a log handle to `uri`. With `also_tick`, that counter slot is set
+    /// to the new file's message count in the same `lpt_lock` section, so no
+    /// `lpt` can land between the rotation and the counter reset (a tickerplant
+    /// keeps its replay bound in `tick[0]`). Rotating to the file that is
+    /// already open changes nothing, counters included.
+    pub fn rotate_handle_ex(
+        &self,
+        handle_num: &i64,
+        uri: &str,
+        also_tick: Option<usize>,
+    ) -> SpicyResult<SpicyObj> {
+        if let Some(i) = also_tick
+            && i >= MAX_HANDLE_NUM
+        {
+            return Err(SpicyError::HandleOutOfRangeErr(i as i64, MAX_HANDLE_NUM));
+        }
         // If the uri already exists in handles, do nothing
         {
             let handles = self.handle.read();
@@ -1347,7 +1459,6 @@ impl EngineState {
                             .map_err(|e| SpicyError::Err(e.to_string()))?;
                     }
                 }
-                let mut tick_count = self.tick_count.write();
                 self.set_handle(
                     Some(rw),
                     &format!("file://{}", path),
@@ -1357,10 +1468,12 @@ impl EngineState {
                     conn_type,
                     *handle_num,
                 )?;
-                if conn_type == ConnType::New {
-                    tick_count[idx] = 0;
-                } else {
-                    tick_count[idx] = msg_count;
+                // After `set_handle`: the documented order is handle → tick_count.
+                let count = if conn_type == ConnType::New { 0 } else { msg_count };
+                let mut tick_count = self.tick_count.write();
+                tick_count[idx] = count;
+                if let Some(i) = also_tick {
+                    tick_count[i] = count;
                 }
                 Ok(SpicyObj::Null)
             }
@@ -1426,11 +1539,14 @@ impl EngineState {
     }
 
     pub fn disconnect_handle(&self, handle_num: &i64) -> SpicyResult<SpicyObj> {
-        let mut handle = self.handle.write();
-        match handle.get_mut(handle_num) {
-            Some(h) => Self::shutdown_handle_io(h),
-            None => return Err(SpicyError::InvalidHandleErr(*handle_num)),
+        {
+            let mut handle = self.handle.write();
+            match handle.get_mut(handle_num) {
+                Some(h) => Self::shutdown_handle_io(h),
+                None => return Err(SpicyError::InvalidHandleErr(*handle_num)),
+            }
         }
+        self.purge_subscriber(*handle_num);
         Ok(SpicyObj::Null)
     }
 
@@ -1542,6 +1658,9 @@ impl EngineState {
                 shutdown_handle: None,
                 queued: None,
                 hold: None,
+                conn_id: self
+                    .next_conn_id
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             },
         );
         Ok(SpicyObj::I64(h))
@@ -1582,20 +1701,51 @@ impl EngineState {
                 frames: Vec::new(),
             }))
         });
+        let arc_self = self
+            .arc_self
+            .read()
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| SpicyError::Err("engine has no shared reference (arc_self)".into()))?;
         let mut handles = self.handle.write();
-        let publisher = handles.shift_remove(h);
-
-        match publisher {
+        // Validate before removing: every error below must leave the handle
+        // (a tick log, an inbound client, a live subscription) in the map.
+        match handles.get(h) {
+            None => {}
             Some(handle) => {
-                let arc_self = self.arc_self.read();
-
-                let arc_self = Arc::clone(arc_self.as_ref().unwrap());
                 if handle.conn_type != ConnType::Outgoing {
                     return Err(SpicyError::Err(format!(
                         "requires an outgoing connection for subscribing, got {:?}",
                         handle.conn_type
                     )));
                 }
+                match handle.rw.as_ref() {
+                    None => {
+                        return Err(SpicyError::Err(format!(
+                            "handle {} has no socket to read from",
+                            h
+                        )));
+                    }
+                    Some(rw) if Arc::strong_count(rw) > 1 => {
+                        return Err(SpicyError::Err(
+                            "handle rw still shared; cannot start reader".into(),
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                if handle.ipc_type != IpcType::Q && handle.ipc_type != IpcType::Chili {
+                    return Err(SpicyError::EvalErr(format!(
+                        "invalid ipc type: {:?}, requires q or chili",
+                        handle.ipc_type
+                    )));
+                }
+            }
+        }
+        let publisher = handles.shift_remove(h);
+
+        match publisher {
+            Some(handle) => {
+                let conn_id = handle.conn_id;
                 let h = *h;
                 let is_local = handle.is_local;
                 let ipc_type = handle.ipc_type;
@@ -1620,6 +1770,7 @@ impl EngineState {
                         // Subscribing (OUTGOING) handle — never queue-shed.
                         queued: None,
                         hold: hold_arc.clone(),
+                        conn_id,
                     },
                 );
                 let user = self.user.clone();
@@ -1699,8 +1850,8 @@ impl EngineState {
                         SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
                             if *ipc_type == IpcType::Q {
                                 let v8 = serde6::serialize(msg)?;
-                                let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
-                                if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Sync) {
+                                let msg = serde6::q_message(&v8, MessageType::Sync as u8, !*is_local);
+                                if let Err(e) = rw.write_all(&msg) {
                                     conn_type = ConnType::Disconnected;
                                     return Err(SpicyError::Err(e.to_string()));
                                 }
@@ -1709,7 +1860,7 @@ impl EngineState {
                                 rw.read_exact(&mut header)
                                     .map_err(|e| SpicyError::Err(e.to_string()))?;
                                 let (message_type, len, compression_mode) =
-                                    utils::decode_header6(&header);
+                                    utils::decode_header6(&header)?;
                                 let any = read_q_msg(rw, len - 8, compression_mode)?;
                                 if message_type == MessageType::Response {
                                     Ok(any)
@@ -1730,7 +1881,7 @@ impl EngineState {
                                 let mut header = [0u8; 16];
                                 rw.read_exact(&mut header)
                                     .map_err(|e| SpicyError::Err(e.to_string()))?;
-                                let (message_type, len) = utils::decode_header9(&header);
+                                let (message_type, len) = utils::decode_header9(&header)?;
                                 let obj = read_chili_ipc_msg(rw, len)?;
                                 if message_type == MessageType::Response {
                                     Ok(obj)
@@ -1861,8 +2012,8 @@ impl EngineState {
                     SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
                         if *ipc_type == IpcType::Q {
                             let v8 = serde6::serialize(msg)?;
-                            let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
-                            if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Async) {
+                            let msg = serde6::q_message(&v8, MessageType::Async as u8, !*is_local);
+                            if let Err(e) = rw.write_all(&msg) {
                                 disconnected = true;
                                 return Err(SpicyError::Err(e.to_string()));
                             }
@@ -1929,8 +2080,8 @@ impl EngineState {
             SpicyObj::Symbol(_) | SpicyObj::String(_) | SpicyObj::MixedList(_) => {
                 if *ipc_type == IpcType::Q {
                     let v8 = serde6::serialize(msg)?;
-                    let v8 = if !*is_local { serde6::compress(v8) } else { v8 };
-                    if let Err(e) = utils::write_q_ipc_msg(rw, &v8, MessageType::Async) {
+                    let msg = serde6::q_message(&v8, MessageType::Async as u8, !*is_local);
+                    if let Err(e) = rw.write_all(&msg) {
                         disconnected = true;
                         return Err(SpicyError::Err(e.to_string()));
                     }
@@ -1982,6 +2133,17 @@ impl EngineState {
         live: bool,
     ) -> SpicyResult<()> {
         let mut topic_map = self.topic_map.write();
+        Self::insert_subscriber(&mut topic_map, topic, h, filter, live);
+        Ok(())
+    }
+
+    fn insert_subscriber(
+        topic_map: &mut HashMap<String, Vec<Subscriber>>,
+        topic: &str,
+        h: i64,
+        filter: Option<SubFilter>,
+        live: bool,
+    ) {
         let subs = topic_map.entry(topic.to_owned()).or_insert(vec![]);
         match subs.iter_mut().find(|s| s.handle == h) {
             Some(existing) => {
@@ -1997,7 +2159,6 @@ impl EngineState {
                 live,
             }),
         }
-        Ok(())
     }
 
     /// Register `h` as a pending subscriber on `topics` and return the replay
@@ -2014,8 +2175,26 @@ impl EngineState {
         filter: Option<SubFilter>,
     ) -> SpicyResult<i64> {
         let _gate = self.lpt_lock.lock();
-        for topic in topics {
-            self.add_subscriber_ex(topic, h, filter.clone(), false)?;
+        {
+            // Check and register under one topic_map guard. Disconnecting marks
+            // the handle first and purges the topic map after, so an evaluation
+            // that outlived its connection (a timed-out request still running on
+            // its worker thread) either sees the handle gone here, or registers
+            // and is purged — it can never leave a subscription nobody will
+            // activate or remove.
+            let mut topic_map = self.topic_map.write();
+            let alive = self
+                .handle
+                .read()
+                .get(&h)
+                .map(|hd| hd.conn_type != ConnType::Disconnected)
+                .unwrap_or(false);
+            if !alive {
+                return Err(SpicyError::InvalidHandleErr(h));
+            }
+            for topic in topics {
+                Self::insert_subscriber(&mut topic_map, topic, h, filter.clone(), false);
+            }
         }
         self.get_tick_count(0)
     }
@@ -2192,7 +2371,8 @@ impl EngineState {
                 let cache_key = sub.filter.as_ref().map(|f| f.key.clone());
                 match Self::lookup_write_target(&handle, subscriber) {
                     TargetLookup::Ready(target) => targets.push((subscriber, target, cache_key)),
-                    TargetLookup::Disconnected => {}
+                    // Dead subscriber: drop it rather than serialize for it forever.
+                    TargetLookup::Disconnected => stale_subscribers.push(subscriber),
                     TargetLookup::Failed => failed.push(subscriber),
                     TargetLookup::Stale => stale_subscribers.push(subscriber),
                 }
@@ -2306,7 +2486,11 @@ impl EngineState {
             }
             WriteTarget::Queued(q) => {
                 let len: usize = bytes.iter().map(Vec::len).sum();
-                if q.sender.send(bytes.to_vec()).is_err() {
+                if q
+                    .sender
+                    .send(Outbound::Chili(bytes.to_vec(), MessageType::Async))
+                    .is_err()
+                {
                     warn!("subscriber {} writer thread gone, shedding", subscriber);
                     return false;
                 }
@@ -2323,6 +2507,43 @@ impl EngineState {
         }
     }
 
+    /// Write a reply on connection `h` through the same serialized path as
+    /// `publish`: the queued writer thread when there is one (so a subscribe
+    /// Response, the frames buffered behind it, and live frames keep their
+    /// order), else the handle's `rw` mutex.
+    pub fn write_reply(&self, h: i64, msg: Outbound) -> Result<(), ReplyError> {
+        let target = {
+            let handle = self.handle.read();
+            match handle.get(&h) {
+                Some(v) => match (v.queued.as_ref(), v.rw.as_ref()) {
+                    (Some(q), _) => Some(WriteTarget::Queued(q.clone())),
+                    (None, Some(rw)) => Some(WriteTarget::Direct(Arc::clone(rw))),
+                    (None, None) => None,
+                },
+                None => None,
+            }
+        };
+        match target {
+            Some(WriteTarget::Queued(q)) => {
+                let len = msg.byte_len() as i64;
+                q.sender.send(msg).map_err(|_| {
+                    ReplyError::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "subscriber writer thread gone",
+                    ))
+                })?;
+                q.depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                q.bytes.fetch_add(len, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
+            Some(WriteTarget::Direct(rw_arc)) => {
+                let mut rw = rw_arc.lock();
+                msg.write_to(&mut *rw.stream).map_err(ReplyError::Io)
+            }
+            None => Err(ReplyError::NoWriter(msg)),
+        }
+    }
+
     /// Queue bound policy, evaluated after each enqueue. Over a frame or byte
     /// bound: shed at once when `subscriber_queue_grace_ms` is 0, otherwise
     /// only once the queue has stayed over a bound for that long. Back under a
@@ -2333,6 +2554,13 @@ impl EngineState {
         let max_bytes = self.subscriber_queue_max_bytes.load(Relaxed);
         let depth = q.depth.load(Relaxed);
         let bytes = q.bytes.load(Relaxed);
+        // This frame found the queue empty: the writer drained whatever built
+        // up before, so an earlier over-bound episode is over. Without this a
+        // stale clock from minutes ago would shed a healthy subscriber at once
+        // the next time one large frame crosses the byte bound.
+        if depth <= 1 {
+            q.over_since_ms.store(0, Relaxed);
+        }
         let over = (max_frames > 0 && depth > max_frames) || (max_bytes > 0 && bytes > max_bytes);
         if !over {
             q.over_since_ms.store(0, Relaxed);
@@ -2484,7 +2712,7 @@ impl EngineState {
             let disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let depth = Arc::new(std::sync::atomic::AtomicI64::new(0));
             let bytes = Arc::new(std::sync::atomic::AtomicI64::new(0));
-            let (sender, receiver) = std::sync::mpsc::channel::<Vec<Vec<u8>>>();
+            let (sender, receiver) = std::sync::mpsc::channel::<Outbound>();
             let writer_disc = Arc::clone(&disconnected);
             let writer_depth = Arc::clone(&depth);
             let writer_bytes = Arc::clone(&bytes);
@@ -2495,10 +2723,9 @@ impl EngineState {
                     if writer_disc.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
-                    let write_res =
-                        crate::write_chili_ipc_msg(&mut *rw_box, &frame, MessageType::Async);
+                    let write_res = frame.write_to(&mut *rw_box);
                     writer_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    let len: usize = frame.iter().map(Vec::len).sum();
+                    let len = frame.byte_len();
                     writer_bytes.fetch_sub(len as i64, std::sync::atomic::Ordering::Relaxed);
                     if let Err(e) = write_res {
                         warn!(
@@ -3449,11 +3676,15 @@ impl EngineState {
                 } else {
                     format!("job{}.pep", id)
                 };
-                let obj = self.eval(
-                    &mut Stack::new(None, 0, 0, ""),
-                    &SpicyObj::String(self.repl_lang.format_call(&job.fn_name, &[])),
-                    &src_path,
-                );
+                // A panicking job must not take the scheduler thread (and with
+                // it every other job) down.
+                let call = SpicyObj::String(self.repl_lang.format_call(&job.fn_name, &[]));
+                let obj = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.eval(&mut Stack::new(None, 0, 0, ""), &call, &src_path)
+                })) {
+                    Ok(res) => res,
+                    Err(_) => Err(SpicyError::EvalErr("job panicked".to_owned())),
+                };
                 let errored = obj.is_err();
                 if let Err(e) = obj {
                     error!(
@@ -3475,13 +3706,24 @@ impl EngineState {
                 job.last_run_time = Some(job::get_local_now_ns());
             }
 
-            self.job.write().extend(active_jobs);
+            // Write back only what the run decided, onto the entry as it is
+            // now: a job deactivated or cleared while it ran stays that way.
+            let mut jobs = self.job.write();
+            for (id, ran) in active_jobs {
+                if let Some(job) = jobs.get_mut(&id) {
+                    job.next_run_time = ran.next_run_time;
+                    job.last_run_time = ran.last_run_time;
+                    if !ran.is_active {
+                        job.is_active = false;
+                    }
+                }
+            }
         }
     }
 
     pub fn add_job(&self, job: Job) -> i64 {
         let mut jobs = self.job.write();
-        let id = jobs.len() as i64 + 1;
+        let id = jobs.keys().max().copied().unwrap_or(0) + 1;
         jobs.insert(id, job);
         id
     }
@@ -3572,7 +3814,25 @@ impl EngineState {
 
         let mut buffer = [0; 1024];
 
-        match stream.read(&mut buffer) {
+        // Bound the handshake: a peer that connects and never speaks is dropped.
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(AUTH_TIMEOUT_SECS)));
+        // `user:password` + version byte + NUL may arrive in more than one segment.
+        let read = (|| {
+            let mut n = 0;
+            while n < buffer.len() {
+                match stream.read(&mut buffer[n..])? {
+                    0 => break,
+                    m => n += m,
+                }
+                if buffer[n - 1] == 0 {
+                    break;
+                }
+            }
+            Ok::<usize, std::io::Error>(n)
+        })();
+        let _ = stream.set_read_timeout(None);
+
+        match read {
             Ok(n) => {
                 if n < 2 {
                     error!("auth token too short ({} bytes)", n);
@@ -3604,13 +3864,26 @@ impl EngineState {
 
                 let parts: Vec<&str> = credentials.splitn(2, ':').collect();
 
-                let (username, _) = if parts.len() == 1 {
+                let (username, password) = if parts.len() == 1 {
                     (parts[0], "")
                 } else {
                     (parts[0], parts[1])
                 };
 
                 info!("validating auth token for user '{}'", username);
+
+                // When this process has CHILI_IPC_TOKEN set, every client must
+                // present it as the password (clients send the same variable
+                // by default). Unset or empty keeps username-only admission.
+                let server_token = env::var("CHILI_IPC_TOKEN").unwrap_or_default();
+                if !server_token.is_empty()
+                    && !constant_time_eq(server_token.as_bytes(), password.as_bytes())
+                {
+                    error!("user '{}' presented a wrong ipc token", username);
+                    default_auth.username = username.to_string();
+                    default_auth.version = version;
+                    return default_auth;
+                }
 
                 if users.is_empty() || users.contains(&username.to_string()) {
                     return AuthInfo {
@@ -3793,6 +4066,7 @@ impl EngineState {
             error!("tcp listener set_nonblocking failed: {}", e);
             return;
         }
+        let users = Arc::new(users);
         loop {
             if self
                 .listener_stopping
@@ -3801,7 +4075,7 @@ impl EngineState {
                 info!("tcp listener stopped");
                 break;
             }
-            let mut stream = match listener.accept() {
+            let stream = match listener.accept() {
                 Ok((s, _)) => s,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(20));
@@ -3825,119 +4099,125 @@ impl EngineState {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
                 continue;
             }
+            // Authenticate on the connection's own thread: a client that
+            // connects and sends nothing must not stall the accept loop.
             let state_tcp = Arc::clone(self);
-            let auth_info = state_tcp.validate_auth_token(&mut stream, &users);
-            if !auth_info.is_authenticated {
-                info!(
-                    "{}@{} failed to authenticate, disconnecting...",
-                    auth_info.username,
-                    stream
-                        .peer_addr()
-                        .map(|a| a.to_string())
-                        .unwrap_or_else(|_| "<unknown>".into())
-                );
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                continue;
-            }
+            let users = Arc::clone(&users);
+            thread::spawn(move || state_tcp.serve_connection(stream, &users));
+        }
+    }
+
+    /// Handshake, register and serve one accepted connection. Runs on the
+    /// connection's own thread for its whole life.
+    fn serve_connection(self: &Arc<Self>, mut stream: TcpStream, users: &[String]) {
+    let state_tcp = Arc::clone(self);
+    let auth_info = state_tcp.validate_auth_token(&mut stream, users);
+        if !auth_info.is_authenticated {
             info!(
-                "{}@{} connected",
+                "{}@{} failed to authenticate, disconnecting...",
                 auth_info.username,
                 stream
                     .peer_addr()
                     .map(|a| a.to_string())
                     .unwrap_or_else(|_| "<unknown>".into())
             );
-            let version_byte = if auth_info.version <= 6 { 6u8 } else { 9u8 };
-            if let Err(e) = stream.write_all(&[version_byte]) {
-                info!("version-byte write failed, dropping connection: {}", e);
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        info!(
+            "{}@{} connected",
+            auth_info.username,
+            stream
+                .peer_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|_| "<unknown>".into())
+        );
+        let version_byte = if auth_info.version <= 6 { 6u8 } else { 9u8 };
+        if let Err(e) = stream.write_all(&[version_byte]) {
+            info!("version-byte write failed, dropping connection: {}", e);
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        // if not set, small package will be pending for 40ms
+        if let Err(e) = stream.set_nodelay(true) {
+            // Non-fatal — connection still usable, just slower.
+            info!("set_nodelay failed (continuing): {}", e);
+        }
+        let peer_addr = match stream.peer_addr() {
+            Ok(a) => a.to_string(),
+            Err(e) => {
+                info!("peer_addr failed, dropping connection: {}", e);
                 let _ = stream.shutdown(std::net::Shutdown::Both);
-                continue;
+                return;
             }
-            // if not set, small package will be pending for 40ms
-            if let Err(e) = stream.set_nodelay(true) {
-                // Non-fatal — connection still usable, just slower.
-                info!("set_nodelay failed (continuing): {}", e);
+        };
+        let ipc_type = match IpcType::from_u8(auth_info.version) {
+            Some(t) => t,
+            None => {
+                info!(
+                    "unsupported ipc version {}, dropping connection from {}",
+                    auth_info.version, peer_addr
+                );
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
             }
-            let peer_addr = match stream.peer_addr() {
-                Ok(a) => a.to_string(),
-                Err(e) => {
-                    info!("peer_addr failed, dropping connection: {}", e);
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    continue;
-                }
-            };
-            let ipc_type = match IpcType::from_u8(auth_info.version) {
-                Some(t) => t,
-                None => {
-                    info!(
-                        "unsupported ipc version {}, dropping connection from {}",
-                        auth_info.version, peer_addr
-                    );
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    continue;
-                }
-            };
-            let cloned_stream = match stream.try_clone() {
-                Ok(s) => s,
-                Err(e) => {
-                    info!("stream try_clone failed, dropping connection: {}", e);
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    continue;
-                }
-            };
-            // Always keep a dup for force-close on shutdown / stop.
-            let shutdown_dup = stream.try_clone().ok();
-            let h = match state_tcp.set_handle(
-                Some(Box::new(cloned_stream)),
-                &peer_addr,
-                &format!("{}://{}", ipc_type, peer_addr,),
-                false,
-                ipc_type,
-                ConnType::Incoming,
-                0,
-            ) {
-                Ok(h) => h,
-                Err(e) => {
-                    info!("set_handle failed, dropping connection: {}", e);
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    continue;
-                }
-            };
-            let h_i64 = match h.to_i64() {
-                Ok(i) => i,
-                Err(e) => {
-                    info!("handle slot returned non-i64 (logic bug): {}", e);
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    continue;
-                }
-            };
-            if let Some(s) = shutdown_dup {
-                state_tcp.set_shutdown_handle(&h_i64, s);
+        };
+        let cloned_stream = match stream.try_clone() {
+            Ok(s) => s,
+            Err(e) => {
+                info!("stream try_clone failed, dropping connection: {}", e);
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
             }
-            if auth_info.version <= 6 {
-                let mut stream = Box::new(stream);
-                thread::spawn(move || {
-                    utils::handle_q_conn(
-                        &mut stream,
-                        peer_addr.starts_with("127.0.0.1"),
-                        h_i64,
-                        state_tcp,
-                        &auth_info.username,
-                        None,
-                    )
-                });
-            } else {
-                thread::spawn(move || {
-                    utils::handle_chili_conn(
-                        &mut stream,
-                        peer_addr.starts_with("127.0.0.1"),
-                        h_i64,
-                        state_tcp,
-                        &auth_info.username,
-                        None,
-                    )
-                });
+        };
+        // Always keep a dup for force-close on shutdown / stop.
+        let shutdown_dup = stream.try_clone().ok();
+        let h = match state_tcp.set_handle(
+            Some(Box::new(cloned_stream)),
+            &peer_addr,
+            &format!("{}://{}", ipc_type, peer_addr,),
+            false,
+            ipc_type,
+            ConnType::Incoming,
+            0,
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                info!("set_handle failed, dropping connection: {}", e);
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
             }
+        };
+        let h_i64 = match h.to_i64() {
+            Ok(i) => i,
+            Err(e) => {
+                info!("handle slot returned non-i64 (logic bug): {}", e);
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+        };
+        if let Some(s) = shutdown_dup {
+            state_tcp.set_shutdown_handle(&h_i64, s);
+        }
+        if auth_info.version <= 6 {
+            let mut stream = Box::new(stream);
+            utils::handle_q_conn(
+                &mut stream,
+                peer_addr.starts_with("127.0.0.1"),
+                h_i64,
+                state_tcp,
+                &auth_info.username,
+                None,
+            )
+        } else {
+            utils::handle_chili_conn(
+                &mut stream,
+                peer_addr.starts_with("127.0.0.1"),
+                h_i64,
+                state_tcp,
+                &auth_info.username,
+                None,
+            )
         }
     }
 
@@ -4055,4 +4335,15 @@ fn unix_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Seconds a new connection has to complete the auth handshake.
+const AUTH_TIMEOUT_SECS: u64 = 5;
+
+/// Length-revealing but content-constant-time comparison for the ipc token.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

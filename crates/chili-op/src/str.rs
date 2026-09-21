@@ -13,7 +13,8 @@ pub fn replace(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         let s = arg0.as_expr()?;
         let pat = args[1].as_expr()?;
         let val = args[2].as_expr()?;
-        return Ok(SpicyObj::Expr(s.str().replace(pat, val, false)));
+        // every occurrence, as the atom form
+        return Ok(SpicyObj::Expr(s.str().replace_all(pat, val, false)));
     }
     validate_args(args, &[ArgType::StrLike, ArgType::Str, ArgType::Str])?;
 
@@ -28,7 +29,7 @@ pub fn replace(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             DataType::String => Ok(SpicyObj::Series(
                 s.str()
                     .unwrap()
-                    .replace(pat, val)
+                    .replace_all(pat, val)
                     .map_err(|e| SpicyError::Err(e.to_string()))?
                     .into(),
             )),
@@ -37,7 +38,7 @@ pub fn replace(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 let s: Series = s
                     .str()
                     .unwrap()
-                    .replace(pat, val)
+                    .replace_all(pat, val)
                     .map_err(|e| SpicyError::Err(e.to_string()))?
                     .into();
                 Ok(SpicyObj::Series(
@@ -123,7 +124,7 @@ pub fn trim_end(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         return Ok(SpicyObj::Expr(
             arg0.as_expr()?
                 .str()
-                .strip_chars_end(polars::prelude::lit("")),
+                .strip_chars_end(polars::prelude::lit(polars::prelude::NULL)),
         ));
     }
     validate_args(args, &[ArgType::StrLike])?;
@@ -165,7 +166,7 @@ pub fn trim_start(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if arg0.is_expr() {
         let left = arg0.as_expr()?;
         return Ok(SpicyObj::Expr(
-            left.str().strip_chars_start(polars::prelude::lit("")),
+            left.str().strip_chars_start(polars::prelude::lit(polars::prelude::NULL)),
         ));
     }
     validate_args(args, &[ArgType::StrLike])?;
@@ -208,7 +209,7 @@ pub fn trim(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if arg0.is_expr() {
         let left = arg0.as_expr()?;
         return Ok(SpicyObj::Expr(
-            left.str().strip_chars(polars::prelude::lit("")),
+            left.str().strip_chars(polars::prelude::lit(polars::prelude::NULL)),
         ));
     }
     validate_args(args, &[ArgType::StrLike])?;
@@ -253,10 +254,11 @@ pub fn pad(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let length = arg0.to_i64().unwrap();
     if arg1.is_expr() {
         let s = arg1.as_expr()?;
+        // Same direction as the eager forms: a positive length pads on the right.
         if length > 0 {
-            return Ok(SpicyObj::Expr(s.str().pad_start(lit(length), ' ')));
+            return Ok(SpicyObj::Expr(s.str().pad_end(lit(length), ' ')));
         } else {
-            return Ok(SpicyObj::Expr(s.str().pad_end(lit(-length), ' ')));
+            return Ok(SpicyObj::Expr(s.str().pad_start(lit(-length), ' ')));
         }
     }
 

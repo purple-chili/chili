@@ -84,8 +84,42 @@ fn take<'a>(vec: &'a [u8], pos: usize, len: usize) -> SpicyResult<&'a [u8]> {
     })
 }
 
+/// Nesting limit for decoded values. The decoder recurses per nested list or
+/// dict, and a stack overflow cannot be caught: a few kilobytes of `[[[[...`
+/// from a peer, or a corrupt log frame, would take the whole process down.
+const MAX_DECODE_DEPTH: usize = 128;
+
+thread_local! {
+    static DECODE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one level of decoder recursion for as long as it lives.
+struct DepthGuard;
+
+impl DepthGuard {
+    fn enter() -> SpicyResult<Self> {
+        DECODE_DEPTH.with(|d| {
+            if d.get() >= MAX_DECODE_DEPTH {
+                return Err(SpicyError::DeserializationErr(format!(
+                    "nested deeper than {} levels",
+                    MAX_DECODE_DEPTH
+                )));
+            }
+            d.set(d.get() + 1);
+            Ok(DepthGuard)
+        })
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        DECODE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
 pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
-    let code = vec[*pos];
+    let _depth = DepthGuard::enter()?;
+    let code = take(vec, *pos, 4)?[0];
     *pos += 4;
     let obj;
     match code {
@@ -341,7 +375,9 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
         },
         90 => {
             let list_len = u32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap()) as usize;
-            let mut list = Vec::with_capacity(list_len);
+            // The count is from the wire: reserve no more than the bytes that
+            // remain could hold (an element is at least 4 bytes).
+            let mut list = Vec::with_capacity(list_len.min(vec.len().saturating_sub(*pos) / 4));
             *pos += 4;
 
             if list_len > 0 {
@@ -363,7 +399,8 @@ pub fn deserialize(vec: &[u8], pos: &mut usize) -> SpicyResult<SpicyObj> {
             obj = if dict_len == 0 {
                 SpicyObj::Dict(IndexMap::new())
             } else {
-                let mut dict: IndexMap<String, SpicyObj> = IndexMap::with_capacity(dict_len);
+                let mut dict: IndexMap<String, SpicyObj> =
+                    IndexMap::with_capacity(dict_len.min(vec.len().saturating_sub(*pos) / 4));
 
                 let byte_len = u64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap()) as usize;
                 *pos += 8;

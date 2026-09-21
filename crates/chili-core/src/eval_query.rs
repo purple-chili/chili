@@ -268,12 +268,10 @@ pub fn eval_fn_query(
         // when each .filter is a "keep what doesn't match" gate. To match the
         // existing semantics exactly we apply `.not()` to each clause first,
         // then AND them — same as the original sequential loop.
-        if let Some(combined) = where_exprs
-            .iter()
-            .map(|e| e.clone().not())
-            .reduce(|a, b| a.and(b))
-        {
-            lf = lf.filter(combined);
+        // (`!c1 AND !c2` is not that: it deletes rows matching ANY clause.) A
+        // null predicate does not match, so such rows are kept.
+        if let Some(matches_all) = where_exprs.iter().cloned().reduce(|a, b| a.and(b)) {
+            lf = lf.filter(matches_all.fill_null(lit(false)).not());
         }
 
         // Column-delete ops are names, not select exprs: bare ids become
@@ -356,24 +354,30 @@ pub fn eval_fn_query(
         };
         if where_exprs_len > 0 {
             let where_exp = where_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
-            lf = lf.with_columns(
-                op_expr
-                    .into_iter()
-                    .map(|op| {
-                        let otherwise = if let Expr::Alias(_, name) = &op {
-                            if columns.contains(&name.to_string()) {
-                                col(name.clone())
-                            } else {
-                                SpicyObj::Null.as_expr().unwrap()
-                            }
-                        } else {
-                            SpicyObj::Null.as_expr().unwrap()
-                        };
-
-                        when(where_exp.clone()).then(op).otherwise(otherwise)
-                    })
-                    .collect::<Vec<Expr>>(),
-            )
+            // Rows the where clause does not select keep their value when the
+            // op writes an existing column. The output name is the alias, the
+            // bare column, or — for `update qty*2 ...` — whatever polars derives,
+            // read from the plan's schema.
+            let exprs = op_expr
+                .into_iter()
+                .map(|op| {
+                    let out_name = match &op {
+                        Expr::Alias(_, name) | Expr::Column(name) => Some(name.to_string()),
+                        _ => lf
+                            .clone()
+                            .select([op.clone()])
+                            .collect_schema()
+                            .ok()
+                            .and_then(|s| s.iter_names().next().map(|n| n.to_string())),
+                    };
+                    let otherwise = match out_name {
+                        Some(name) if columns.contains(&name) => col(name),
+                        _ => SpicyObj::Null.as_expr().unwrap(),
+                    };
+                    when(where_exp.clone()).then(op).otherwise(otherwise)
+                })
+                .collect::<Vec<Expr>>();
+            lf = lf.with_columns(exprs)
         } else {
             lf = lf.with_columns(op_expr)
         }

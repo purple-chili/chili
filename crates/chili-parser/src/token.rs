@@ -496,20 +496,38 @@ impl Token {
             .map(|s: &str| Token::Int(s.to_string()))
             .boxed();
 
-        let finite = just('-')
+        // A signed exponent is unambiguous. An unsigned one after an integer
+        // mantissa (`1e5`, `1e`, `1e32`) stays with the `e`/`f` type suffix below,
+        // which is how those have always lexed.
+        let signed_exp = one_of("eE")
+            .then(one_of("+-"))
+            .then(text::digits(10).at_least(1))
+            .ignored();
+        let plain_exp = one_of("eE")
+            .then(text::digits(10).at_least(1))
+            .ignored();
+
+        // `1e-5`, `-2.5E+3`: scientific notation with a signed exponent.
+        let sci = just('-')
             .or_not()
-            .then(
-                text::int(10)
-                    .then(just('.').then(text::digits(10).at_least(1)))
-                    .then(
-                        one_of("eE")
-                            .then(just('-').or_not())
-                            .then(text::int(10))
-                            .or_not(),
-                    ),
-            )
+            .then(text::int(10))
+            .then(just('.').then(text::digits(10).at_least(1)).or_not())
+            .then(signed_exp.clone())
             .to_slice()
             .map(|s: &str| Token::Float(s.to_string()))
+            .boxed();
+
+        let finite = sci
+            .clone()
+            .or(just('-')
+                .or_not()
+                .then(
+                    text::int(10)
+                        .then(just('.').then(text::digits(10).at_least(1)))
+                        .then(signed_exp.clone().or(plain_exp).or_not()),
+                )
+                .to_slice()
+                .map(|s: &str| Token::Float(s.to_string())))
             .boxed();
 
         let float = infinity.clone().or(finite.clone()).boxed();
@@ -541,6 +559,55 @@ impl Token {
 
         let floats = float
             .clone()
+            .then(
+                any()
+                    .filter(|c: &char| c.is_whitespace())
+                    .then(null_.clone().or(float.clone()).or(int.clone()))
+                    .repeated(),
+            )
+            .then(one_of("ef").then(text::digits(10).or_not()).or_not())
+            .to_slice()
+            .map(|s: &str| Token::Float(s.to_string()))
+            .boxed();
+
+        // A vector whose first element is scientific (`1e-5 2.0`). It has to be
+        // tried before `typed_float`, which would take `1e` as a typed float.
+        let sci_floats = sci
+            .clone()
+            .then(
+                any()
+                    .filter(|c: &char| c.is_whitespace())
+                    .then(null_.clone().or(float.clone()).or(int.clone()))
+                    .repeated(),
+            )
+            .then(one_of("ef").then(text::digits(10).or_not()).or_not())
+            .to_slice()
+            .map(|s: &str| Token::Float(s.to_string()))
+            .boxed();
+
+        // A float vector that starts with integers (`1 2.5`, `1 0n 0w`): `floats`
+        // needs a float first and `ints` would take the integer prefix, leaving
+        // `.5` to parse as an operator.
+        let ints_then_floats = int
+            .clone()
+            .then(
+                any()
+                    .filter(|c: &char| c.is_whitespace())
+                    .then(null_.clone().or(int.clone()))
+                    .then_ignore(
+                        // only integers so far: a float must still follow
+                        any()
+                            .filter(|c: &char| c.is_whitespace())
+                            .then(null_.clone().or(int.clone()).or(float.clone()))
+                            .rewind(),
+                    )
+                    .repeated(),
+            )
+            .then(
+                any()
+                    .filter(|c: &char| c.is_whitespace())
+                    .then(float.clone()),
+            )
             .then(
                 any()
                     .filter(|c: &char| c.is_whitespace())
@@ -688,7 +755,8 @@ impl Token {
         let token = choice((
             comment,
             block_comment,
-            typed_float,
+            // nested: the outer tuple is at chumsky's size limit
+            sci_floats.or(typed_float),
             typed_int,
             float_follow_null,
             int_follow_null,
@@ -700,9 +768,7 @@ impl Token {
             datetimes,
             dates,
             times,
-            floats,
-            ints_as_floats,
-            ints,
+            choice((floats, ints_then_floats, ints_as_floats, ints)),
             sym,
             str_,
             column,

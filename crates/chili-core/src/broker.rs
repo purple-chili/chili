@@ -31,14 +31,32 @@ fn publish(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> Spicy
 /// see `activate_subscribers`) and return the replay bound `tick[0]` read in
 /// the same `lpt_lock` section, so callers hand subscribers a bound that no
 /// concurrent `lpt` can slip past.
-fn subscribe(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+/// Finish a `.broker.subscribe*` registration for `handle`.
+///
+/// A pending entry is normally activated by `handle`'s own connection thread
+/// once its sync Response is written. When the call does not come from that
+/// connection (REPL, embedding caller, a job, another connection) no such
+/// Response exists, so the entry goes live at once instead of buffering frames
+/// forever. If promotion fails, the pending entry is rolled back.
+fn finish_subscribe(state: &EngineState, stack: &Stack, handle: i64) -> SpicyResult<()> {
+    if let Err(e) = state.handle_subscriber(&handle) {
+        state.drop_pending_subscribers(handle);
+        return Err(e);
+    }
+    if stack.h != handle {
+        state.activate_subscribers(handle);
+    }
+    Ok(())
+}
+
+fn subscribe(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     validate_args(args, &[ArgType::Int, ArgType::Any])?;
     let handle = args[0].to_i64().unwrap();
     // str | sym | str/sym series | mixed list of str/sym (what `.tick.subscribe` passes).
     let topics = topic_list(args[1])?;
     let bound = state.subscribe_pending(&topics, handle, None)?;
     // update connection type to publishing
-    state.handle_subscriber(&handle)?;
+    finish_subscribe(state, stack, handle)?;
     Ok(SpicyObj::I64(bound))
 }
 
@@ -47,7 +65,7 @@ fn subscribe(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> Spi
 /// Empty `values` means no filter.
 fn subscribe_filtered(
     state: &EngineState,
-    _stack: &mut Stack,
+    stack: &mut Stack,
     args: &[&SpicyObj],
 ) -> SpicyResult<SpicyObj> {
     validate_args(
@@ -77,7 +95,7 @@ fn subscribe_filtered(
         ))
     };
     let bound = state.subscribe_pending(&[topic], handle, filter)?;
-    state.handle_subscriber(&handle)?;
+    finish_subscribe(state, stack, handle)?;
     Ok(SpicyObj::I64(bound))
 }
 

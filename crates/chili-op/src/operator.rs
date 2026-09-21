@@ -137,7 +137,7 @@ pub fn add(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             Ok(SpicyObj::F32(
                 arg0.to_f32().unwrap() + arg1.to_f32().unwrap(),
             ))
-        } else if c0 == -12 || c1 == -12 {
+        } else if (c0 == -12 || c1 == -12) && c0 >= -12 && c1 >= -12 {
             Ok(SpicyObj::F64(
                 arg0.to_f64().unwrap() + arg1.to_f64().unwrap(),
             ))
@@ -360,7 +360,7 @@ pub fn minus(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             Ok(SpicyObj::F32(
                 arg0.to_f32().unwrap() - arg1.to_f32().unwrap(),
             ))
-        } else if c0 == -12 || c1 == -12 {
+        } else if (c0 == -12 || c1 == -12) && c0 >= -12 && c1 >= -12 {
             Ok(SpicyObj::F64(
                 arg0.to_f64().unwrap() - arg1.to_f64().unwrap(),
             ))
@@ -580,7 +580,7 @@ pub fn mul(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             Ok(SpicyObj::F32(
                 arg0.to_f32().unwrap() * arg1.to_f32().unwrap(),
             ))
-        } else if c0 == -12 || c1 == -12 {
+        } else if (c0 == -12 || c1 == -12) && c0 >= -12 && c1 >= -12 {
             Ok(SpicyObj::F64(
                 arg0.to_f64().unwrap() * arg1.to_f64().unwrap(),
             ))
@@ -807,10 +807,13 @@ pub fn true_div(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             } else {
                 Err(err())
             }
-        } else {
+        } else if c0 >= -12 && c1 >= -12 {
             Ok(SpicyObj::F64(
                 arg0.to_f64().unwrap() / arg1.to_f64().unwrap(),
             ))
+        } else {
+            // e.g. a function operand (type code -102)
+            Err(err())
         }
     } else if arg0.is_mixed_collection() && c1 < 0 {
         match arg0 {
@@ -926,7 +929,8 @@ pub fn true_div(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             Ok(SpicyObj::Matrix((m0 / arg1.to_f64().unwrap()).to_shared()))
         } else if (arg0.is_bool() || arg0.is_numeric()) && arg1.is_matrix() {
             let m1 = arg1.matrix().unwrap();
-            Ok(SpicyObj::Matrix((m1 / arg0.to_f64().unwrap()).to_shared()))
+            let f0 = arg0.to_f64().unwrap();
+            Ok(SpicyObj::Matrix(m1.mapv(|x| f0 / x).to_shared()))
         } else {
             Err(err())
         }
@@ -987,17 +991,18 @@ pub fn div(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if c0 < 0 && c1 < 0 {
         if arg0.is_temporal() || arg1.is_temporal() {
             if c0 == -10 && c1 == -10 {
-                Ok(SpicyObj::I64(
-                    arg0.to_i64().unwrap() / arg1.to_i64().unwrap(),
-                ))
+                Ok(floor_div_i64(arg0.to_i64().unwrap(), arg1.to_i64().unwrap())
+                    .map_or(SpicyObj::Null, SpicyObj::I64))
             } else {
                 Err(err())
             }
         } else if c0 >= -5 && c1 >= -5 {
-            if c0 < c1 {
-                arg0.new_same_int_atom(arg0.to_i64().unwrap() / arg1.to_i64().unwrap())
-            } else {
-                arg1.new_same_int_atom(arg0.to_i64().unwrap() / arg1.to_i64().unwrap())
+            // Floor division, null on a zero divisor or overflow — the same
+            // result the series path gives element-wise.
+            match floor_div_i64(arg0.to_i64().unwrap(), arg1.to_i64().unwrap()) {
+                None => Ok(SpicyObj::Null),
+                Some(q) if c0 < c1 => arg0.new_same_int_atom(q),
+                Some(q) => arg1.new_same_int_atom(q),
             }
         } else if c0 >= -11 && c1 >= -11 {
             Ok(SpicyObj::F32(
@@ -1043,7 +1048,7 @@ pub fn div(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             _ => {
                 let s0 = arg0.as_series().map_err(|_| err())?;
                 Ok(SpicyObj::Series(
-                    (floor_div_series(&s0, s1)).map_err(|e| SpicyError::Err(e.to_string()))?,
+                    floor_div_common(&s0, s1)?,
                 ))
             }
         }
@@ -1111,7 +1116,7 @@ pub fn div(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             _ => {
                 let s1 = arg1.as_series().map_err(|_| err())?;
                 Ok(SpicyObj::Series(
-                    (floor_div_series(s0, &s1)).map_err(|e| SpicyError::Err(e.to_string()))?,
+                    floor_div_common(s0, &s1)?,
                 ))
             }
         }
@@ -2063,9 +2068,8 @@ pub fn append(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if c0 == c1 && (90..=92).contains(&c0) {
         if c0 == 90 {
             // list
-            let l0 = arg0.list().unwrap().clone();
-            let l1 = arg1.list().unwrap();
-            l0.clone().extend(l1.clone());
+            let mut l0 = arg0.list().unwrap().clone();
+            l0.extend(arg1.list().unwrap().iter().cloned());
             return Ok(SpicyObj::MixedList(l0));
         } else if c0 == 91 {
             // dict
@@ -2245,6 +2249,10 @@ pub fn take(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 if n == 0 {
                     return Ok(SpicyObj::DataFrame(df.slice(0, 0)));
                 }
+                // Nothing to repeat: doubling an empty frame never reaches the size.
+                if df.height() == 0 {
+                    return Ok(SpicyObj::DataFrame(df.clone()));
+                }
                 let mut df = df.clone();
                 while df.height() < take_size {
                     df = df.vstack(&df).unwrap();
@@ -2255,6 +2263,7 @@ pub fn take(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                     Ok(SpicyObj::DataFrame(df.slice(n, take_size)))
                 }
             }
+            SpicyObj::MixedList(l) if l.is_empty() => Ok(SpicyObj::MixedList(vec![])),
             SpicyObj::MixedList(l) => {
                 let skip = if n < 0 {
                     let r = n % (l.len() as i64);
@@ -2905,10 +2914,14 @@ pub fn rand(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     if arg0.is_integer() {
         let mut small_rng = SmallRng::seed_from_u64(get_global_random_u64());
         let i = arg0.to_i64().unwrap();
-        if arg1.is_integer() && arg1.to_i64().unwrap() < 0 {
+        // Integers, floats and temporals alike: a negative bound is an empty range.
+        let negative_bound = arg1.is_atom()
+            && (arg1.to_i64().map(|v| v < 0).unwrap_or(false)
+                || arg1.to_f64().map(|v| v < 0.0).unwrap_or(false));
+        if negative_bound {
             Err(SpicyError::Err(format!(
                 "Requires the upper of the range >= 0 for repeat rand(?), got '{}'",
-                arg1.to_i64().unwrap()
+                arg1
             )))
         } else if i >= 0 {
             let i = i as usize;
@@ -2918,29 +2931,29 @@ pub fn rand(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                     Ok(SpicyObj::Series(Series::new("".into(), arr)))
                 }
                 SpicyObj::U8(v) => {
-                    let dist = Uniform::new(0, v).unwrap();
+                    let dist = Uniform::new(0, v);
                     let arr: Vec<u8> = if *v == 0 {
                         (0..i).map(|_| small_rng.random::<u8>()).collect()
                     } else {
-                        (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
+                        (0..i).map(move |_| dist.as_ref().unwrap().sample(&mut small_rng)).collect()
                     };
                     Ok(SpicyObj::Series(Series::new("".into(), arr)))
                 }
                 SpicyObj::I16(v) => {
-                    let dist = Uniform::new(0, v).unwrap();
+                    let dist = Uniform::new(0, v);
                     let arr: Vec<i16> = if *v == 0 {
                         (0..i).map(|_| small_rng.random::<i16>()).collect()
                     } else {
-                        (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
+                        (0..i).map(move |_| dist.as_ref().unwrap().sample(&mut small_rng)).collect()
                     };
                     Ok(SpicyObj::Series(Series::new("".into(), arr)))
                 }
                 SpicyObj::I32(v) | SpicyObj::Date(v) => {
-                    let dist = Uniform::new(0, v).unwrap();
+                    let dist = Uniform::new(0, v);
                     let arr: Vec<i32> = if *v == 0 {
                         (0..i).map(|_| small_rng.random::<i32>()).collect()
                     } else {
-                        (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
+                        (0..i).map(move |_| dist.as_ref().unwrap().sample(&mut small_rng)).collect()
                     };
                     let series = Series::new("".into(), arr);
                     if c1 == -4 {
@@ -2958,11 +2971,11 @@ pub fn rand(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 | SpicyObj::Datetime(v)
                 | SpicyObj::Timestamp(v)
                 | SpicyObj::Duration(v) => {
-                    let dist = Uniform::new(0, v).unwrap();
+                    let dist = Uniform::new(0, v);
                     let arr: Vec<i64> = if *v == 0 {
                         (0..i).map(|_| small_rng.random()).collect()
                     } else {
-                        (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
+                        (0..i).map(move |_| dist.as_ref().unwrap().sample(&mut small_rng)).collect()
                     };
                     let series = Series::new("".into(), arr);
                     Ok(SpicyObj::Series(
@@ -2972,21 +2985,21 @@ pub fn rand(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                     ))
                 }
                 SpicyObj::F32(v) => {
-                    let dist = Uniform::new(0.0, v).unwrap();
+                    let dist = Uniform::new(0.0, v);
                     let arr: Vec<f32> = if *v == 0.0 {
                         (0..i).map(|_| small_rng.random()).collect()
                     } else {
-                        (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
+                        (0..i).map(move |_| dist.as_ref().unwrap().sample(&mut small_rng)).collect()
                     };
                     let series = Series::new("".into(), arr);
                     Ok(SpicyObj::Series(series))
                 }
                 SpicyObj::F64(v) => {
-                    let dist = Uniform::new(0.0, v).unwrap();
+                    let dist = Uniform::new(0.0, v);
                     let arr: Vec<f64> = if *v == 0.0 {
                         (0..i).map(|_| small_rng.random()).collect()
                     } else {
-                        (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
+                        (0..i).map(move |_| dist.as_ref().unwrap().sample(&mut small_rng)).collect()
                     };
                     let series = Series::new("".into(), arr);
                     Ok(SpicyObj::Series(series))
@@ -2997,11 +3010,11 @@ pub fn rand(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 )),
                 SpicyObj::MixedList(l) => {
                     let v = l.len();
-                    let dist = Uniform::new(0, v).unwrap();
+                    let dist = Uniform::new(0, v);
                     let arr: Vec<usize> = if v == 0 {
                         vec![]
                     } else {
-                        (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
+                        (0..i).map(move |_| dist.as_ref().unwrap().sample(&mut small_rng)).collect()
                     };
                     Ok(SpicyObj::MixedList(
                         arr.iter().map(|i| l[*i].clone()).collect(),
@@ -3009,11 +3022,11 @@ pub fn rand(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 }
                 SpicyObj::Matrix(m) => {
                     let v = m.nrows();
-                    let dist = Uniform::new(0, v).unwrap();
+                    let dist = Uniform::new(0, v);
                     let arr: Vec<usize> = if v == 0 {
                         vec![]
                     } else {
-                        (0..i).map(move |_| dist.sample(&mut small_rng)).collect()
+                        (0..i).map(move |_| dist.as_ref().unwrap().sample(&mut small_rng)).collect()
                     };
                     Ok(SpicyObj::Matrix(m.select(Axis(0), &arr).to_shared()))
                 }
@@ -3257,7 +3270,7 @@ pub fn or(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 SpicyObj::Timestamp(t0) => match arg1 {
                     SpicyObj::Time(t1) => Ok(SpicyObj::Time((*t0 % NS_IN_DAY).max(*t1))),
                     SpicyObj::Date(t1) => {
-                        Ok(SpicyObj::Datetime(*t0.max(&((*t1 as i64) * NS_IN_DAY))))
+                        Ok(SpicyObj::Timestamp(*t0.max(&((*t1 as i64) * NS_IN_DAY))))
                     }
                     SpicyObj::Datetime(t1) => Ok(SpicyObj::Timestamp((*t0).max(*t1 * NS_IN_MS))),
                     _ => Err(err()),
@@ -3398,7 +3411,7 @@ pub fn and(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
 
     if arg0.is_temporal() && arg1.is_temporal() {
         if c0 == c1 {
-            if arg0.to_i64().unwrap() > arg1.to_i64().unwrap() {
+            if arg0.to_i64().unwrap() < arg1.to_i64().unwrap() {
                 Ok(arg0.clone())
             } else {
                 Ok(arg1.clone())
@@ -3432,7 +3445,7 @@ pub fn and(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 SpicyObj::Timestamp(t0) => match arg1 {
                     SpicyObj::Time(t1) => Ok(SpicyObj::Time((*t0 % NS_IN_DAY).min(*t1))),
                     SpicyObj::Date(t1) => {
-                        Ok(SpicyObj::Datetime(*t0.min(&((*t1 as i64) * NS_IN_DAY))))
+                        Ok(SpicyObj::Timestamp(*t0.min(&((*t1 as i64) * NS_IN_DAY))))
                     }
                     SpicyObj::Datetime(t1) => Ok(SpicyObj::Timestamp((*t0).min(*t1 * NS_IN_MS))),
                     _ => Err(err()),
@@ -3803,4 +3816,41 @@ pub fn fill(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     } else {
         Err(err())
     }
+}
+
+/// Integer floor division; `None` for a zero divisor or `i64::MIN / -1`.
+pub(crate) fn floor_div_i64(a: i64, b: i64) -> Option<i64> {
+    let q = a.checked_div(b)?;
+    Some(if a % b != 0 && ((a < 0) != (b < 0)) { q - 1 } else { q })
+}
+
+/// Integer floor modulo (result takes the divisor's sign); `None` for a zero divisor.
+pub(crate) fn floor_mod_i64(a: i64, b: i64) -> Option<i64> {
+    let r = a.checked_rem(b)?;
+    Some(if r != 0 && ((r < 0) != (b < 0)) { r + b } else { r })
+}
+
+/// `floor_div_series` requires both sides to share a dtype and panics otherwise:
+/// bring them to their common supertype first.
+fn floor_div_common(s0: &Series, s1: &Series) -> SpicyResult<Series> {
+    let to_err = |e: polars::error::PolarsError| SpicyError::Err(e.to_string());
+    if s0.dtype() == s1.dtype() {
+        return floor_div_series(s0, s1).map_err(to_err);
+    }
+    let numeric = |d: &DataType| d.is_primitive_numeric() || d.is_bool();
+    if !numeric(s0.dtype()) || !numeric(s1.dtype()) {
+        return Err(SpicyError::Err(format!(
+            "Unsupported 'div' between '{}' and '{}'",
+            s0.dtype(),
+            s1.dtype()
+        )));
+    }
+    let dtype = if s0.dtype().is_float() || s1.dtype().is_float() {
+        DataType::Float64
+    } else {
+        DataType::Int64
+    };
+    let a = s0.cast(&dtype).map_err(to_err)?;
+    let b = s1.cast(&dtype).map_err(to_err)?;
+    floor_div_series(&a, &b).map_err(to_err)
 }

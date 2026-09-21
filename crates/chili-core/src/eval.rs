@@ -482,6 +482,11 @@ pub fn eval_op(
         _ => return Err(SpicyError::EvalErr(format!("Not able to eval '{}'", arg0))),
     };
     // must be a mixed list >= 2 items
+    if list.is_empty() {
+        return Err(SpicyError::EvalErr(
+            "Not able to eval an empty list".to_owned(),
+        ));
+    }
     let f = &list[0];
     let f = match f {
         SpicyObj::Symbol(s) | SpicyObj::String(s) => {
@@ -690,7 +695,13 @@ pub fn eval_call(
                 )))
             }
         }
-        SpicyObj::I64(h) => state.execute(h, args[0]),
+        SpicyObj::I64(h) => match args.first() {
+            Some(arg) => state.execute(h, arg),
+            None => Err(SpicyError::EvalErr(format!(
+                "handle {} called without a message",
+                h
+            ))),
+        },
         SpicyObj::MixedList(list) => {
             if args.len() == 1 {
                 let arg0 = args[0];
@@ -754,11 +765,8 @@ pub fn at(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let arg0 = args[0];
     let arg1 = args[1];
     if arg0.is_expr() || arg1.is_expr() {
-        return Ok(SpicyObj::Expr(
-            arg0.as_expr()
-                .unwrap()
-                .gather(arg1.as_expr().unwrap(), true),
-        ));
+        // Dict, list, table or function on either side has no expression form.
+        return Ok(SpicyObj::Expr(arg0.as_expr()?.gather(arg1.as_expr()?, true)));
     }
     let c0 = arg0.get_type_code();
     let c1 = arg1.get_type_code();
@@ -874,7 +882,7 @@ pub fn at(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 -5..=-1 => {
                     let i = arg1.to_i64().unwrap();
                     let i = if i < 0 { i + df_len } else { i };
-                    let i = if i < 0 || i > df_len {
+                    let i = if i < 0 || i >= df_len {
                         None
                     } else {
                         Some(i as u32)
@@ -893,7 +901,7 @@ pub fn at(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                                 .map(|i| {
                                     if let Some(i) = i {
                                         let i = if i < 0 { i + df_len } else { i };
-                                        if i < 0 || i > df_len { None } else { Some(i) }
+                                        if i < 0 || i >= df_len { None } else { Some(i) }
                                     } else {
                                         None
                                     }

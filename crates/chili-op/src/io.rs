@@ -566,7 +566,12 @@ pub fn write_partition_native_full(
                 codec.clone(),
             )?;
             if rechunk {
-                let tmp_path = table_path.join("tmp");
+                // Same convention as the overwrite branch: a per-partition temp
+                // name with a dot after the date stem, so `{date}_*` never
+                // matches it and concurrent rechunks of other partitions do not
+                // share a file.
+                let final_path = format!("{}_0000", par_path.display());
+                let tmp_path = format!("{}.tmp_rechunk", par_path.display());
                 let args = ScanArgsParquet::default();
                 let file_format =
                     FileWriteFormat::Parquet(Arc::new(ParquetWriteOptions::default()));
@@ -578,29 +583,37 @@ pub fn write_partition_native_full(
                 if !sort_columns.is_empty() {
                     rechunk_lf = rechunk_lf.sort(sort_columns.to_vec(), sort_options);
                 }
-                let _ = rechunk_lf
+                // The shards are only replaced once the merged file is fully
+                // written: a failed sink leaves the partition exactly as it was.
+                let sunk = rechunk_lf
                     .sink(
                         SinkDestination::File {
-                            target: SinkTarget::Path(PlRefPath::new(
-                                Path::new(&tmp_path).to_str().unwrap_or_default(),
-                            )),
+                            target: SinkTarget::Path(PlRefPath::new(&tmp_path)),
                         },
                         file_format,
                         UnifiedSinkArgs::default(),
                     )
-                    .map_err(|e| SpicyError::EvalErr(e.to_string()))?
-                    .collect();
-                for path in glob::glob(&par_wild_path).unwrap() {
-                    match path {
-                        Ok(path) => {
-                            fs::remove_file(path).map_err(|e| SpicyError::Err(e.to_string()))?
-                        }
-                        Err(e) => return Err(SpicyError::Err(e.to_string())),
+                    .and_then(|lf| lf.collect());
+                if let Err(e) = sunk {
+                    let _ = fs::remove_file(&tmp_path);
+                    return Err(SpicyError::EvalErr(format!(
+                        "rechunk of partition '{}' failed, shards left untouched: {}",
+                        par_str, e
+                    )));
+                }
+                // Snapshot the shards the merged file covers, rename it over
+                // `_0000` (atomic), then drop the others. Never delete-first.
+                let merged: Vec<PathBuf> = glob::glob(&par_wild_path)
+                    .map_err(|e| SpicyError::Err(e.to_string()))?
+                    .map(|p| p.map_err(|e| SpicyError::Err(e.to_string())))
+                    .collect::<SpicyResult<Vec<_>>>()?;
+                fs::rename(&tmp_path, &final_path).map_err(|e| SpicyError::Err(e.to_string()))?;
+                for path in merged {
+                    if path.to_string_lossy() != final_path {
+                        fs::remove_file(path).map_err(|e| SpicyError::Err(e.to_string()))?;
                     }
                 }
-                fs::rename(tmp_path, table_path.join(format!("{}_0000", par_str)))
-                    .map_err(|e| SpicyError::Err(e.to_string()))
-                    .map(|_| SpicyObj::I64(size as i64))
+                Ok(SpicyObj::I64(size as i64))
             } else {
                 Ok(SpicyObj::I64(size as i64))
             }

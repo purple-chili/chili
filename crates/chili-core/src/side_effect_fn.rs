@@ -67,6 +67,19 @@ fn rotate_handle(
     state.rotate_handle(&handle_num, uri)
 }
 
+/// `.handle.rotateTick[handle; uri; tick_index]`: rotate and reset a counter atomically.
+fn rotate_handle_tick(
+    state: &EngineState,
+    _stack: &mut Stack,
+    args: &[&SpicyObj],
+) -> SpicyResult<SpicyObj> {
+    let handle_num = args[0].to_i64()?;
+    let uri = args[1].str()?;
+    let tick_index = usize::try_from(args[2].to_i64()?)
+        .map_err(|_| SpicyError::Err("tick index must not be negative".to_owned()))?;
+    state.rotate_handle_ex(&handle_num, uri, Some(tick_index))
+}
+
 fn exists_handle(
     state: &EngineState,
     _stack: &mut Stack,
@@ -851,6 +864,15 @@ pub static SIDE_EFFECT_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 2,
                 ".handle.rotate",
                 &["handle_num", "uri"],
+            ),
+        ),
+        (
+            ".handle.rotateTick".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(rotate_handle_tick)),
+                3,
+                ".handle.rotateTick",
+                &["handle_num", "uri", "tick_index"],
             ),
         ),
         (

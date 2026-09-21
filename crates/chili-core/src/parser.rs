@@ -45,6 +45,17 @@ fn parse_exp(expr: Expr, context: &Context) -> Result<AstNode, SpicyError> {
             op: Box::new(parse_exp(*op, context)?),
             exp: Box::new(parse_exp(*rhs, context)?),
         }),
+        // `||`, `&&`, `??` evaluate their right side only when needed, so they
+        // are their own node rather than a call of a two-argument function.
+        Expr::Binary { lhs, op, rhs, .. }
+            if matches!(op.0.str(), Some("||") | Some("&&") | Some("??")) =>
+        {
+            Ok(AstNode::ShortCircuit {
+                op: op.0.str().unwrap().to_owned(),
+                left_cond: Box::new(parse_exp(*lhs, context)?),
+                right_cond: Box::new(parse_exp(*rhs, context)?),
+            })
+        }
         Expr::Binary { lhs, op, rhs, .. } => Ok(AstNode::BinaryExp {
             op: Box::new(AstNode::Id {
                 pos: context.get_source_pos(op.1),
@@ -122,7 +133,22 @@ fn parse_exp(expr: Expr, context: &Context) -> Result<AstNode, SpicyError> {
                 .into_iter()
                 .map(|expr| parse_exp(expr, context))
                 .collect::<Result<Vec<AstNode>, SpicyError>>()?,
-            else_nodes: Box::new(parse_exp(*else_, context)?),
+            // A plain `else { ... }` arrives as a Block. `else_nodes` is a
+            // single node, so wrap the block as an always-true `if`: its nodes
+            // run in order and a `return` inside still propagates.
+            else_nodes: Box::new(match *else_ {
+                block @ Expr::Block(_) => AstNode::If {
+                    cond: Box::new(AstNode::SpicyObj(SpicyObj::Boolean(true))),
+                    nodes: block
+                        .block()
+                        .unwrap()
+                        .into_iter()
+                        .map(|expr| parse_exp(expr, context))
+                        .collect::<Result<Vec<AstNode>, SpicyError>>()?,
+                    else_nodes: Box::new(AstNode::SpicyObj(SpicyObj::Null)),
+                },
+                other => parse_exp(other, context)?,
+            }),
         }),
         Expr::While { cond, body, .. } => Ok(AstNode::While {
             cond: Box::new(parse_exp(*cond, context)?),
@@ -309,7 +335,13 @@ fn parse_spicy_obj(token: Token, span: Span, context: &Context) -> Result<AstNod
         .map(|s| s.matches(' ').count() > 0)
         .unwrap_or(false);
     match token {
-        Token::Null(_) => Ok(AstNode::SpicyObj(SpicyObj::Null)),
+        // `0n 0n 0n` is one token: a null vector, not a single null.
+        Token::Null(text) => Ok(AstNode::SpicyObj(
+            match text.split_whitespace().count() {
+                0 | 1 => SpicyObj::Null,
+                n => SpicyObj::Series(Series::new_null("".into(), n)),
+            },
+        )),
         Token::Column(name) => Ok(AstNode::SpicyObj(SpicyObj::Expr(col(name)))),
         Token::Bool(s) => match s.as_str() {
             "true" | "1b" => Ok(AstNode::SpicyObj(SpicyObj::Boolean(true))),
@@ -630,7 +662,7 @@ fn parse_spicy_obj(token: Token, span: Span, context: &Context) -> Result<AstNod
                 )))
             }
         }
-        Token::Str(s) => Ok(AstNode::SpicyObj(SpicyObj::String(s))),
+        Token::Str(s) => Ok(AstNode::SpicyObj(SpicyObj::String(unescape(&s)))),
         unexpected_rule => Err(raise_parser_error(
             format!("Unexpected rule for spicy obj: {:?}", unexpected_rule),
             span,
@@ -717,4 +749,31 @@ pub fn parse(
     }
 
     Ok(ast)
+}
+
+/// Decode the escapes the lexer accepts in a string literal (`\\ \/ \" \' \b \f
+/// \n \r \t`). The token keeps the raw source slice, so without this `"a\nb"`
+/// was four characters and `"\\"` two backslashes.
+fn unescape(raw: &str) -> String {
+    if !raw.contains('\\') {
+        return raw.to_owned();
+    }
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('b') => out.push('\u{8}'),
+            Some('f') => out.push('\u{c}'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
 }

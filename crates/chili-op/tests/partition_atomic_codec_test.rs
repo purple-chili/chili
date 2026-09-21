@@ -233,3 +233,86 @@ fn test_codec_default_and_zstd_equivalent() {
     .unwrap();
     assert_eq!(read_value(hdb.path(), table), 7);
 }
+
+// ---------------------------------------------------------------------------
+// Rechunk: merge shards into `_0000` without ever risking the existing data.
+// ---------------------------------------------------------------------------
+
+fn all_values(hdb: &str, table: &str) -> Vec<i64> {
+    let pat = format!("{}/{}/2026.01.01_*", hdb, table);
+    let mut out = Vec::new();
+    for shard in glob::glob(&pat).unwrap().filter_map(|p| p.ok()) {
+        let f = std::fs::File::open(&shard).expect("shard missing");
+        let df = ParquetReader::new(f).finish().expect("parquet read failed");
+        out.extend(df.column("value").unwrap().i64().unwrap().into_no_null_iter());
+    }
+    out.sort();
+    out
+}
+
+fn stray_files(hdb: &str, table: &str) -> Vec<String> {
+    fs::read_dir(partition_dir(hdb, table))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("tmp"))
+        .collect()
+}
+
+#[test]
+fn test_rechunk_merges_shards_and_keeps_every_row() {
+    let hdb = TempHdb::new();
+    let table = "ohlcv";
+    for (value, rechunk) in [(1, false), (2, false), (3, true)] {
+        write_partition_native(
+            hdb.path(),
+            &SpicyObj::Date(DAY),
+            table,
+            &make_df(value),
+            &[],
+            rechunk,
+            false,
+        )
+        .unwrap();
+    }
+    assert_eq!(shard_count(hdb.path(), table), 1, "merged into _0000");
+    assert_eq!(all_values(hdb.path(), table), vec![1, 2, 3]);
+    assert!(stray_files(hdb.path(), table).is_empty());
+}
+
+#[test]
+fn test_failed_rechunk_leaves_existing_shards_untouched() {
+    let hdb = TempHdb::new();
+    let table = "ohlcv";
+    write_partition_native(
+        hdb.path(),
+        &SpicyObj::Date(DAY),
+        table,
+        &make_df(1),
+        &[],
+        false,
+        false,
+    )
+    .unwrap();
+    // A shard the merge cannot read: the sink fails after the new shard is written.
+    let bad = partition_dir(hdb.path(), table).join("2026.01.01_0001");
+    fs::write(&bad, b"this is not a parquet file").unwrap();
+
+    let res = write_partition_native(
+        hdb.path(),
+        &SpicyObj::Date(DAY),
+        table,
+        &make_df(2),
+        &[],
+        true,
+        false,
+    );
+    assert!(res.is_err(), "a failed merge must be reported, not swallowed");
+    assert_eq!(read_value(hdb.path(), table), 1, "_0000 must survive");
+    assert!(bad.exists(), "other shards must survive");
+    assert!(
+        shard_count(hdb.path(), table) >= 2,
+        "no shard may be deleted when the merge failed"
+    );
+    assert!(stray_files(hdb.path(), table).is_empty(), "temp file cleaned up");
+}

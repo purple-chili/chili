@@ -903,18 +903,28 @@ pub fn xbar(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     }
 
     if arg0.is_atom() && arg1.is_atom() {
+        // Same semantics as the series path: round down to a multiple of the bar.
         if arg0.is_float() || arg1.is_float() {
             let bar_size = arg0.to_f64().unwrap();
+            if bar_size == 0.0 {
+                return Err(SpicyError::Err("xbar: bar size must not be 0".to_owned()));
+            }
             Ok(SpicyObj::F64(
-                (arg1.to_f64().unwrap() / bar_size).round() * bar_size,
+                (arg1.to_f64().unwrap() / bar_size).floor() * bar_size,
             ))
         } else {
             let mut bar_size = arg0.to_i64().unwrap();
             let atom = arg1.to_i64().unwrap();
             if arg1.datetime().is_ok() && (arg0.duration().is_ok() || arg0.time().is_ok()) {
+                // duration / time are ns, datetime is ms
                 bar_size /= 1000000;
             }
-            Ok(arg1.new_same_int_atom(bar_size * atom / bar_size).unwrap())
+            if bar_size == 0 {
+                return Err(SpicyError::Err("xbar: bar size must not be 0".to_owned()));
+            }
+            Ok(arg1
+                .new_same_int_atom(atom.div_euclid(bar_size) * bar_size)
+                .unwrap())
         }
     } else {
         let s0 = arg0.as_series().unwrap();

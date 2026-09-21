@@ -9,10 +9,9 @@
   ];
   .tick.logFile: "file://" + .tick.msgLog;
   // tick is using handle 0 for internal tick count (message count from validateSeq).
-  // To set an absolute counter after init (e.g. a per-row high-water), use:
-  //   tock[0; n]
-  // or: tick[0; neg tick[0; 0]]; tick[0; n]
-  tick[0; .broker.validateSeq[.tick.msgLog; 0b]];
+  // Set, not add: a second createLog on the same engine must not stack the
+  // new log's count on top of the old one.
+  tock[0; .broker.validateSeq[.tick.msgLog; 0b]];
   // close existing handle
   if[not null get[`.tick.msgHandle];.handle.close get[`.tick.msgHandle]];
   .tick.msgHandle: .handle.open .tick.logFile;
@@ -21,11 +20,11 @@
 .tick.rollLog: {[logDir; filename]
   .tick.msgLog: logDir + filename;
   .tick.logFile: "file://" + .tick.msgLog;
-  .handle.rotate[.tick.msgHandle; .tick.logFile];
-  // reset tick[0]
-  tick[0; neg[tick[0; 0]]];
-  // use validate message count for tick[0]
-  tick[0; tick[.tick.msgHandle; 0]];
+  // Rotate and set tick[0] to the new log's message count in one lpt_lock
+  // section: a .tick.upd running between a rotation and a separate counter
+  // reset left the replay bound one frame short for the rest of the log.
+  // Rolling to the log that is already open changes nothing.
+  .handle.rotateTick[.tick.msgHandle; .tick.logFile; 0];
 };
 
 .tick.upd: {[table; data]

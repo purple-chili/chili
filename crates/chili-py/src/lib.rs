@@ -269,14 +269,15 @@ fn spicy_to_py(py: Python<'_>, obj: SpicyObj) -> PyResult<Py<PyAny>> {
         .unbind()),
         // Duration => Python timedelta
         SpicyObj::Duration(v) => {
-            let abs_v = v.abs();
-            let sign = if v < 0 { -1 } else { 1 };
-            let days = abs_v / NS_IN_DAY;
-            let seconds = abs_v / 1000000000 % 86400;
-            let microseconds = v % 1000000000 / 1000;
+            // timedelta's canonical form: days carries the sign, seconds and
+            // microseconds are non-negative (-1 s is days=-1, seconds=86399).
+            let days = v.div_euclid(NS_IN_DAY);
+            let rem = v.rem_euclid(NS_IN_DAY);
+            let seconds = rem / 1_000_000_000;
+            let microseconds = rem % 1_000_000_000 / 1000;
             Ok(PyDelta::new(
                 py,
-                days as i32 * sign,
+                days as i32,
                 seconds as i32,
                 microseconds as i32,
                 false,
@@ -624,7 +625,13 @@ impl PyEngineState {
 
     /// Shut down the engine: stop the TCP listener and force-close all handles.
     fn shutdown(&self) {
-        // Don't error on shutdown in forked children; just attempt cleanup.
+        // In a forked child this engine is a copy of the parent's: its locks
+        // may be held by threads that do not exist here (deadlock), and its
+        // sockets are shared with the parent, so shutting them down would cut
+        // the parent's live connections. Leave everything alone, silently.
+        if self.init_pid != process::id() {
+            return;
+        }
         self.inner.shutdown();
     }
 
@@ -773,7 +780,12 @@ impl PyEngineState {
         let ts_obj = spicy_from_py_bound(&start_time)?;
         let ts_obj = match ts_obj {
             SpicyObj::Timestamp(utc_ns) => {
-                let local_offset_sec = chrono::Local::now().offset().local_minus_utc() as i64;
+                // The offset in force at the target instant, not now: the
+                // scheduler reads the clock with the offset of the moment it
+                // fires, so across a daylight-saving change "now" is an hour off.
+                let local_offset_sec = chrono::TimeZone::timestamp_nanos(&chrono::Local, utc_ns)
+                    .offset()
+                    .local_minus_utc() as i64;
                 SpicyObj::Timestamp(utc_ns + local_offset_sec * 1_000_000_000)
             }
             other => other,

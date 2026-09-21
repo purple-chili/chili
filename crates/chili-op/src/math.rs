@@ -92,7 +92,9 @@ pub fn all(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 .map(|a| all(&[a]))
                 .collect::<SpicyResult<Vec<SpicyObj>>>()?;
             Ok(SpicyObj::Boolean(
-                res.into_iter().all(|a| *a.bool().unwrap()),
+                res.into_iter()
+                    .filter_map(|a| a.bool().ok().copied())
+                    .all(|b| b),
             ))
         }
         SpicyObj::Dict(d) => {
@@ -101,7 +103,9 @@ pub fn all(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 .map(|a| all(&[a]))
                 .collect::<SpicyResult<Vec<SpicyObj>>>()?;
             Ok(SpicyObj::Boolean(
-                res.into_iter().all(|a| *a.bool().unwrap()),
+                res.into_iter()
+                    .filter_map(|a| a.bool().ok().copied())
+                    .all(|b| b),
             ))
         }
         _ => Err(err()),
@@ -140,7 +144,9 @@ pub fn any(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 .map(|a| any(&[a]))
                 .collect::<SpicyResult<Vec<SpicyObj>>>()?;
             Ok(SpicyObj::Boolean(
-                res.into_iter().any(|a| *a.bool().unwrap()),
+                res.into_iter()
+                    .filter_map(|a| a.bool().ok().copied())
+                    .any(|b| b),
             ))
         }
         SpicyObj::Dict(d) => {
@@ -149,7 +155,9 @@ pub fn any(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 .map(|a| any(&[a]))
                 .collect::<SpicyResult<Vec<SpicyObj>>>()?;
             Ok(SpicyObj::Boolean(
-                res.into_iter().any(|a| *a.bool().unwrap()),
+                res.into_iter()
+                    .filter_map(|a| a.bool().ok().copied())
+                    .any(|b| b),
             ))
         }
         _ => Err(err()),
@@ -589,6 +597,24 @@ pub fn mod_op(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let c0 = arg0.get_type_code();
     let c1 = arg1.get_type_code();
 
+    // Null passes the numeric check (type code 0) but has no value.
+    if matches!(arg0, SpicyObj::Null) || matches!(arg1, SpicyObj::Null) {
+        return Ok(SpicyObj::Null);
+    }
+
+    if (arg1.is_float() || arg0.is_float_like()) && !arg1.is_atom() {
+        // The scalar-divisor arms below unwrap `arg1` as an atom.
+        let to_err = |e: polars::error::PolarsError| SpicyError::Err(e.to_string());
+        let s0 = arg0.as_series().map_err(|e| SpicyError::Err(e.to_string()))?;
+        let s1 = arg1.as_series().map_err(|e| SpicyError::Err(e.to_string()))?;
+        if s0.len() != s1.len() && s0.len() != 1 && s1.len() != 1 {
+            return Err(SpicyError::MismatchedLengthErr(s0.len(), s1.len()));
+        }
+        let s0 = s0.cast(&DataType::Float64).map_err(to_err)?;
+        let s1 = s1.cast(&DataType::Float64).map_err(to_err)?;
+        return Ok(SpicyObj::Series((&s0 % &s1).map_err(to_err)?));
+    }
+
     if arg1.is_float() || arg0.is_float_like() {
         if c0 == -11 {
             let f0 = arg0.f32().unwrap();
@@ -613,9 +639,11 @@ pub fn mod_op(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             ))
         }
     } else if c0 < 0 && c1 < 0 {
-        Ok(SpicyObj::I64(
-            arg0.to_i64().unwrap() % arg1.to_i64().unwrap(),
-        ))
+        // Floor modulo, null on a zero divisor — as the series path.
+        Ok(
+            crate::operator::floor_mod_i64(arg0.to_i64().unwrap(), arg1.to_i64().unwrap())
+                .map_or(SpicyObj::Null, SpicyObj::I64),
+        )
     } else {
         let s0 = arg0.as_series().unwrap();
         let s0 = cast_to_int(&s0)?;
@@ -898,9 +926,14 @@ pub fn pow(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 arg0.to_f64().unwrap().powf(arg1.to_f64().unwrap()),
             ))
         } else {
-            Ok(SpicyObj::I64(
-                arg0.to_i64().unwrap().pow(arg1.to_i64().unwrap() as u32),
-            ))
+            // A negative exponent is a fraction; an overflowing power leaves i64.
+            let base = arg0.to_i64().unwrap();
+            let exp = arg1.to_i64().unwrap();
+            let int_pow = u32::try_from(exp).ok().and_then(|e| base.checked_pow(e));
+            Ok(match int_pow {
+                Some(v) => SpicyObj::I64(v),
+                None => SpicyObj::F64((base as f64).powf(exp as f64)),
+            })
         }
     } else {
         let s0 = arg0.as_series().unwrap();

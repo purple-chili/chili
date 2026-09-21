@@ -255,6 +255,8 @@ pub fn join_op(args: &[&SpicyObj], join_args: JoinArgs) -> SpicyResult<SpicyObj>
 // df, idColumns, valueColumns
 pub fn aj(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     let mut asof_options = AsOfOptions::default();
+    // As-of means "at or before": an exact-time match counts, with or without by-columns.
+    asof_options.allow_eq = true;
     let arg0 = args[0];
     let mut syms = arg0.to_str_vec()?;
     if syms.len() > 1 {
@@ -265,7 +267,6 @@ pub fn aj(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             syms.iter().map(|s| s.to_owned().into()).collect();
         asof_options.left_by = Some(by.clone());
         asof_options.right_by = Some(by);
-        asof_options.allow_eq = true;
         let join_args = JoinArgs::new(JoinType::AsOf(asof_options.into()));
         join_op(&args, join_args)
     } else {

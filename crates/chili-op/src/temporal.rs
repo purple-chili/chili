@@ -140,9 +140,7 @@ pub fn tz(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
                 .unwrap_or(DateTime::<Utc>::MAX_UTC)
                 .naive_utc();
             Ok(SpicyObj::Datetime(
-                from_tz
-                    .from_local_datetime(&ndt)
-                    .unwrap()
+                resolve_local(&from_tz, &ndt)
                     .with_timezone(&to_tz)
                     .naive_local()
                     .and_utc()
@@ -152,9 +150,7 @@ pub fn tz(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
         SpicyObj::Timestamp(dt) => {
             let ndt = DateTime::<Utc>::from_timestamp_nanos(*dt).naive_utc();
             Ok(SpicyObj::Timestamp(
-                from_tz
-                    .from_local_datetime(&ndt)
-                    .unwrap()
+                resolve_local(&from_tz, &ndt)
                     .with_timezone(&to_tz)
                     .naive_local()
                     .and_utc()
@@ -254,9 +250,7 @@ pub fn elementwise_convert_tz(
             opt_time.map(|time| {
                 let ndt = ts_to_ndt(time);
                 ndt_to_ts(
-                    from_tz
-                        .from_local_datetime(&ndt)
-                        .unwrap()
+                    resolve_local(&from_tz, &ndt)
                         .with_timezone(&to_tz)
                         .naive_local(),
                 )
@@ -420,10 +414,31 @@ fn convert_tz_single(
 ) -> i64 {
     let ndt = ts_to_ndt(dt);
     ndt_to_ts(
-        from_tz
-            .from_local_datetime(&ndt)
-            .unwrap()
+        resolve_local(from_tz, &ndt)
             .with_timezone(to_tz)
             .naive_local(),
     )
+}
+
+/// A wall-clock time in `tz` as an instant, total over daylight-saving changes:
+/// an ambiguous time (clocks went back, it happened twice) is the earlier one,
+/// and a time that never happened (clocks went forward over it) is shifted
+/// forward by the length of the gap, using the offset in force before it.
+/// `from_local_datetime(..).unwrap()` panicked on both.
+fn resolve_local(tz: &Tz, ndt: &NaiveDateTime) -> DateTime<Tz> {
+    use chrono::offset::{LocalResult, Offset};
+    match tz.from_local_datetime(ndt) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(earliest, _) => earliest,
+        LocalResult::None => {
+            let before = *ndt - chrono::Duration::days(1);
+            match tz.offset_from_local_datetime(&before).earliest() {
+                Some(offset) => {
+                    let utc = *ndt - chrono::Duration::seconds(offset.fix().local_minus_utc() as i64);
+                    tz.from_utc_datetime(&utc)
+                }
+                None => tz.from_utc_datetime(ndt),
+            }
+        }
+    }
 }

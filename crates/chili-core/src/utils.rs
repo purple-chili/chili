@@ -17,7 +17,11 @@ use polars::{
 };
 use regex::Regex;
 
-use crate::{ConnType, EngineState, Stack, engine_state::ReadWrite, serde6, serde9};
+use crate::{
+    ConnType, EngineState, Stack,
+    engine_state::{Outbound, ReadWrite, ReplyError},
+    serde6, serde9,
+};
 
 const SEQ_MAGIC: [u8; 8] = [255, 0, 0, 0, 0, 0, 0, 0];
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -191,25 +195,51 @@ fn count_seq_messages_on_reader(
             }
             break;
         }
-        if must_deserialize {
-            let mut buffer = vec![0u8; msg_size as usize];
-            if let Err(e) = reader.read_exact(&mut buffer) {
-                if strict {
-                    return Err(SpicyError::Err(format!(
-                        "truncated frame payload at offset {} (expected {} bytes): {}",
-                        valid_size, msg_size, e
-                    )));
-                }
-                break;
+        // A frame cannot be longer than what is left of the file: a corrupt
+        // length is a tear, never an allocation.
+        if let Some(total) = total_size
+            && msg_size > total.saturating_sub(valid_size + 16)
+        {
+            if strict {
+                return Err(SpicyError::Err(format!(
+                    "truncated frame payload at offset {} (expected {} bytes, only {} remain)",
+                    valid_size,
+                    msg_size,
+                    total.saturating_sub(valid_size + 16)
+                )));
             }
-            if let Err(e) = crate::serde9::deserialize(&buffer, &mut 0) {
+            break;
+        }
+        if must_deserialize {
+            let buffer = match read_len_from(reader, msg_size) {
+                Ok(b) => b,
+                Err(e) => {
+                    if strict {
+                        return Err(SpicyError::Err(format!(
+                            "truncated frame payload at offset {} (expected {} bytes): {}",
+                            valid_size, msg_size, e
+                        )));
+                    }
+                    break;
+                }
+            };
+            if let Err(e) = decode_guarded("tick log", || {
+                crate::serde9::deserialize(&buffer, &mut 0)
+            }) {
                 if strict {
                     return Err(SpicyError::Err(format!(
                         "corrupt frame at offset {} (message #{}): {}",
                         valid_size, count, e
                     )));
                 }
-                break;
+                // The frame is structurally complete (length and payload both
+                // read), so it is not a torn tail: replay skips it and applies
+                // what follows. Ending the walk here would make callers truncate
+                // every valid frame after it.
+                warn!(
+                    "undecodable frame at offset {} (message #{}), keeping it: {}",
+                    valid_size, count, e
+                );
             }
         } else {
             let mut discard = reader.take(msg_size);
@@ -348,6 +378,25 @@ pub fn count_seq_messages_strict(
 ///
 /// Returns `(writer, conn_type, msg_count)` where `msg_count` is the
 /// number of valid messages in the file (only non-zero for `Sequence` files).
+/// Take an exclusive advisory lock on a sequence log for as long as the file is
+/// open. The in-process duplicate-open check cannot see another process: two
+/// writers keep independent offsets, and opening truncates at the last complete
+/// frame. Plain text files are not locked (appending from several processes is
+/// fine). A filesystem without lock support is not an error.
+fn lock_log(file: &std::fs::File, path: &str) -> Result<(), SpicyError> {
+    match file.try_lock() {
+        Ok(()) => Ok(()),
+        Err(std::fs::TryLockError::WouldBlock) => Err(SpicyError::Err(format!(
+            "'{}' is open for writing in another process",
+            path
+        ))),
+        Err(std::fs::TryLockError::Error(e)) => {
+            warn!("cannot lock '{}' ({}), continuing without a lock", path, e);
+            Ok(())
+        }
+    }
+}
+
 pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType, i64), SpicyError> {
     use std::fs;
     use std::io::{Read, Seek, SeekFrom};
@@ -365,6 +414,7 @@ pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType, 
         .len()
         == 0
     {
+        lock_log(&file, path)?;
         let rw: Box<dyn ReadWrite> = Box::new(SyncFile {
             file,
             path: PathBuf::from(path),
@@ -387,6 +437,9 @@ pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType, 
 
     let conn_type = detect_conn_type(&mut file)?;
     let msg_count = if conn_type == ConnType::Sequence {
+        // Before the truncation below: a second process must not cut a frame
+        // the first one is still writing.
+        lock_log(&file, path)?;
         // detect_conn_type read 4 bytes; skip the remaining 4 of the 8-byte magic header
         let mut pad = [0u8; 4];
         file.read_exact(&mut pad)
@@ -471,29 +524,50 @@ pub fn read_q_msg(
     length: usize,
     compression_mode: u8,
 ) -> Result<SpicyObj, SpicyError> {
-    let mut vec = vec![0u8; length];
-    rw.read_exact(&mut vec)
-        .map_err(|e| SpicyError::Err(e.to_string()))?;
-    if compression_mode == 1 {
-        let length = u32::from_le_bytes(vec[..4].try_into().unwrap()) as usize;
-        let mut de_vec = vec![0u8; length - 8];
-        serde6::decompress(&vec, &mut de_vec, 4);
-        Ok(serde6::deserialize(&de_vec, &mut 0, false)?)
-    } else if compression_mode == 2 {
-        let length = u64::from_le_bytes(vec[..8].try_into().unwrap()) as usize;
-        let mut de_vec = vec![0u8; length - 8];
-        serde6::decompress(&vec, &mut de_vec, 8);
-        Ok(serde6::deserialize(&de_vec, &mut 0, false)?)
-    } else {
-        Ok(serde6::deserialize(&vec, &mut 0, false)?)
+    let vec = read_exact_len(rw, length)?;
+    // The body is fully consumed from here on, so a decode failure — including
+    // a panic on hostile bytes in the unchecked decompress/deserialize paths —
+    // leaves the stream in sync and is reported as an error.
+    decode_guarded("q ipc", || {
+        if compression_mode == 1 || compression_mode == 2 {
+            let width = if compression_mode == 1 { 4 } else { 8 };
+            let prefix = vec.get(..width).ok_or_else(|| {
+                SpicyError::DeserializationErr("q ipc: compressed message too short".into())
+            })?;
+            let total = if width == 4 {
+                u32::from_le_bytes(prefix.try_into().unwrap()) as usize
+            } else {
+                usize::try_from(u64::from_le_bytes(prefix.try_into().unwrap())).map_err(|_| {
+                    SpicyError::DeserializationErr("q ipc: uncompressed length too large".into())
+                })?
+            };
+            let mut de_vec = try_zeroed(q_uncompressed_body_len(total, vec.len())?)?;
+            serde6::decompress(&vec, &mut de_vec, width);
+            Ok(serde6::deserialize(&de_vec, &mut 0, false)?)
+        } else {
+            Ok(serde6::deserialize(&vec, &mut 0, false)?)
+        }
+    })
+}
+
+/// Run a decode step over a fully-read buffer, turning a panic into an error.
+fn decode_guarded(
+    what: &str,
+    f: impl FnOnce() -> Result<SpicyObj, SpicyError>,
+) -> Result<SpicyObj, SpicyError> {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(res) => res,
+        Err(payload) => Err(SpicyError::DeserializationErr(format!(
+            "{}: malformed message ({})",
+            what,
+            panic_payload_message(payload)
+        ))),
     }
 }
 
 pub fn read_chili_ipc_msg(rw: &mut dyn ReadWrite, length: usize) -> Result<SpicyObj, SpicyError> {
-    let mut vec = vec![0u8; length];
-    rw.read_exact(&mut vec)
-        .map_err(|e| SpicyError::Err(e.to_string()))?;
-    serde9::deserialize(&vec, &mut 0)
+    let vec = read_exact_len(rw, length)?;
+    decode_guarded("chili ipc", || serde9::deserialize(&vec, &mut 0))
 }
 
 pub fn read_q_table_name(msg: &[u8]) -> Result<String, SpicyError> {
@@ -553,20 +627,95 @@ impl MessageType {
     }
 }
 
-pub fn decode_header6(header: &[u8]) -> (MessageType, usize, u8) {
-    let message_type = MessageType::from_u8(header[1]).unwrap();
-    let len = u32::from_le_bytes(header[4..].try_into().unwrap()) as usize;
-    (
-        message_type,
-        len + ((header[3] as usize).wrapping_shl(32)),
-        header[2],
-    )
+/// Decode an 8-byte q IPC header: `(type, total length incl. header, compression)`.
+/// The bytes are peer-controlled: an unknown message type or a total length
+/// below the header size is an error, never a panic.
+pub fn decode_header6(header: &[u8; 8]) -> SpicyResult<(MessageType, usize, u8)> {
+    let message_type = MessageType::from_u8(header[1]).ok_or_else(|| {
+        SpicyError::DeserializationErr(format!("q ipc: unknown message type {}", header[1]))
+    })?;
+    let len = u32::from_le_bytes(header[4..].try_into().unwrap()) as usize
+        + ((header[3] as usize).wrapping_shl(32));
+    if len < 8 {
+        return Err(SpicyError::DeserializationErr(format!(
+            "q ipc: message length {} is shorter than its header",
+            len
+        )));
+    }
+    Ok((message_type, len, header[2]))
 }
 
-pub fn decode_header9(header: &[u8]) -> (MessageType, usize) {
-    let message_type = MessageType::from_u8(header[1]).unwrap();
+/// Decode a 16-byte chili IPC header: `(type, payload length)`.
+pub fn decode_header9(header: &[u8; 16]) -> SpicyResult<(MessageType, usize)> {
+    let message_type = MessageType::from_u8(header[1]).ok_or_else(|| {
+        SpicyError::DeserializationErr(format!("chili ipc: unknown message type {}", header[1]))
+    })?;
     let len = u64::from_le_bytes(header[8..].try_into().unwrap());
-    (message_type, len as usize)
+    let len = usize::try_from(len).map_err(|_| {
+        SpicyError::DeserializationErr(format!("chili ipc: message length {} too large", len))
+    })?;
+    Ok((message_type, len))
+}
+
+/// Read exactly `len` bytes whose length came off the wire. The buffer grows
+/// with the bytes that actually arrive (capped up-front reservation), so a
+/// hostile length cannot make the process allocate — and abort on — memory
+/// the peer never sends.
+pub fn read_exact_len(rw: &mut dyn ReadWrite, len: usize) -> SpicyResult<Vec<u8>> {
+    read_len_from(&mut *rw, len as u64).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+            SpicyError::Err(format!("connection closed mid-message: {}", e))
+        } else {
+            SpicyError::Err(e.to_string())
+        }
+    })
+}
+
+/// `read_exact` for a length taken from untrusted bytes (a peer, a log file):
+/// reserves at most 64 MiB up front and grows with the data that really
+/// arrives. A short read is `UnexpectedEof`.
+pub(crate) fn read_len_from(reader: &mut dyn Read, len: u64) -> std::io::Result<Vec<u8>> {
+    const MAX_UPFRONT: u64 = 64 * 1024 * 1024;
+    let mut vec = Vec::new();
+    vec.try_reserve_exact(len.min(MAX_UPFRONT) as usize)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::OutOfMemory, e.to_string()))?;
+    let n = reader.take(len).read_to_end(&mut vec)? as u64;
+    if n != len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("expected {} bytes, got {}", len, n),
+        ));
+    }
+    Ok(vec)
+}
+
+/// Zeroed buffer of a wire-derived size; allocation failure is an error, not an abort.
+fn try_zeroed(len: usize) -> SpicyResult<Vec<u8>> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(len)
+        .map_err(|e| SpicyError::Err(format!("cannot allocate {} bytes: {}", len, e)))?;
+    v.resize(len, 0);
+    Ok(v)
+}
+
+/// kdb+ compression emits at most 257 bytes per 2-byte back-reference, so an
+/// honest message never expands by more than this factor.
+const Q_MAX_EXPANSION: usize = 256;
+
+fn q_uncompressed_body_len(total: usize, compressed_len: usize) -> SpicyResult<usize> {
+    let body = total.checked_sub(8).ok_or_else(|| {
+        SpicyError::DeserializationErr(format!(
+            "q ipc: uncompressed length {} is shorter than its header",
+            total
+        ))
+    })?;
+    if body > compressed_len.saturating_mul(Q_MAX_EXPANSION) {
+        return Err(SpicyError::DeserializationErr(format!(
+            "q ipc: uncompressed length {} is implausible for {} compressed bytes",
+            total, compressed_len
+        )));
+    }
+    Ok(body)
 }
 
 pub fn write_q_ipc_msg(
@@ -574,11 +723,36 @@ pub fn write_q_ipc_msg(
     buf: &[u8],
     message_type: MessageType,
 ) -> Result<(), std::io::Error> {
-    // little endian 1, sync 1, 0, 0
-    rw.write_all(&[1, message_type as u8, 0, 0])?;
-    rw.write_all(&((buf.len() + 8) as u32).to_le_bytes())?;
-    rw.write_all(buf)?;
-    Ok(())
+    // One write of the complete message; never compressed (see `serde6::q_message`).
+    rw.write_all(&serde6::q_message(buf, message_type as u8, false))
+}
+
+/// A q Response frame (8-byte header + body) as one buffer.
+fn q_response_frame(body: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(body.len() + 8);
+    buf.extend_from_slice(&[1, MessageType::Response as u8, 0, 0]);
+    buf.extend_from_slice(&((body.len() + 8) as u32).to_le_bytes());
+    buf.extend_from_slice(body);
+    buf
+}
+
+/// Send a reply from a connection loop. It goes through the handle's single
+/// serialized writer so it cannot interleave with `publish` frames on the same
+/// socket; only a handle with no engine-side writer falls back to `own`.
+fn send_reply(
+    state: &EngineState,
+    handle: i64,
+    own: &mut dyn ReadWrite,
+    msg: Outbound,
+) -> Result<(), std::io::Error> {
+    match state.write_reply(handle, msg) {
+        Ok(()) => Ok(()),
+        Err(ReplyError::Io(e)) => Err(e),
+        Err(ReplyError::NoWriter(msg)) => match msg {
+            Outbound::Chili(chunks, t) => write_chili_ipc_msg(own, &chunks, t),
+            Outbound::Raw(bytes) => own.write_all(&bytes),
+        },
+    }
 }
 
 pub fn write_chili_ipc_msg(
@@ -858,6 +1032,13 @@ pub fn handle_q_conn(
     hold: Option<Arc<parking_lot::Mutex<crate::engine_state::HoldState>>>,
 ) {
     state.fire_on_conn_open_hook(user, handle);
+    // Runs on every exit, including an unwinding panic in the loop below.
+    let _cleanup = ConnCleanup {
+        state: &state,
+        user,
+        handle,
+        conn_id: state.conn_id(handle),
+    };
     let mut header = [0u8; 8];
     loop {
         // little endian, msg type()
@@ -872,16 +1053,30 @@ pub fn handle_q_conn(
             }
             break;
         }
-        let len = u32::from_le_bytes(header[4..].try_into().unwrap()) as usize;
-        let message_type = MessageType::from_u8(header[1]).unwrap();
-        let obj = match crate::read_q_msg(rw, len - 8, header[2]) {
+        let (message_type, len, compression_mode) = match decode_header6(&header) {
+            Ok(h) => h,
+            Err(e) => {
+                // Framing is lost: nothing after this header can be trusted.
+                error!("handle {}: {}, disconnecting", handle, e);
+                state.fire_on_bad_msg_hook(handle, &e.to_string(), None);
+                break;
+            }
+        };
+        let obj = match crate::read_q_msg(rw, len - 8, compression_mode) {
             Ok(obj) => obj,
             Err(e) => {
                 let msg = e.to_string();
                 state.fire_on_bad_msg_hook(handle, &msg, None);
                 if message_type == MessageType::Sync
-                    && let Err(_) =
-                        rw.write_all(&serde6::serialize(&SpicyObj::Err(msg)).unwrap())
+                    && send_reply(
+                        &state,
+                        handle,
+                        rw,
+                        Outbound::Raw(q_response_frame(
+                            &serde6::serialize(&SpicyObj::Err(msg)).unwrap(),
+                        )),
+                    )
+                    .is_err()
                 {
                     break;
                 }
@@ -916,9 +1111,7 @@ pub fn handle_q_conn(
                 if message_type == MessageType::Sync {
                     let err_msg = RE_STYLE.replace_all(&err.to_string(), "").to_string();
                     let err = serde6::serialize(&SpicyObj::Err(err_msg)).unwrap();
-                    let _ = rw.write_all(&[1, 2, 0, 0]);
-                    let _ = rw.write_all(&(err.len() as u32 + 8).to_le_bytes());
-                    let _ = rw.write_all(&err);
+                    let _ = send_reply(&state, handle, rw, Outbound::Raw(q_response_frame(&err)));
                     state.drop_pending_subscribers(handle);
                 } else {
                     error!("{}", err);
@@ -931,21 +1124,16 @@ pub fn handle_q_conn(
         if message_type == MessageType::Sync {
             match res {
                 Ok(obj) => match serde6::serialize(&obj) {
-                    Ok(mut v8) => {
-                        if !is_local {
-                            v8 = serde6::compress(v8);
-                        }
-                        let _ = rw.write(&[1, 2, 0, 0]);
-                        let _ = rw.write_all(&((v8.len() + 8) as u32).to_le_bytes());
-                        let _ = rw.write_all(&v8);
+                    Ok(v8) => {
+                        let msg =
+                            serde6::q_message(&v8, MessageType::Response as u8, !is_local);
+                        let _ = send_reply(&state, handle, rw, Outbound::Raw(msg));
                         // Subscribe handshake: go live only after Response is on the wire.
                         state.activate_subscribers(handle);
                     }
                     Err(e) => {
                         let err = serde6::serialize(&SpicyObj::Err(e.to_string())).unwrap();
-                        let _ = rw.write_all(&[1, 2, 0, 0]);
-                        let _ = rw.write_all(&(err.len() as u32 + 8).to_le_bytes());
-                        let _ = rw.write_all(&err);
+                        let _ = send_reply(&state, handle, rw, Outbound::Raw(q_response_frame(&err)));
                         state.drop_pending_subscribers(handle);
                     }
                 },
@@ -953,9 +1141,7 @@ pub fn handle_q_conn(
                     let err_msg = RE_STYLE.replace_all(&e.to_string(), "").to_string();
                     state.fire_on_bad_msg_hook(handle, &err_msg, None);
                     let err = serde6::serialize(&SpicyObj::Err(err_msg)).unwrap();
-                    let _ = rw.write_all(&[1, 2, 0, 0]);
-                    let _ = rw.write_all(&(err.len() as u32 + 8).to_le_bytes());
-                    let _ = rw.write_all(&err);
+                    let _ = send_reply(&state, handle, rw, Outbound::Raw(q_response_frame(&err)));
                     state.drop_pending_subscribers(handle);
                 }
             }
@@ -966,11 +1152,36 @@ pub fn handle_q_conn(
         }
     }
 
-    finish_ipc_conn(&state, user, handle);
 }
 
-fn finish_ipc_conn(state: &EngineState, user: &str, handle: i64) {
+/// Connection teardown as a drop guard, so a panic anywhere in a connection
+/// loop still disconnects the handle, releases its pending-subscribe buffer,
+/// and fires the close hook and `on_disconnected` callback.
+struct ConnCleanup<'a> {
+    state: &'a EngineState,
+    user: &'a str,
+    handle: i64,
+    /// The connection this thread served; see [`crate::engine_state::Handle::conn_id`].
+    conn_id: Option<u64>,
+}
+
+impl Drop for ConnCleanup<'_> {
+    fn drop(&mut self) {
+        finish_ipc_conn(self.state, self.user, self.handle, self.conn_id);
+    }
+}
+
+fn finish_ipc_conn(state: &EngineState, user: &str, handle: i64, conn_id: Option<u64>) {
     state.fire_on_conn_close_hook(user, handle);
+    // The handle was closed meanwhile and its number may already belong to a
+    // new connection: that connection is not ours to tear down.
+    if state.conn_id(handle) != conn_id {
+        info!(
+            "handle {} no longer belongs to this connection, skipping teardown",
+            handle
+        );
+        return;
+    }
     let _ = state.disconnect_handle(&handle);
     // Release any handshake buffer if the peer left before activation.
     state.drop_pending_subscribers(handle);
@@ -982,7 +1193,23 @@ fn finish_ipc_conn(state: &EngineState, user: &str, handle: i64) {
             SpicyObj::Symbol(callback.clone()),
             SpicyObj::I64(handle),
         ]);
-        let mut res = state.eval(&mut Stack::default(), &f, "");
+        // This may run while unwinding: a second panic here would abort the
+        // process, so a panicking callback is logged and not retried.
+        let call = || match catch_unwind(AssertUnwindSafe(|| {
+            state.eval(&mut Stack::default(), &f, "")
+        })) {
+            Ok(res) => res.map(Some),
+            Err(payload) => {
+                error!(
+                    "'{}' function for handle {} panicked: {}",
+                    &callback,
+                    handle,
+                    panic_payload_message(payload)
+                );
+                Ok(None)
+            }
+        };
+        let mut res = call();
         let mut retry = 1;
         while res.is_err() {
             let delay = 2_u64.pow(retry);
@@ -994,7 +1221,7 @@ fn finish_ipc_conn(state: &EngineState, user: &str, handle: i64) {
                 res.err().unwrap(),
             );
             std::thread::sleep(Duration::from_secs(delay));
-            res = state.eval(&mut Stack::default(), &f, "");
+            res = call();
             if retry < 6 {
                 retry += 1;
             }
@@ -1011,6 +1238,13 @@ pub fn handle_chili_conn(
     hold: Option<Arc<parking_lot::Mutex<crate::engine_state::HoldState>>>,
 ) {
     state.fire_on_conn_open_hook(user, handle);
+    // Runs on every exit, including an unwinding panic in the loop below.
+    let _cleanup = ConnCleanup {
+        state: &state,
+        user,
+        handle,
+        conn_id: state.conn_id(handle),
+    };
     let mut header = [0u8; 16];
     loop {
         // little endian, msg type()
@@ -1025,14 +1259,28 @@ pub fn handle_chili_conn(
             }
             break;
         }
-        let (message_type, len) = crate::utils::decode_header9(&header);
+        let (message_type, len) = match decode_header9(&header) {
+            Ok(h) => h,
+            Err(e) => {
+                // Framing is lost: nothing after this header can be trusted.
+                error!("handle {}: {}, disconnecting", handle, e);
+                state.fire_on_bad_msg_hook(handle, &e.to_string(), None);
+                break;
+            }
+        };
         let any = match crate::read_chili_ipc_msg(rw, len) {
             Ok(obj) => obj,
             Err(e) => {
                 let msg = e.to_string();
                 state.fire_on_bad_msg_hook(handle, &msg, None);
                 if message_type == MessageType::Sync
-                    && rw.write_all(&serde9::serialize_err(&msg)).is_err()
+                    && send_reply(
+                        &state,
+                        handle,
+                        rw,
+                        Outbound::Raw(serde9::serialize_err(&msg)),
+                    )
+                    .is_err()
                 {
                     break;
                 }
@@ -1067,7 +1315,7 @@ pub fn handle_chili_conn(
                 if message_type == MessageType::Sync {
                     let err_msg = RE_STYLE.replace_all(&err.to_string(), "").to_string();
                     let err = serde9::serialize_err(&err_msg);
-                    let _ = rw.write_all(&err);
+                    let _ = send_reply(&state, handle, rw, Outbound::Raw(err));
                     state.drop_pending_subscribers(handle);
                 } else {
                     error!("{}", err);
@@ -1080,13 +1328,18 @@ pub fn handle_chili_conn(
             match res {
                 Ok(obj) => match serde9::serialize(&obj, !is_local) {
                     Ok(v8) => {
-                        let _ = crate::write_chili_ipc_msg(rw, &v8, MessageType::Response);
+                        let _ = send_reply(
+                            &state,
+                            handle,
+                            rw,
+                            Outbound::Chili(v8, MessageType::Response),
+                        );
                         // Subscribe handshake: go live only after Response is on the wire.
                         state.activate_subscribers(handle);
                     }
                     Err(e) => {
                         let err = serde9::serialize_err(&e.to_string());
-                        let _ = rw.write_all(&err);
+                        let _ = send_reply(&state, handle, rw, Outbound::Raw(err));
                         error!("failed to serialize response: {}", e);
                         state.drop_pending_subscribers(handle);
                     }
@@ -1095,7 +1348,7 @@ pub fn handle_chili_conn(
                     let err_msg = RE_STYLE.replace_all(&e.to_string(), "").to_string();
                     state.fire_on_bad_msg_hook(handle, &err_msg, None);
                     let err = serde9::serialize_err(&err_msg);
-                    let _ = rw.write_all(&err);
+                    let _ = send_reply(&state, handle, rw, Outbound::Raw(err));
                     state.drop_pending_subscribers(handle);
                 }
             }
@@ -1106,7 +1359,6 @@ pub fn handle_chili_conn(
         }
     }
 
-    finish_ipc_conn(&state, user, handle);
 }
 
 pub fn convert_list_to_df(list: &[SpicyObj], df: &DataFrame) -> Result<DataFrame, SpicyError> {

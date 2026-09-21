@@ -186,7 +186,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = EngineState::new(debug, args.lazy, args.pepper);
 
     if args.memory_limit > 0.0 {
-        state.set_memory_limit(args.memory_limit);
+        // The flag is in GB; the engine's limit is in MB.
+        state.set_memory_limit(args.memory_limit * 1024.0);
     }
 
     if args.interval > 0 {

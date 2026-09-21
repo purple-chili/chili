@@ -38,7 +38,7 @@ pub fn add(state: &EngineState, _stack: &mut Stack, args: &[&SpicyObj]) -> Spicy
     let interval = args[3].to_i64().unwrap();
     let description = args[4].str().unwrap();
 
-    if interval < 0 {
+    if interval <= 0 {
         return Err(SpicyError::Err("Interval must be positive".to_owned()));
     }
 
@@ -85,7 +85,8 @@ pub fn add_after(
         end_time: 0,
         interval,
         last_run_time: None,
-        next_run_time: 0,
+        // Fire once, `interval` from now (0 would fire at the next poll).
+        next_run_time: get_local_now_ns() + interval,
         is_active: true,
         description: description.to_owned(),
     };

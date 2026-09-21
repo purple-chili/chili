@@ -60,8 +60,44 @@ use crate::obj::get_series_len;
 
 pub const K_TYPE_SIZE: [usize; 20] = [0, 1, 16, 0, 1, 2, 4, 8, 4, 8, 1, 0, 8, 4, 4, 8, 8, 4, 4, 4];
 
+/// Nesting limit for decoded values. The decoder recurses per nested list or
+/// dict, and a stack overflow cannot be caught: a few kilobytes of `[[[[...`
+/// from a peer, or a corrupt log frame, would take the whole process down.
+const MAX_DECODE_DEPTH: usize = 128;
+
+thread_local! {
+    static DECODE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one level of decoder recursion for as long as it lives.
+struct DepthGuard;
+
+impl DepthGuard {
+    fn enter() -> Result<Self, SpicyError> {
+        DECODE_DEPTH.with(|d| {
+            if d.get() >= MAX_DECODE_DEPTH {
+                return Err(SpicyError::DeserializationErr(format!(
+                    "nested deeper than {} levels",
+                    MAX_DECODE_DEPTH
+                )));
+            }
+            d.set(d.get() + 1);
+            Ok(DepthGuard)
+        })
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        DECODE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
 pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<SpicyObj, SpicyError> {
-    let k_type = vec[*pos];
+    let _depth = DepthGuard::enter()?;
+    let k_type = *vec.get(*pos).ok_or_else(|| {
+        SpicyError::DeserializationErr("q ipc: message ends before a type byte".to_owned())
+    })?;
     *pos += 1;
     let start_pos = *pos;
     match k_type {
@@ -106,63 +142,72 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
             }
             246 => {
                 *pos += 1;
-                Ok(SpicyObj::String(vec[start_pos].to_string()))
+                // a char atom is the character, not its byte value as text
+                Ok(SpicyObj::String((vec[start_pos] as char).to_string()))
             }
             245 => {
                 let mut eod_pos = *pos;
-                while eod_pos <= vec.len() && vec[eod_pos] != 0 {
+                while eod_pos < vec.len() && vec[eod_pos] != 0 {
                     eod_pos += 1;
                 }
                 *pos = eod_pos + 1;
                 Ok(SpicyObj::Symbol(
-                    String::from_utf8(vec[start_pos..eod_pos].to_vec()).unwrap(),
+                    String::from_utf8_lossy(&vec[start_pos..eod_pos]).into_owned(),
                 ))
             }
             // timestamp
             244 => {
-                let ns = i64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap())
-                    .saturating_add(NS_DIFF);
+                let raw = i64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap());
                 *pos += 8;
-                Ok(SpicyObj::Timestamp(ns))
+                // 0Np: the null sentinel is not a date in 1707
+                if raw == i64::MIN {
+                    return Ok(SpicyObj::Null);
+                }
+                Ok(SpicyObj::Timestamp(raw.saturating_add(NS_DIFF)))
             }
             // month
             243 => {
                 let unit = i32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap());
-                let year;
-                let month;
-                if unit >= 0 {
-                    year = 2000 + unit / 12;
-                    month = 1 + unit % 12;
-                } else {
-                    year = 2000 + (unit - 11) / 12;
-                    month = 12 + (unit - 11) % 12
-                }
                 *pos += 4;
-                Ok(SpicyObj::Date(
-                    NaiveDate::from_ymd_opt(year, month as u32, 1)
-                        .unwrap()
-                        .num_days_from_ce()
-                        + UNIX_EPOCH_DAY,
-                ))
+                // 0Nm, and months outside the calendar (0Wm), have no date
+                let year = 2000 + unit.div_euclid(12);
+                let month = 1 + unit.rem_euclid(12);
+                if unit == i32::MIN {
+                    return Ok(SpicyObj::Null);
+                }
+                match NaiveDate::from_ymd_opt(year, month as u32, 1) {
+                    // days since 1970: subtract the epoch, as every other conversion does
+                    Some(d) => Ok(SpicyObj::Date(d.num_days_from_ce() - UNIX_EPOCH_DAY)),
+                    None => Ok(SpicyObj::Null),
+                }
             }
             // date
             242 => {
-                let days = i32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap())
-                    .saturating_add(DAY_DIFF);
+                let raw = i32::from_le_bytes(vec[*pos..*pos + 4].try_into().unwrap());
                 *pos += 4;
-                Ok(SpicyObj::Date(days))
+                if raw == i32::MIN {
+                    return Ok(SpicyObj::Null);
+                }
+                Ok(SpicyObj::Date(raw.saturating_add(DAY_DIFF)))
             }
             // datetime
             241 => {
                 let unit = f64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap());
-                let ms = MS_DIFF + (unit * MS_IN_DAY as f64) as i64;
                 *pos += 8;
+                // 0Nz is NaN, which `as i64` would turn into 2000-01-01
+                if unit.is_nan() {
+                    return Ok(SpicyObj::Null);
+                }
+                let ms = MS_DIFF.saturating_add((unit * MS_IN_DAY as f64) as i64);
                 Ok(SpicyObj::Datetime(ms))
             }
             // timespan
             240 => {
                 let ns = i64::from_le_bytes(vec[*pos..*pos + 8].try_into().unwrap());
                 *pos += 8;
+                if ns == i64::MIN {
+                    return Ok(SpicyObj::Null);
+                }
                 Ok(SpicyObj::Duration(ns))
             }
             // time, second, minute
@@ -196,7 +241,10 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
                         if length == 0 {
                             return Ok(SpicyObj::MixedList(Vec::new()));
                         } else {
-                            let mut res = Vec::with_capacity(length);
+                            // The count is from the wire: an element is at least
+                            // one byte, so never reserve more than what remains.
+                            let mut res =
+                                Vec::with_capacity(length.min(vec.len().saturating_sub(*pos)));
                             for _ in 0..length {
                                 res.push(deserialize(vec, pos, false)?);
                             }
@@ -252,7 +300,11 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
                         }
                         Ok(SpicyObj::Dict(dict))
                     }
-                    _ => unreachable!(),
+                    // e.g. `a`b!"xy": the values decode to a string
+                    other => Err(SpicyError::Err(format!(
+                        "Unsupported dictionary values '{}'",
+                        other.get_type_name()
+                    ))),
                 }
             } else {
                 Err(SpicyError::Err(format!(
@@ -286,11 +338,17 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
                 *pos = end_pos;
             }
 
+            // A column type the series decoder does not support (month, ...)
+            // is an error for the whole table, not a panic.
             let mut columns: Vec<Column> = vectors
                 .par_iter()
                 .zip(k_types.clone())
-                .map(|(v, t)| deserialize_series(v, t, true).unwrap().try_into().unwrap())
-                .collect();
+                .map(|(v, t)| {
+                    deserialize_series(v, t, true)?
+                        .try_into()
+                        .map_err(|_| SpicyError::Err("q column is not a series".to_owned()))
+                })
+                .collect::<Result<Vec<Column>, SpicyError>>()?;
 
             columns.iter_mut().zip(symbols.iter()).for_each(|(c, n)| {
                 c.rename(n.unwrap_or("").into());
@@ -311,12 +369,12 @@ pub fn deserialize(vec: &[u8], pos: &mut usize, is_column: bool) -> Result<Spicy
         // q error
         128 => {
             let mut eod_pos = *pos;
-            while eod_pos <= vec.len() && vec[eod_pos] != 0 {
+            while eod_pos < vec.len() && vec[eod_pos] != 0 {
                 eod_pos += 1;
             }
             *pos = eod_pos;
             Err(SpicyError::ServerErr(
-                String::from_utf8(vec[start_pos..eod_pos].to_vec()).unwrap(),
+                String::from_utf8_lossy(&vec[start_pos..eod_pos]).into_owned(),
             ))
         }
         _ => Err(SpicyError::NotSupportedKTypeErr(k_type)),
@@ -424,7 +482,8 @@ fn calculate_array_end_index(
             Ok(pos)
         }
         _ => {
-            if k_type > 20 {
+            // K_TYPE_SIZE has entries 0..=19: type 20 (enum) would index past it
+            if k_type >= 20 {
                 Err(SpicyError::NotSupportedKListErr(k_type))
             } else if K_TYPE_SIZE[k_type as usize] > 0 {
                 pos += 1;
@@ -980,8 +1039,25 @@ pub fn compress_with_max_size(vec: Vec<u8>, max_size: usize) -> Vec<u8> {
     }
 }
 
+/// Compress a complete q IPC message (8-byte header + body). The input must
+/// include the header: the algorithm starts at offset 8 and copies the header's
+/// length field into the compressed prefix. Returns the input unchanged when it
+/// is below the threshold or does not shrink to under half its size.
 pub fn compress(vec: Vec<u8>) -> Vec<u8> {
     compress_with_max_size(vec, IPC_COMPRESS_THRESHOLD)
+}
+
+/// Build a complete q IPC message ready for the wire: header + `body`,
+/// compressed when `compress` is set and it is worthwhile. `message_type` is
+/// 0 async, 1 sync, 2 response.
+pub fn q_message(body: &[u8], message_type: u8, compress: bool) -> Vec<u8> {
+    let total = body.len() + 8;
+    let mut msg = Vec::with_capacity(total);
+    // little endian, type, no compression, high length byte (messages > 4 GiB)
+    msg.extend_from_slice(&[1, message_type, 0, (total >> 32) as u8]);
+    msg.extend_from_slice(&(total as u32).to_le_bytes());
+    msg.extend_from_slice(body);
+    if compress { self::compress(msg) } else { msg }
 }
 
 pub fn serialize(args: &SpicyObj) -> Result<Vec<u8>, SpicyError> {
@@ -1146,6 +1222,15 @@ pub fn serialize(args: &SpicyObj) -> Result<Vec<u8>, SpicyError> {
 
 fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyError> {
     let mut vec: Vec<u8> = Vec::with_capacity(k_length);
+    // One contiguous chunk: the branches below write one header and then copy
+    // chunk buffers, and the nested-list branches read `chunks()[0]` only.
+    let rechunked;
+    let series = if series.n_chunks() > 1 {
+        rechunked = series.rechunk();
+        &rechunked
+    } else {
+        series
+    };
     let k_length = series.len();
     if k_length > i32::MAX as usize {
         return Err(SpicyError::OverLengthErr());
@@ -1211,7 +1296,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         .values()
                 };
                 let v8 = unsafe {
-                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                 };
                 vec.write_all(v8).unwrap();
             })
@@ -1235,7 +1320,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         .values()
                 };
                 let v8 = unsafe {
-                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                 };
                 vec.write_all(v8).unwrap();
             })
@@ -1271,7 +1356,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         .values()
                 };
                 let v8 = unsafe {
-                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                 };
                 vec.write_all(v8).unwrap();
             })
@@ -1302,7 +1387,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         .values()
                 };
                 let v8 = unsafe {
-                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                 };
                 vec.write_all(v8).unwrap();
             })
@@ -1333,7 +1418,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         .values()
                 };
                 let v8 = unsafe {
-                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                 };
                 vec.write_all(v8).unwrap();
             })
@@ -1394,7 +1479,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                     })
                     .collect();
                 let v8 = unsafe {
-                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                 };
                 vec.write_all(v8).unwrap();
             })
@@ -1443,7 +1528,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         })
                         .collect();
                     let v8 = unsafe {
-                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                        core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                     };
                     vec.write_all(v8).unwrap();
                 } else {
@@ -1461,7 +1546,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         })
                         .collect();
                     let v8 = unsafe {
-                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                        core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                     };
                     vec.write_all(v8).unwrap();
                 };
@@ -1494,7 +1579,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         .values()
                 };
                 let v8 = unsafe {
-                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                 };
                 vec.write_all(v8).unwrap();
             })
@@ -1538,7 +1623,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                     .collect();
 
                 let v8 = unsafe {
-                    core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                    core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                 };
                 vec.write_all(v8).unwrap();
             })
@@ -1571,7 +1656,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         if b {
                             vec.write_all(&[1u8]).unwrap();
                         } else {
-                            unsafe { vec.set_len(vec.len() + 1) }
+                            vec.write_all(&[0u8]).unwrap()
                         }
                     }
                 }
@@ -1617,7 +1702,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                             if list.get_bit(j) {
                                 vec.write_all(&[1u8]).unwrap();
                             } else {
-                                unsafe { vec.set_len(vec.len() + 1) }
+                                vec.write_all(&[0u8]).unwrap()
                             }
                         }
                     }
@@ -1657,7 +1742,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         array.values()
                     };
                     let v8: &[u8] = unsafe {
-                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                        core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                     };
                     for i in 0..k_length {
                         let start_offset = k_size * offsets[i] as usize;
@@ -1685,7 +1770,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         array.values()
                     };
                     let v8: &[u8] = unsafe {
-                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                        core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                     };
                     for i in 0..k_length {
                         let start_offset = k_size * offsets[i] as usize;
@@ -1713,7 +1798,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         array.values()
                     };
                     let v8: &[u8] = unsafe {
-                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                        core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                     };
                     for i in 0..k_length {
                         let start_offset = k_size * offsets[i] as usize;
@@ -1741,7 +1826,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         array.values()
                     };
                     let v8: &[u8] = unsafe {
-                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                        core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                     };
                     for i in 0..k_length {
                         let start_offset = k_size * offsets[i] as usize;
@@ -1769,7 +1854,7 @@ fn serialize_series(series: &Series, k_length: usize) -> Result<Vec<u8>, SpicyEr
                         array.values()
                     };
                     let v8: &[u8] = unsafe {
-                        core::slice::from_raw_parts(array.as_ptr().cast(), k_length * k_size)
+                        core::slice::from_raw_parts(array.as_ptr().cast(), array.len() * k_size)
                     };
                     for i in 0..k_length {
                         let start_offset = k_size * offsets[i] as usize;
