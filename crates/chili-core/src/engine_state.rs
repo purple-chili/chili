@@ -770,6 +770,35 @@ impl EngineState {
         self.upsert_var_with_limit(id, arg, None)
     }
 
+    /// Atomically append dataframe chunks without extending existing buffers.
+    /// Snapshots retain the old rows; concurrent appends cannot overwrite each
+    /// other. As with symbol upsert, incoming dtypes/timezones follow the table.
+    /// Chunk metadata grows with incoming chunks; this does not compact data.
+    pub fn vstack_var(&self, id: &str, records: &DataFrame) -> SpicyResult<SpicyObj> {
+        crate::utils::ensure_df_rectangular(records)?;
+        let mut vars = self.vars.write();
+        let Some(obj) = vars.get_mut(id) else {
+            vars.insert(id.to_owned(), SpicyObj::DataFrame(records.clone()));
+            return Ok(SpicyObj::I64(records.height() as i64));
+        };
+        let df = obj.mut_df()?;
+        crate::utils::ensure_df_rectangular(df)?;
+        let records = crate::utils::coerce_extend_tz(df, records);
+        let records = crate::utils::coerce_extend_dtypes(df, &records)?;
+        let height_before = df.height();
+        if let Err(e) = df.vstack_mut(&records) {
+            // Like extend, vstack can fail after appending earlier columns.
+            // Retain exactly the original rows when a later column fails.
+            if df.columns().iter().any(|c| c.len() != height_before) {
+                *df = df.head(Some(height_before));
+            }
+            return Err(SpicyError::Err(format!(
+                "vstack failed (target left unchanged): {e}"
+            )));
+        }
+        Ok(SpicyObj::I64(records.height() as i64))
+    }
+
     /// Append rows and retain the last `n` rows under the same write lock.
     /// Returns the number of incoming rows, including rows discarded by the limit.
     pub fn upsertn_var(&self, id: &str, arg: &SpicyObj, n: usize) -> SpicyResult<SpicyObj> {

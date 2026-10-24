@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "chili-bin"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "chili-core",
  "chili-op",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "chili-core"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "chili-op"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "chili-core",
  "chrono",
@@ -521,14 +521,16 @@ dependencies = [
  "polars-compute",
  "polars-lazy",
  "polars-ops",
+ "polars-parquet",
  "rand 0.10.2",
  "regex",
  "sysinfo",
+ "tempfile",
 ]
 
 [[package]]
 name = "chili-parser"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "ariadne",
  "chumsky",

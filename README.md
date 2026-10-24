@@ -81,6 +81,44 @@ crates/
 
 ## Development
 
+### Appending while a snapshot is being written
+
+For a subscriber buffer that is queried or flushed concurrently, use the symbol
+form of `vstack` (Pepper syntax):
+
+```pepper
+.s.upd: {[data] vstack[`.s.buf; data]};
+.s.flush: {[path; lo; hi]
+  window: select from .s.buf where seq > lo, seq <= hi;
+  wparquet[path; window; 3]
+};
+```
+
+`vstack[table_symbol; dataframe]` atomically appends chunks and returns the incoming
+row count. It creates a missing table and follows the existing table's dtypes and
+timezones, like symbol `upsert`. A failed append preserves the table. Existing
+`vstack[dataframe; dataframe]` calls still return a new dataframe without changing
+either input.
+
+This append path preserves the old buffers held by snapshots. Ordinary `upsert`
+extends the backing storage and may copy the accumulated data when a snapshot is
+alive. Use `vstack` consistently for such a buffer: switching back to `upsert` can
+rechunk and copy its history.
+
+Each input chunk adds metadata; batch incoming rows where practical and manage
+retention. This operation does not compact chunks, reclaim flushed rows, or
+guarantee a wall-clock latency bound. Filtering and Parquet preparation can still
+allocate. Run the flush through `fn_call` from a separate calling thread; that
+call releases the GIL and runs independently of the subscriber's apply thread.
+Coordinate retention with the writer, and advance the flushed sequence only after
+a successful write under the application's durability policy.
+
+`wparquet[path; dataframe; level]` honors zstd levels 1–22. File sizes can still
+differ from Python Polars because writer versions and row-group/page settings
+can differ.
+
+### Build and test
+
 ```bash
 # Build
 cargo build --bin chili

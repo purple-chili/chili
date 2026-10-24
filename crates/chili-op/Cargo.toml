@@ -65,6 +65,7 @@ polars = { workspace = true, default-features = true, features = [
 ] }
 polars-lazy = { workspace = true, features = ["pivot"] }
 polars-compute = { workspace = true }
+polars-parquet = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = "0.10"
 indexmap = "2.14.0"
@@ -82,6 +83,7 @@ log = "0.4"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+tempfile = "3"
 
 [[bench]]
 name = "load_par_df"

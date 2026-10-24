@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.2] - 2026-10-23
+
+### Added
+
+- `vstack[table_symbol; dataframe]` atomically appends chunks to a named table,
+  preserving historical buffers held by concurrent snapshots. It returns the
+  incoming row count and applies the table's dtype/timezone coercion rules.
+  Dataframe-value calls retain their existing behavior. Chunk growth and retention
+  remain the caller's responsibility; this is an opt-in alternative to `upsert`
+  for buffers that are queried or written concurrently.
+
+### Fixed
+
+- `wparquet` now passes its validated compression level to the zstd writer;
+  previously every accepted level silently used the default.
+
 ## [0.11.1] - 2026-09-20
 
 ### Changed

@@ -3,7 +3,7 @@ use polars::{
     io::{
         SerReader, SerWriter,
         csv::read::{CsvParseOptions, CsvReadOptions},
-        parquet::write::ParquetWriteOptions,
+        parquet::write::{ParquetCompression, ParquetWriteOptions},
     },
     lazy::{
         dsl::col,
@@ -27,6 +27,7 @@ use polars::{
     datatypes::{DataType, Field, TimeUnit},
     prelude::{Schema, SchemaRef},
 };
+use polars_parquet::write::ZstdLevel;
 use std::sync::LazyLock;
 
 use chili_core::{ArgType, SpicyError, SpicyObj, SpicyResult, validate_args};
@@ -272,10 +273,15 @@ pub fn write_parquet(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             "Invalid compression level: valid compression level 1-22".to_owned(),
         ))
     } else {
-        // NOTE: compress_level is validated but not yet passed through to the
-        // parquet writer because ZstdLevel is not re-exported by polars.
-        // Adding polars-parquet as a direct dependency would enable this.
-        util::write_parquet_to_filepath(file, df).map(|size| SpicyObj::I64(size as i64))
+        let level = ZstdLevel::try_new(level as i32)
+            .map_err(|e| SpicyError::Err(e.to_string()))?;
+        util::write_parquet_to_filepath_full(
+            file,
+            df,
+            None,
+            ParquetCompression::Zstd(Some(level)),
+        )
+        .map(|size| SpicyObj::I64(size as i64))
     }
 }
 

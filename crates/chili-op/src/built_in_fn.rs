@@ -507,7 +507,12 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
         ),
         (
             "vstack".to_owned(),
-            Func::new_built_in_fn(Some(Box::new(df::vstack)), 2, "vstack", &["df1", "df2"]),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(df::vstack)),
+                2,
+                "vstack",
+                &["table", "df"],
+            ),
         ),
         (
             "xasc".to_owned(),

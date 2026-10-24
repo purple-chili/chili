@@ -773,7 +773,15 @@ pub fn hstack(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     }
 }
 
-pub fn vstack(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+pub fn vstack(
+    state: &chili_core::EngineState,
+    _stack: &mut chili_core::Stack,
+    args: &[&SpicyObj],
+) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::Any, ArgType::DataFrame])?;
+    if args[0].is_sym() {
+        return state.vstack_var(args[0].str()?, args[1].df()?);
+    }
     validate_args(args, &[ArgType::DataFrame, ArgType::DataFrame])?;
     let df0 = args[0].df().unwrap();
     let df1 = args[1].df().unwrap();

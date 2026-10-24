@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.11.1"
+version = "0.11.2"
 edition = "2024"
 authors = ["The Chili Authors <purple-chili@hotmail.com>"]
 description = "chili"
@@ -25,6 +25,9 @@ version = "0.55.2"
 version = "0.55.2"
 
 [workspace.dependencies.polars-buffer]
+version = "0.55.2"
+
+[workspace.dependencies.polars-parquet]
 version = "0.55.2"
 
 [workspace.dependencies.chumsky]
