@@ -1,6 +1,7 @@
 mod arg_type;
 mod ast_node;
 mod authinfo;
+mod auto_compaction;
 mod broker;
 mod engine_state;
 mod errors;
@@ -17,6 +18,8 @@ pub mod serde9;
 mod side_effect_fn;
 mod stack;
 pub mod utils;
+mod variables;
+pub use variables::compact_dataframe;
 pub use arg_type::ArgType;
 pub use engine_state::EngineState;
 pub use engine_state::ReadWrite;

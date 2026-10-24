@@ -250,7 +250,8 @@ impl Drop for ImportGuard<'_> {
 
 pub struct EngineState {
     debug: bool,
-    vars: RwLock<HashMap<String, SpicyObj>>,
+    vars: Arc<RwLock<crate::variables::Variables>>,
+    auto_compaction: crate::auto_compaction::AutoCompaction,
     par_df: RwLock<HashMap<String, PartitionedDataFrame>>,
     source: RwLock<Vec<(String, String)>>,
     /// Import state keyed by stable source ID, separate from diagnostic sources.
@@ -365,7 +366,8 @@ impl EngineState {
             vars.insert(k.to_owned(), SpicyObj::Fn(v.clone()));
         }
         Self {
-            vars: RwLock::new(vars),
+            vars: Arc::new(RwLock::new(vars.into())),
+            auto_compaction: crate::auto_compaction::AutoCompaction::default(),
             par_df: RwLock::new(HashMap::new()),
             source: RwLock::new(source),
             imports: Mutex::new(HashMap::new()),
@@ -465,6 +467,7 @@ impl EngineState {
     /// After this returns the listen port is released and the engine no longer
     /// accepts or serves connections. Idempotent.
     pub fn shutdown(&self) {
+        self.auto_compaction.shutdown();
         self.stop_tcp_listener();
         self.disconnect_all_handles();
     }
@@ -773,12 +776,17 @@ impl EngineState {
     /// Atomically append dataframe chunks without extending existing buffers.
     /// Snapshots retain the old rows; concurrent appends cannot overwrite each
     /// other. As with symbol upsert, incoming dtypes/timezones follow the table.
-    /// Chunk metadata grows with incoming chunks; this does not compact data.
+    /// Small chunks are compacted periodically by a separate worker by default.
     pub fn vstack_var(&self, id: &str, records: &DataFrame) -> SpicyResult<SpicyObj> {
         crate::utils::ensure_df_rectangular(records)?;
         let mut vars = self.vars.write();
-        let Some(obj) = vars.get_mut(id) else {
+        let Some(obj) = vars.get_mut_for_append(id) else {
             vars.insert(id.to_owned(), SpicyObj::DataFrame(records.clone()));
+            if records.height() > 0 {
+                vars.mark_appended(id);
+                drop(vars);
+                self.auto_compaction.ensure_started(&self.vars);
+            }
             return Ok(SpicyObj::I64(records.height() as i64));
         };
         let df = obj.mut_df()?;
@@ -796,7 +804,31 @@ impl EngineState {
                 "vstack failed (target left unchanged): {e}"
             )));
         }
+        if records.height() > 0 {
+            vars.mark_appended(id);
+            drop(vars);
+            self.auto_compaction.ensure_started(&self.vars);
+        }
         Ok(SpicyObj::I64(records.height() as i64))
+    }
+
+    /// Configure automatic compaction of symbol-vstack buffers. Zero interval
+    /// disables future passes; an in-flight pass may finish. Shutdown joins it.
+    pub fn set_auto_compaction(&self, interval_ms: u64, target_rows: usize) -> SpicyResult<()> {
+        self.auto_compaction.configure(&self.vars, interval_ms, target_rows)
+    }
+
+    /// Compact small chunks on the calling thread, outside the variable lock.
+    /// A final atomic publish preserves concurrent vstack appends. Any other
+    /// table mutation cancels publication instead of overwriting newer data.
+    /// Returns the number of rows in the compacted snapshot, excluding appends.
+    pub fn compact_var(&self, id: &str, target_rows: usize) -> SpicyResult<SpicyObj> {
+        if target_rows == 0 {
+            return Err(SpicyError::Err("compact target_rows must be positive".into()));
+        }
+        let (snapshot, token) = self.vars.write().begin_compaction(id)?;
+        crate::variables::compact_and_publish(&self.vars, id, snapshot, token, target_rows)
+            .map(|rows| SpicyObj::I64(rows as i64))
     }
 
     /// Append rows and retain the last `n` rows under the same write lock.

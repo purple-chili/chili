@@ -773,6 +773,39 @@ pub fn hstack(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
     }
 }
 
+pub fn configure_compaction(
+    state: &chili_core::EngineState,
+    _stack: &mut chili_core::Stack,
+    args: &[&SpicyObj],
+) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::Int, ArgType::Int])?;
+    let interval_ms = u64::try_from(args[0].to_i64()?)
+        .map_err(|_| SpicyError::Err("compaction interval_ms must be non-negative".into()))?;
+    let target_rows = usize::try_from(args[1].to_i64()?)
+        .ok()
+        .filter(|rows| *rows > 0)
+        .ok_or_else(|| SpicyError::Err("compact target_rows must be positive".into()))?;
+    state.set_auto_compaction(interval_ms, target_rows)?;
+    Ok(SpicyObj::Null)
+}
+
+pub fn compact(
+    state: &chili_core::EngineState,
+    _stack: &mut chili_core::Stack,
+    args: &[&SpicyObj],
+) -> SpicyResult<SpicyObj> {
+    validate_args(args, &[ArgType::Any, ArgType::Int])?;
+    let target_rows = usize::try_from(args[1].to_i64()?)
+        .ok()
+        .filter(|rows| *rows > 0)
+        .ok_or_else(|| SpicyError::Err("compact target_rows must be positive".into()))?;
+    if args[0].is_sym() {
+        state.compact_var(args[0].str()?, target_rows)
+    } else {
+        chili_core::compact_dataframe(args[0].df()?, target_rows).map(SpicyObj::DataFrame)
+    }
+}
+
 pub fn vstack(
     state: &chili_core::EngineState,
     _stack: &mut chili_core::Stack,

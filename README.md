@@ -105,17 +105,81 @@ extends the backing storage and may copy the accumulated data when a snapshot is
 alive. Use `vstack` consistently for such a buffer: switching back to `upsert` can
 rechunk and copy its history.
 
-Each input chunk adds metadata; batch incoming rows where practical and manage
-retention. This operation does not compact chunks, reclaim flushed rows, or
-guarantee a wall-clock latency bound. Filtering and Parquet preparation can still
-allocate. Run the flush through `fn_call` from a separate calling thread; that
-call releases the GIL and runs independently of the subscriber's apply thread.
-Coordinate retention with the writer, and advance the flushed sequence only after
-a successful write under the application's durability policy.
+Each input chunk adds metadata. A snapshot is cheap to create, but the next
+append may copy chunk descriptors while holding the variable lock. Batch incoming
+rows where practical. Symbol-form `vstack` now automatically schedules background
+compaction: a separate Rust worker starts on the first nonempty append, waits
+250 ms between passes, and processes tables changed by `vstack`. It merges small
+chunks with a 65,536-row target. No Python timer or job scheduler is required,
+and compaction does not run on the subscriber's apply thread. Tables changed
+only by `set_var` or `upsert` are not scheduled.
 
-`wparquet[path; dataframe; level]` honors zstd levels 1–22. File sizes can still
-differ from Python Polars because writer versions and row-group/page settings
-can differ.
+Use `.compact.configure[interval_ms; target_rows]` (Pepper) or
+`engine.set_auto_compaction(interval_ms=250, target_rows=65536)` (Python) to tune
+the worker. A zero interval disables future passes; a running pass may finish.
+Python also accepts `ChiliEngine(compaction_interval=250,
+compaction_target_rows=65536)`. `shutdown()` stops the worker and waits for any
+running pass. Configuration after shutdown is rejected.
+
+`compact[table_symbol; target_rows]` merges adjacent small chunks outside the
+variable write lock. Already-large chunks keep their buffers, so compacting a
+small tail does not repeatedly copy a large seeded prefix. The positive row
+target controls grouping, not a maximum chunk or memory size: groups can exceed
+the target and the final small group can fall below it. Columns may have
+different chunk boundaries. `compact[dataframe; target_rows]` returns a compacted
+dataframe without changing the input.
+
+The symbol form publishes atomically and returns the compacted snapshot's row
+count. Concurrent `vstack` appends are preserved in order after that snapshot.
+Only one compaction can be pending for the current table state. An explicit
+`compact` call reports an error if that table is already being compacted; the
+automatic worker skips busy tables and retries on a later pass. A drain,
+replacement, deletion, `upsert`,
+`upsertn`, or other non-`vstack` mutation invalidates a pending compaction; it
+returns a cancellation error instead of overwriting newer data. Retry later on
+the current table. Old snapshots remain valid and retired buffers are released
+outside the lock.
+
+Tune the interval for the incoming chunk rate. Automatic compaction does not
+reclaim flushed rows or impose a latency guarantee. A very fragmented
+buffer can still incur metadata work during concurrent appends and publication.
+Filtering, compaction, and writing share CPU and memory bandwidth. Coordinate
+retention with the writer, and advance the flushed sequence only after a
+successful write under the application's durability policy.
+
+`wparquet[path; dataframe; level]` honors zstd levels 1–22 and uses the ordered
+streaming Parquet sink, as Python Polars does. In the pinned Rust Polars 0.55.2
+implementation, unset row-group size uses an approximate 122,880-row streaming
+target. `POLARS_IDEAL_SINK_MORSEL_SIZE_ROWS` and
+`POLARS_IDEAL_SINK_MORSEL_SIZE_BYTES` can override the streaming targets; page
+size defaults to 1 MiB. Min/max/null-count statistics are enabled, distinct counts are disabled,
+and encoding selection is automatic. The returned integer is the file size in
+bytes. Output layout and size differ from the old eager writer, and parity with
+Python still requires matching Polars versions, schema, and runtime settings.
+The Python extension and CLI use mimalloc for Rust allocations; the extension
+does not replace Python's allocator.
+
+`crates/chili-py/tests/bench_flush.py` provides a local synthetic acceptance
+probe. Run it against a release wheel with NumPy, Polars, and PyArrow installed:
+
+```bash
+POLARS_MAX_THREADS=1 python crates/chili-py/tests/bench_flush.py writer --rows 8000000 --output tmp/writer.json
+POLARS_MAX_THREADS=1 python crates/chili-py/tests/bench_flush.py stall --rows 12550000 --output tmp/stall.json
+POLARS_MAX_THREADS=1 python crates/chili-py/tests/bench_flush.py reader --rows 0 --rate 0 --batch-rows 3 --max-frames 2000000 --read-interval 2 --loaded 32 --output tmp/reader.json
+```
+
+The TCP probes verify every received row and record subscriber apply timestamps,
+append service times, Python progress observations, and publisher gaps separately.
+JSON results include the environment, parameters, and raw operation timings;
+adjacent Parquet/NPZ files retain the samples. The native compaction worker is
+enabled by default; `--auto-compaction-ms 0` provides an uncompacted control.
+For writer fragmentation checks,
+use `--chunks 10000`; adding `--compact-interval .25` in writer mode compacts each
+fresh buffer before timing and disables the native worker. In concurrent modes,
+that option instead uses a separate Python maintenance thread for comparison.
+Writer preparation time is reported separately and
+excluded from the writer ratio. These probes use their own corpus and are not a
+substitute for acceptance runs on the deployment hardware and workload.
 
 ### Build and test
 

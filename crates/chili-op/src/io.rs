@@ -10,7 +10,7 @@ use polars::{
         frame::{LazyFrame, ScanArgsParquet},
     },
     prelude::{
-        Categories, CsvWriter, FileWriteFormat, IntoLazy, JsonFormat, JsonReader, JsonWriter,
+        Categories, CsvWriter, Engine, FileWriteFormat, IntoLazy, JsonFormat, JsonReader, JsonWriter,
         ParquetReader, PlRefPath, PlSmallStr, SinkDestination, SinkTarget, UnifiedSinkArgs,
     },
 };
@@ -273,15 +273,34 @@ pub fn write_parquet(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
             "Invalid compression level: valid compression level 1-22".to_owned(),
         ))
     } else {
-        let level = ZstdLevel::try_new(level as i32)
+        let level =
+            ZstdLevel::try_new(level as i32).map_err(|e| SpicyError::Err(e.to_string()))?;
+        // Match Python Polars' native write_parquet path: an ordered streaming
+        // sink, rather than the eager writer's chunk preparation. Open a local
+        // File ourselves to preserve wparquet's existing path semantics.
+        let output = File::create(file).map_err(|e| SpicyError::Err(e.to_string()))?;
+        let sink_file = output.try_clone().map_err(|e| SpicyError::Err(e.to_string()))?;
+        let writable = polars::io::utils::file::Writable::Local(sink_file);
+        let target = SinkTarget::Dyn(polars::lazy::dsl::SpecialEq::new(Arc::new(
+            std::sync::Mutex::new(Some(writable)),
+        )));
+        let options = ParquetWriteOptions {
+            compression: ParquetCompression::Zstd(Some(level)),
+            ..Default::default()
+        };
+        df.clone()
+            .lazy()
+            .sink(
+                SinkDestination::File { target },
+                FileWriteFormat::Parquet(Arc::new(options)),
+                UnifiedSinkArgs::default(),
+            )
+            .and_then(|lf| lf.collect_with_engine(Engine::Streaming))
             .map_err(|e| SpicyError::Err(e.to_string()))?;
-        util::write_parquet_to_filepath_full(
-            file,
-            df,
-            None,
-            ParquetCompression::Zstd(Some(level)),
-        )
-        .map(|size| SpicyObj::I64(size as i64))
+        output
+            .metadata()
+            .map(|m| SpicyObj::I64(m.len() as i64))
+            .map_err(|e| SpicyError::Err(e.to_string()))
     }
 }
 

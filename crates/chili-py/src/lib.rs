@@ -25,6 +25,11 @@
 use std::process;
 use std::sync::Arc;
 
+// Use the same allocator as the CLI for allocation-heavy Polars workloads.
+// This applies to Rust allocations in this extension; Python keeps its allocator.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use chili_core::constant::{NS_IN_DAY, UNIX_EPOCH_DAY};
 use chili_core::{EngineState, SpicyObj, Stack};
 use chili_op::{BUILT_IN_FN, LOG_FN};
@@ -347,15 +352,18 @@ impl PyEngineState {
     /// * `job_interval` – job scheduler polling interval in milliseconds (0 = disabled).
     /// * `memory_limit` – memory limit in MB (0 = unlimited).
     #[new]
-    #[pyo3(signature = (debug=false, lazy=false, pepper=false, job_interval=0, memory_limit=0.0))]
+    #[pyo3(signature = (debug=false, lazy=false, pepper=false, job_interval=0, memory_limit=0.0, compaction_interval=250, compaction_target_rows=65536))]
     fn new(
         debug: bool,
         lazy: bool,
         pepper: bool,
         job_interval: u64,
         memory_limit: f64,
+        compaction_interval: u64,
+        compaction_target_rows: usize,
     ) -> PyResult<Self> {
         let mut state = EngineState::new(debug, lazy, pepper);
+        map_spicy_error(state.set_auto_compaction(compaction_interval, compaction_target_rows))?;
         if job_interval > 0 {
             state.set_interval(job_interval);
         }
@@ -624,7 +632,8 @@ impl PyEngineState {
     }
 
     /// Shut down the engine: stop the TCP listener and force-close all handles.
-    fn shutdown(&self) {
+    /// Automatic compaction is stopped and an in-flight pass is joined.
+    fn shutdown(&self, py: Python<'_>) {
         // In a forked child this engine is a copy of the parent's: its locks
         // may be held by threads that do not exist here (deadlock), and its
         // sockets are shared with the parent, so shutting them down would cut
@@ -632,7 +641,14 @@ impl PyEngineState {
         if self.init_pid != process::id() {
             return;
         }
-        self.inner.shutdown();
+        py.detach(|| self.inner.shutdown());
+    }
+
+    /// Set the automatic compaction interval in milliseconds (0 disables it).
+    #[pyo3(signature = (interval_ms=250, target_rows=65536))]
+    fn set_auto_compaction(&self, py: Python<'_>, interval_ms: u64, target_rows: usize) -> PyResult<()> {
+        self.check_fork()?;
+        py.detach(|| map_spicy_error(self.inner.set_auto_compaction(interval_ms, target_rows)))
     }
 
     /// Return a `{name: display_string}` dict for all variables.

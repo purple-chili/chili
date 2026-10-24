@@ -22,6 +22,9 @@ class ChiliEngine:
         pepper: Use Pepper syntax instead of the default Chili syntax.
         job_interval: Job scheduler polling interval in milliseconds (0 = disabled).
         memory_limit: Memory limit in MB (0 = unlimited, minimum 1024 MB).
+        compaction_interval: Milliseconds between automatic compaction passes
+            for symbol-form ``vstack`` buffers (250 by default; 0 disables).
+        compaction_target_rows: Row target when merging small chunks (65,536).
     """
 
     def __init__(
@@ -31,10 +34,15 @@ class ChiliEngine:
         pepper: bool = False,
         job_interval: int = 0,
         memory_limit: float = 0,
+        compaction_interval: int = 250,
+        compaction_target_rows: int = 65536,
     ):
         self.is_tick_loaded = False
         self.is_sub_loaded = False
-        self.engine = EngineState(debug, lazy, pepper, job_interval, memory_limit)
+        self.engine = EngineState(
+            debug, lazy, pepper, job_interval, memory_limit,
+            compaction_interval, compaction_target_rows,
+        )
         self._hdb_path: Optional[str] = None
 
     def eval(
@@ -98,6 +106,18 @@ class ChiliEngine:
             ``True`` if the variable exists, ``False`` otherwise.
         """
         return self.engine.has_var(id)
+
+    def set_auto_compaction(self, interval_ms: int = 250, target_rows: int = 65536) -> None:
+        """Configure background compaction of buffers appended with ``vstack``.
+
+        Enabled by default, independently of ``job_interval``. Only tables
+        changed by symbol-form ``vstack`` are considered. Compaction runs on a
+        separate Rust worker and preserves concurrent appends and snapshots.
+        A zero interval disables future passes; an in-flight pass may finish.
+        ``shutdown()`` stops the worker and waits for that pass to finish.
+        This controls chunk growth, not retention or a hard latency bound.
+        """
+        self.engine.set_auto_compaction(interval_ms, target_rows)
 
     def del_var(self, id: str) -> Any:
         """Delete a variable and return its last value.

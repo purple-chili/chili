@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.3] - 2026-10-24
+
+### Added
+
+- `compact[table_symbol; target_rows]` merges small chunks on the calling thread
+  outside the variable write lock, preserving existing large chunks. Publication
+  retains concurrent `vstack` appends and is cancelled if another operation
+  replaces, drains, trims, or otherwise mutates the table. The dataframe-value
+  form returns a compacted copy. This does not implement retention.
+- Automatic compaction for symbol-form `vstack` buffers is enabled by default,
+  with 250 ms between passes and a 65,536-row grouping target. A separate Rust
+  worker starts on the first nonempty append, processes changed tables, and
+  stops on engine shutdown. Configure it with `.compact.configure[interval_ms;
+  target_rows]` or Python `set_auto_compaction`; zero interval disables future
+  passes. Python constructor options are `compaction_interval` and
+  `compaction_target_rows`. The job scheduler is not required.
+
+### Changed
+
+- `wparquet` uses Polars' ordered streaming Parquet sink, matching the writer
+  path used by Python Polars. Compression levels and the returned byte count
+  remain supported. Row-group layout and file sizes can change; matching writer
+  paths does not guarantee parity across different Polars versions.
+- The Python extension now uses mimalloc for Rust allocations, matching the
+  CLI and reducing allocation overhead in Parquet writing. Python's allocator
+  is unchanged.
+
 ## [0.11.2] - 2026-10-23
 
 ### Added

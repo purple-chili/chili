@@ -6,6 +6,8 @@ use polars::prelude::*;
 
 fn engine() -> EngineState {
     let mut state = EngineState::initialize();
+    // Exercise the append primitive independently of background maintenance.
+    state.set_auto_compaction(0, 65_536).unwrap();
     state.enable_pepper();
     state.register_fn(&BUILT_IN_FN);
     state

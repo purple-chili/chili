@@ -515,6 +515,24 @@ pub static BUILT_IN_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
             ),
         ),
         (
+            "compact".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(df::compact)),
+                2,
+                "compact",
+                &["table", "target_rows"],
+            ),
+        ),
+        (
+            ".compact.configure".to_owned(),
+            Func::new_side_effect_built_in_fn(
+                Some(Box::new(df::configure_compaction)),
+                2,
+                ".compact.configure",
+                &["interval_ms", "target_rows"],
+            ),
+        ),
+        (
             "xasc".to_owned(),
             Func::new_built_in_fn(Some(Box::new(df::x_asc)), 2, "xasc", &["columns", "df"]),
         ),
