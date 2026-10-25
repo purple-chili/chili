@@ -71,6 +71,16 @@ engine.sync(h, ["set", "a", 2])       # list   — sent as a function call (func
 
 ## Development
 
+For buffers read or flushed concurrently, symbol-form `vstack` enables automatic
+compaction by default. Configure it with
+`engine.set_auto_compaction(interval_ms=250, target_rows=65536)`; a zero interval
+disables future passes. Frequent table-replacing trims can prevent compaction
+from completing. Empty-batch `upsertn` is an atomic retention option, but can copy
+retained numeric data under the variable write lock. Parquet bytes also depend
+on the snapshot's chunk layout, so identical dataframe values need not produce
+identical files. See the [buffer and retention documentation](https://purple-chili.github.io/built-in-functions/df/#vstack)
+and [Parquet writer documentation](https://purple-chili.github.io/built-in-functions/io/#wparquet).
+
 ```bash
 # Build and install in development mode
 maturin develop --release --manifest-path crates/chili-py/Cargo.toml

@@ -1,0 +1,22 @@
+---
+description: Keep Chili documentation and the companion documentation site in sync
+alwaysApply: true
+---
+
+# Keep documentation in sync
+
+When changing documented Chili behavior, public APIs, configuration, defaults,
+examples, or known limitations, update the relevant documentation in both this
+repository and `/home/jshinonome/Workspace/purple-chili.github.io` in the same task.
+
+- Read the documentation repository's instructions and Git status before editing;
+  preserve unrelated changes.
+- Match examples, signatures, defaults, return values, and limitations to the
+  implementation. For example, dataframe operations belong in
+  `docs/built-in-functions/df.md`, writer behavior in `io.md`, and configuration
+  in `config.md` in the documentation repository.
+- Use the documentation repository's existing build workflow to validate edits.
+- When committing and pushing an authorized documentation sync, include the
+  corresponding changes in both repositories and report both commits.
+- If the companion repository is unavailable, state which documentation remains
+  unsynchronized rather than claiming the update is complete.

@@ -140,6 +140,24 @@ returns a cancellation error instead of overwriting newer data. Retry later on
 the current table. Old snapshots remain valid and retired buffers are released
 outside the lock.
 
+Retention by assignment, such as `.s.buf: neg[.s.keep] # .s.buf`, counts as a
+replacement even though the result is a slice of the same table. It invalidates
+an in-flight pass and removes the table from the pending compaction queue; a
+subsequent `vstack` schedules it again. Frequent replacements can repeatedly
+cancel compaction, leaving many small chunks and slow readers despite a bounded
+row count. The worker cannot publish the old prefix after a trim because that
+could restore rows the application removed.
+
+For periodic bounded retention, ``upsertn[`.s.buf; 0 # data; .s.keep]`` appends an
+empty dataframe with the incoming batch's schema and retains at most `.s.keep`
+rows atomically. It also invalidates pending compaction. Its existing `extend`
+path merges fragmented numeric columns itself; it does not preserve the
+background worker's pass. This can copy the retained data while holding the
+variable write lock, including on the apply thread when called from `upd`.
+Choose the retained window and trim frequency against the application's latency
+budget, especially while snapshots are alive. Keep ordinary incoming appends on
+`vstack` when using this pattern.
+
 Tune the interval for the incoming chunk rate. Automatic compaction does not
 reclaim flushed rows or impose a latency guarantee. A very fragmented
 buffer can still incur metadata work during concurrent appends and publication.
@@ -152,10 +170,22 @@ streaming Parquet sink, as Python Polars does. In the pinned Rust Polars 0.55.2
 implementation, unset row-group size uses an approximate 122,880-row streaming
 target. `POLARS_IDEAL_SINK_MORSEL_SIZE_ROWS` and
 `POLARS_IDEAL_SINK_MORSEL_SIZE_BYTES` can override the streaming targets; page
-size defaults to 1 MiB. Min/max/null-count statistics are enabled, distinct counts are disabled,
-and encoding selection is automatic. The returned integer is the file size in
-bytes. Output layout and size differ from the old eager writer, and parity with
-Python still requires matching Polars versions, schema, and runtime settings.
+size defaults to 1 MiB. Min/max/null-count statistics are enabled, distinct counts
+are disabled, and encoding selection is automatic. The returned integer is the
+file size in bytes.
+
+The streaming row target is approximate, not a fixed row-group size. Input chunk
+layout affects row-group boundaries, file size, and file bytes, even for the same
+ordered rows and compression level. Automatic compaction changes the live
+table's chunk layout over time, so separate snapshots of the same logical rows
+can produce different Parquet bytes. An existing snapshot remains unchanged by
+later compaction. The sink environment variables adjust targets; they do not
+select exact row-group sizing, which `wparquet` does not currently expose.
+Do not use Parquet file hashes as a test of dataframe equality or expect byte
+parity with Python Polars. Compare the schema and ordered values for logical
+equality; exact-byte reproducibility requires controlling physical layout,
+writer options, and library versions as well.
+
 The Python extension and CLI use mimalloc for Rust allocations; the extension
 does not replace Python's allocator.
 

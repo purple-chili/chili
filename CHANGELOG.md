@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Documentation
+
+- Clarify that frequent table-replacing retention trims can prevent background
+  compaction from completing, and that empty-batch `upsertn` retention can copy
+  retained numeric data under the variable write lock.
+- Explain how input chunk layout affects streaming Parquet row groups and file
+  bytes, including when automatic compaction changes the layout between snapshots.
+
 ## [0.11.3] - 2026-10-24
 
 ### Added
