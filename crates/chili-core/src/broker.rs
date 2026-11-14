@@ -99,6 +99,30 @@ fn subscribe_filtered(
     Ok(SpicyObj::I64(bound))
 }
 
+/// Log-aware variants preserve the legacy counter and return a separate
+/// exclusive message end plus the path captured in the registration section.
+fn subscribe_log(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    let handle = args[0].to_i64()?;
+    let topics = topic_list(args[1])?;
+    let log = args[2].to_i64()?;
+    let (counter, end, path) = state.subscribe_pending_log(&topics, handle, None, log)?;
+    finish_subscribe(state, stack, handle)?;
+    Ok(SpicyObj::MixedList(vec![SpicyObj::I64(counter), SpicyObj::I64(end), SpicyObj::String(path)]))
+}
+
+fn subscribe_filtered_log(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
+    let handle = args[0].to_i64()?;
+    let topic = args[1].str()?;
+    let column = args[2].str()?.to_owned();
+    let values = args[3].to_str_vec()?;
+    let filter = if values.is_empty() { None } else {
+        Some(SubFilter::new(column, values.into_iter().map(str::to_owned).collect()))
+    };
+    let (counter, end, path) = state.subscribe_pending_log(&[topic], handle, filter, args[4].to_i64()?)?;
+    finish_subscribe(state, stack, handle)?;
+    Ok(SpicyObj::MixedList(vec![SpicyObj::I64(counter), SpicyObj::I64(end), SpicyObj::String(path)]))
+}
+
 fn unsubscribe(
     state: &EngineState,
     _stack: &mut Stack,
@@ -216,6 +240,16 @@ pub static BROKER_FN: LazyLock<HashMap<String, Func>> = LazyLock::new(|| {
                 ".broker.subscribe",
                 &["handle", "topics"],
             ),
+        ),
+        (
+            ".broker.subscribeLog".to_owned(),
+            Func::new_side_effect_built_in_fn(Some(Box::new(subscribe_log)), 3,
+                ".broker.subscribeLog", &["handle", "topics", "log"]),
+        ),
+        (
+            ".broker.subscribeFilteredLog".to_owned(),
+            Func::new_side_effect_built_in_fn(Some(Box::new(subscribe_filtered_log)), 5,
+                ".broker.subscribeFilteredLog", &["handle", "topic", "column", "values", "log"]),
         ),
         (
             ".broker.subscribeFiltered".to_owned(),

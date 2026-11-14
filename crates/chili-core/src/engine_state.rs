@@ -69,6 +69,8 @@ impl<T: Read + Write + Send + Sync> ReadWrite for T {}
 /// same lock that serializes I/O — without re-entering the handle-map RwLock
 /// (which deadlocks with `fsync_handle` / `close_handle`).
 pub struct HandleWriter {
+    /// Complete sequence records appended, independent of application tick slots.
+    pub message_count: i64,
     pub stream: Box<dyn ReadWrite>,
     pub conn_type: ConnType,
 }
@@ -1357,7 +1359,7 @@ impl EngineState {
                         )));
                     }
                     let (rw, conn_type, msg_count) = utils::prepare_file_writer(path)?;
-                    let h = self.set_handle(
+                    let h = self.set_handle_with_count(
                         Some(rw),
                         &format!("file://{}", path),
                         &uri,
@@ -1365,6 +1367,7 @@ impl EngineState {
                         IpcType::Chili,
                         conn_type,
                         0,
+                        msg_count,
                     )?;
                     // Absolute, not additive: a reused handle number must not
                     // inherit the previous file's count. Roll the handle back if
@@ -1520,7 +1523,7 @@ impl EngineState {
                             .map_err(|e| SpicyError::Err(e.to_string()))?;
                     }
                 }
-                self.set_handle(
+                self.set_handle_with_count(
                     Some(rw),
                     &format!("file://{}", path),
                     uri,
@@ -1528,6 +1531,7 @@ impl EngineState {
                     IpcType::Chili,
                     conn_type,
                     *handle_num,
+                    msg_count,
                 )?;
                 // After `set_handle`: the documented order is handle → tick_count.
                 let count = if conn_type == ConnType::New { 0 } else { msg_count };
@@ -1695,6 +1699,21 @@ impl EngineState {
         conn_type: ConnType,
         h: i64,
     ) -> SpicyResult<SpicyObj> {
+        self.set_handle_with_count(rw, socket, uri, is_local, ipc_type, conn_type, h, 0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn set_handle_with_count(
+        &self,
+        rw: Option<Box<dyn ReadWrite>>,
+        socket: &str,
+        uri: &str,
+        is_local: bool,
+        ipc_type: IpcType,
+        conn_type: ConnType,
+        h: i64,
+        message_count: i64,
+    ) -> SpicyResult<SpicyObj> {
         let mut handle = self.handle.write();
         let h = if handle.contains_key(&h) {
             h
@@ -1706,6 +1725,7 @@ impl EngineState {
             Handle {
                 rw: rw.map(|b| {
                     Arc::new(Mutex::new(HandleWriter {
+                        message_count,
                         stream: b,
                         conn_type,
                     }))
@@ -2043,6 +2063,9 @@ impl EngineState {
                 }
             }
         })();
+        if result.is_ok() && conn_type == ConnType::Sequence {
+            rw_guard.message_count += 1;
+        }
         rw_guard.conn_type = conn_type;
         drop(rw_guard);
         self.set_conn_type_if_writer(h, &rw_arc, conn_type);
@@ -2236,6 +2259,33 @@ impl EngineState {
         filter: Option<SubFilter>,
     ) -> SpicyResult<i64> {
         let _gate = self.lpt_lock.lock();
+        self.register_pending(topics, h, filter)
+    }
+
+    /// Atomically capture the actual log path and exclusive message bound with
+    /// registration. Application counters may count rows or have arbitrary seeds.
+    pub fn subscribe_pending_log(
+        &self, topics: &[&str], h: i64, filter: Option<SubFilter>, log: i64,
+    ) -> SpicyResult<(i64, i64, String)> {
+        let _gate = self.lpt_lock.lock();
+        let (writer, path) = {
+            let handles = self.handle.read();
+            let hd = handles.get(&log).ok_or(SpicyError::InvalidHandleErr(log))?;
+            let path = hd.uri.strip_prefix("file://")
+                .ok_or_else(|| SpicyError::Err("subscribeLog requires a sequence log".into()))?;
+            (hd.rw.clone().ok_or(SpicyError::InvalidHandleErr(log))?, path.to_owned())
+        };
+        let writer = writer.lock();
+        if !matches!(writer.conn_type, ConnType::New | ConnType::Sequence) {
+            return Err(SpicyError::Err("subscribeLog requires a sequence log".into()));
+        }
+        let end = writer.message_count;
+        // Keep the writer locked until registration, excluding direct log writes.
+        let counter = self.register_pending(topics, h, filter)?;
+        Ok((counter, end, path))
+    }
+
+    fn register_pending(&self, topics: &[&str], h: i64, filter: Option<SubFilter>) -> SpicyResult<i64> {
         {
             // Check and register under one topic_map guard. Disconnecting marks
             // the handle first and purges the topic map after, so an evaluation

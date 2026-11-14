@@ -785,8 +785,10 @@ class ChiliEngine:
     def fsync_handle(self, handle_num: int) -> None:
         """Flush a file handle's buffered data to disk (``fdatasync``).
 
-        Forces all pending writes on the given handle to be persisted,
-        ensuring data durability without closing the handle.
+        Synchronizes the original file description. A non-interruption sync
+        error is raised immediately, without reopening or retrying. Durability
+        is unknown after a writeback failure; later success does not repair it.
+        File creation/rename directory durability is outside this operation.
 
         Args:
             handle_num: Handle number to sync.

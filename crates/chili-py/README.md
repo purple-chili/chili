@@ -88,3 +88,10 @@ maturin develop --release --manifest-path crates/chili-py/Cargo.toml
 # Run tests
 pytest crates/chili-py/tests/
 ```
+
+In 0.11.4, `fsync_handle` raises the first non-interruption sync error without
+reopening the log; durability is unknown after a failure. Bundled tickerplants
+and subscribers use a separate message replay bound, supporting row stamping.
+Upgrade both peers and update custom tickerplants to the four-field handshake;
+new subscribers reject legacy replies. Previously duplicated or skipped data
+requires rebuilding subscriber state from retained logs.

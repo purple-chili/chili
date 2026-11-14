@@ -303,3 +303,26 @@ fn concurrent_lpt_explicit_handles_do_not_cross_wire() {
     assert_eq!(c1, per);
     assert_eq!(c2, per);
 }
+
+#[test]
+fn log_bound_is_independent_of_rows_and_tracks_reopen_rotation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log");
+    let path = path.to_str().unwrap();
+    let engine = EngineState::initialize();
+    let h = open_log(&engine, path);
+    engine.set_tick_count(0, 1000).unwrap();
+    for vals in [vec![1, 2, 3], vec![]] {
+        engine.lpt(&SpicyObj::Symbol("trade".into()), &frame(vals), &col_seq(), &idx(h)).unwrap();
+    }
+    // A valid file handle suffices as a registration target for this core test.
+    assert_eq!(engine.subscribe_pending_log(&["trade"], h, None, h).unwrap(), (1003, 2, path.into()));
+    engine.close_handle(&h).unwrap();
+    let h = open_log(&engine, path);
+    assert_eq!(engine.subscribe_pending_log(&["trade"], h, None, h).unwrap().1, 2);
+    let next = dir.path().join("next");
+    engine.rotate_handle(&h, &format!("file://{}", next.display())).unwrap();
+    assert_eq!(engine.subscribe_pending_log(&["trade"], h, None, h).unwrap().1, 0);
+    engine.sync(&h, &SpicyObj::MixedList(vec![idx(1)])).unwrap();
+    assert_eq!(engine.subscribe_pending_log(&["trade"], h, None, h).unwrap().1, 1);
+}

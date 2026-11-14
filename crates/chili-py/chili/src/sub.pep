@@ -1,3 +1,9 @@
+// 0.11.4 handshake: index 1 is an application counter; index 3 is messages.
+.sub.replayEnd: {[info]
+  if[4 > count info; raise "tickerplant must provide a message replay bound (upgrade to 0.11.4)"];
+  info[3]
+};
+
 upd: {[table; data] table upsert data; tick[this.h; 1]; };
 
 // ---------------------------------------------------------------------------
@@ -32,6 +38,7 @@ upd: {[table; data] table upsert data; tick[this.h; 1]; };
   h: .handle.open tickSocket;
   .handle.onDisconnected[h; `.sub.recover];
   info: h (`.tick.subscribe; topics);
+  end: .sub.replayEnd[info];
   (set) each info[2];
   full: (0 = count topics) | (count topics) = count key info[2];
   set[.sub.stateName[h]; (topics; `; (); info[0]; full)];
@@ -39,7 +46,7 @@ upd: {[table; data] table upsert data; tick[this.h; 1]; };
   // bound, so the backlog of a slow replay sits here rather than in the
   // tickerplant's outbound queue. .handle.release applies it in order.
   .handle.holding[h];
-  replay[info[0]; 0; info[1]; (); 1b; h];
+  replay[info[0]; 0; end; (); 1b; h];
   .handle.release[h];
 };
 
@@ -53,10 +60,11 @@ upd: {[table; data] table upsert data; tick[this.h; 1]; };
   h: .handle.open tickSocket;
   .handle.onDisconnected[h; `.sub.recover];
   info: h (`.tick.subscribeFiltered; topic; column; values);
+  end: .sub.replayEnd[info];
   (set) each info[2];
   set[.sub.stateName[h]; (enlist topic; column; values; info[0]; 0b)];
   .handle.holding[h];
-  replay[info[0]; 0; info[1]; (); 1b; h];
+  replay[info[0]; 0; end; (); 1b; h];
   .handle.release[h];
 };
 
@@ -74,12 +82,13 @@ upd: {[table; data] table upsert data; tick[this.h; 1]; };
   name: .sub.stateName[handle];
   st: get name;
   info: .sub.request[handle; st];
+  end: .sub.replayEnd[info];
   .handle.holding[handle];
   $[st[4];
     $[info[0] = st[3]; 0; .sub.finishLog[handle; st[3]]];
     .sub.resetTable[info[2]; ] each st[0]];
   start: $[st[4]; tick[handle; 0]; 0];
-  replay[info[0]; start; info[1]; $[st[4]; (); st[0]]; 1b; handle];
+  replay[info[0]; start; end; $[st[4]; (); st[0]]; 1b; handle];
   set[name; (st[0]; st[1]; st[2]; info[0]; st[4])];
   .handle.release[handle];
 };

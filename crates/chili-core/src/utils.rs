@@ -3,7 +3,6 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
     panic::{AssertUnwindSafe, catch_unwind},
-    path::PathBuf,
     sync::{Arc, LazyLock, mpsc},
     time::Duration,
 };
@@ -26,18 +25,11 @@ use crate::{
 const SEQ_MAGIC: [u8; 8] = [255, 0, 0, 0, 0, 0, 0, 0];
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
-/// A thin wrapper around [`std::fs::File`] that makes [`Write::flush`] call
-/// [`File::sync_data`] (`fdatasync`), so that an explicit `.flush()` guarantees
-/// data durability on disk.  Normal `write()` calls pass straight through
-/// without any extra syscalls.
-///
-/// On a sticky EIO (or any non-EINTR flush error), `flush()` closes the
-/// underlying fd, reopens the file at the same path, seeks to EOF, and
-/// retries `sync_data()` once.  This matches the recovery pattern used by
-/// Postgres, etcd, and RocksDB for transient device-level writeback errors.
+/// File writer whose explicit flush synchronizes data on the original file
+/// description. Errors propagate: reopening and retrying can hide lost writes
+/// and would discard the sequence log's advisory lock.
 struct SyncFile {
     file: std::fs::File,
-    path: PathBuf,
 }
 
 impl Write for SyncFile {
@@ -46,46 +38,8 @@ impl Write for SyncFile {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        match self.file.sync_data() {
-            Ok(()) => return Ok(()),
-            Err(e) if e.raw_os_error() == Some(4 /* EINTR */) => {
-                // EINTR — retry once in place, no reopen needed.
-                return self.file.sync_data();
-            }
-            Err(first_err) => {
-                // Persistent error (likely sticky EIO) — close and reopen the fd.
-                let path_display = self.path.display();
-                let new_file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(false)
-                    .open(&self.path)
-                    .map_err(|reopen_err| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!(
-                                "fsync failed ({first_err}), reopen of {path_display} also failed: {reopen_err}"
-                            ),
-                        )
-                    })?;
-                self.file = new_file;
-                // Seek to end so subsequent writes append correctly.
-                use std::io::{Seek, SeekFrom};
-                self.file.seek(SeekFrom::End(0))?;
-                warn!(
-                    "fsync EIO on {}: closed and reopened fd after transient error",
-                    path_display
-                );
-                self.file.sync_data().map_err(|retry_err| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "fsync failed ({first_err}), retried after reopen of {path_display}, still failed: {retry_err}"
-                        ),
-                    )
-                })
-            }
-        }
+        // Rust's sync_data handles interrupted syscalls on the same descriptor.
+        self.file.sync_data()
     }
 }
 
@@ -417,7 +371,6 @@ pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType, 
         lock_log(&file, path)?;
         let rw: Box<dyn ReadWrite> = Box::new(SyncFile {
             file,
-            path: PathBuf::from(path),
         });
         return Ok((rw, ConnType::New, 0));
     }
@@ -430,7 +383,6 @@ pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType, 
             .map_err(|e| SpicyError::Err(e.to_string()))?;
         let rw: Box<dyn ReadWrite> = Box::new(SyncFile {
             file,
-            path: PathBuf::from(path),
         });
         return Ok((rw, ConnType::Sequence, count));
     }
@@ -459,7 +411,6 @@ pub fn prepare_file_writer(path: &str) -> Result<(Box<dyn ReadWrite>, ConnType, 
     };
     let rw: Box<dyn ReadWrite> = Box::new(SyncFile {
         file,
-        path: PathBuf::from(path),
     });
     Ok((rw, conn_type, msg_count))
 }

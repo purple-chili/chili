@@ -2,7 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.11.4] - 2026-11-14
+
+### Fixed
+
+- File sync propagates the first non-interruption failure on the original
+  descriptor, preserving the sequence log's advisory lock. Removed automatic
+  reopen-and-retry, which could hide failed writeback and sync another file.
+- Bundled subscribers replay to an exclusive message bound independent of
+  stamped row counters. New `subscribeLog`/`subscribeFilteredLog` broker APIs
+  capture the log path and message count with registration. The tickerplant
+  reply preserves its first three fields and adds the message end as field 4.
+  Upgrade both peers; new subscribers reject ambiguous legacy replies. Rebuild
+  already affected subscriber state from retained logs.
+
 
 ### Documentation
 

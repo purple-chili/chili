@@ -244,3 +244,20 @@ Thanks to the authors of these projects and all other open-source projects for t
 ## License
 
 [MIT](LICENSE)
+
+### Log synchronization and subscription bounds (0.11.4)
+
+`.handle.fsync` / Python `fsync_handle` propagates the first non-interruption
+sync error without reopening the file. The original descriptor and log lock
+are preserved. After a writeback failure, durability is unknown; a subsequent
+successful sync does not establish recovery. Directory durability for file
+creation/rename is outside this operation.
+
+The bundled tickerplant reply is `(log_path; counter; schema; message_end)`.
+Replay uses the exclusive message end, independent of stamped row counters.
+Custom tickerplants should use `.broker.subscribeLog[handle; topics; log]` or
+`.broker.subscribeFilteredLog[handle; topic; column; values; log]`, which return
+`(counter; message_end; log_path)` atomically with registration. Upgrade both
+peers together. New subscribers reject legacy three-field replies; old
+subscribers remain unsafe with stamped counters. Rebuild previously affected
+subscriber state from retained logs before resuming incremental recovery.
