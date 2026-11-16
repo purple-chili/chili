@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.5] - 2026-11-16
+
+### Fixed
+
+- The macOS Python extension uses Rust's system allocator instead of mimalloc
+  v3, addressing the allocator-recursion path reported during engine
+  construction under mixed parallel workloads. Other platforms and the CLI
+  retain mimalloc. Confirmation against the affected macOS suite is pending.
+- Log-aware broker subscriptions return the log path as a symbol, preserving
+  Python `str` in the four-field tickerplant handshake. 0.11.4 returned `bytes`.
+  Message replay bounds and the 0.11.4 sync-error behavior are unchanged.
+
 ## [0.11.4] - 2026-11-14
 
 ### Fixed

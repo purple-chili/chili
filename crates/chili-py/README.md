@@ -95,3 +95,9 @@ and subscribers use a separate message replay bound, supporting row stamping.
 Upgrade both peers and update custom tickerplants to the four-field handshake;
 new subscribers reject legacy replies. Previously duplicated or skipped data
 requires rebuilding subscriber state from retained logs.
+
+In 0.11.5, macOS wheels use Rust's system allocator; other platforms retain
+mimalloc. This addresses the allocator-recursion path reported in mixed macOS
+parallel tests; confirmation with the affected full suite is pending. The CLI
+allocator is unchanged. Log paths in subscription replies are Python `str`
+again (0.11.4 returned `bytes`), while the message replay bound remains intact.

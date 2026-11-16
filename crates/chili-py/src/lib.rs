@@ -25,8 +25,14 @@
 use std::process;
 use std::sync::Arc;
 
-// Use the same allocator as the CLI for allocation-heavy Polars workloads.
-// This applies to Rust allocations in this extension; Python keeps its allocator.
+// macOS extensions can coexist with other native allocators in the host.
+// Use the system allocator there to avoid the mimalloc v3 constructor crash.
+// Other platforms retain mimalloc; neither choice replaces Python's allocator.
+#[cfg(target_os = "macos")]
+#[global_allocator]
+static GLOBAL: std::alloc::System = std::alloc::System;
+
+#[cfg(not(target_os = "macos"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

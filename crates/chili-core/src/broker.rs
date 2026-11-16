@@ -107,7 +107,7 @@ fn subscribe_log(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> 
     let log = args[2].to_i64()?;
     let (counter, end, path) = state.subscribe_pending_log(&topics, handle, None, log)?;
     finish_subscribe(state, stack, handle)?;
-    Ok(SpicyObj::MixedList(vec![SpicyObj::I64(counter), SpicyObj::I64(end), SpicyObj::String(path)]))
+    Ok(SpicyObj::MixedList(vec![SpicyObj::I64(counter), SpicyObj::I64(end), SpicyObj::Symbol(path)]))
 }
 
 fn subscribe_filtered_log(state: &EngineState, stack: &mut Stack, args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
@@ -120,7 +120,7 @@ fn subscribe_filtered_log(state: &EngineState, stack: &mut Stack, args: &[&Spicy
     };
     let (counter, end, path) = state.subscribe_pending_log(&[topic], handle, filter, args[4].to_i64()?)?;
     finish_subscribe(state, stack, handle)?;
-    Ok(SpicyObj::MixedList(vec![SpicyObj::I64(counter), SpicyObj::I64(end), SpicyObj::String(path)]))
+    Ok(SpicyObj::MixedList(vec![SpicyObj::I64(counter), SpicyObj::I64(end), SpicyObj::Symbol(path)]))
 }
 
 fn unsubscribe(

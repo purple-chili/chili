@@ -186,8 +186,11 @@ parity with Python Polars. Compare the schema and ordered values for logical
 equality; exact-byte reproducibility requires controlling physical layout,
 writer options, and library versions as well.
 
-The Python extension and CLI use mimalloc for Rust allocations; the extension
-does not replace Python's allocator.
+From 0.11.5, the macOS Python extension uses Rust's system allocator to avoid
+an allocator-recursion crash reported during engine construction in mixed
+parallel workloads. Other platforms and the CLI retain mimalloc for Rust
+allocations. The extension does not replace Python's allocator. Confirmation
+against the affected macOS test suite is pending.
 
 `crates/chili-py/tests/bench_flush.py` provides a local synthetic acceptance
 probe. Run it against a release wheel with NumPy, Polars, and PyArrow installed:
@@ -261,3 +264,6 @@ Custom tickerplants should use `.broker.subscribeLog[handle; topics; log]` or
 peers together. New subscribers reject legacy three-field replies; old
 subscribers remain unsafe with stamped counters. Rebuild previously affected
 subscriber state from retained logs before resuming incremental recovery.
+
+In 0.11.5, log-aware subscription paths are symbols and reach Python as `str`,
+restoring the pre-0.11.4 path type. The message-bound handshake is unchanged.
