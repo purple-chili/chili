@@ -1,6 +1,6 @@
 [package]
 name = "chili-py"
-version = "0.11.5"
+version = "0.11.6"
 edition = "2024"
 authors = ["The Chili Authors <purple-chili@hotmail.com>"]
 description = "Python bindings for chili-core EngineState"
@@ -19,4 +19,4 @@ pyo3-polars = { version = "0.28.0", features = ["lazy"] }
 chrono = { version = "0.4" }
 serde_json = "1"
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-mimalloc = { version = "0.1", default-features = false }
+mimalloc = { version = "0.1", default-features = false, features = ["local_dynamic_tls"] }

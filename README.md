@@ -189,8 +189,8 @@ writer options, and library versions as well.
 From 0.11.5, the macOS Python extension uses Rust's system allocator to avoid
 an allocator-recursion crash reported during engine construction in mixed
 parallel workloads. Other platforms and the CLI retain mimalloc for Rust
-allocations. The extension does not replace Python's allocator. Confirmation
-against the affected macOS test suite is pending.
+allocations. The extension does not replace Python's allocator. The affected
+macOS parallel suite subsequently passed on 0.11.5.
 
 `crates/chili-py/tests/bench_flush.py` provides a local synthetic acceptance
 probe. Run it against a release wheel with NumPy, Polars, and PyArrow installed:
@@ -267,3 +267,17 @@ subscriber state from retained logs before resuming incremental recovery.
 
 In 0.11.5, log-aware subscription paths are symbols and reach Python as `str`,
 restoring the pre-0.11.4 path type. The message-bound handshake is unchanged.
+
+Process-memory reporting is best effort: `stats()["process_memory_rss_bytes"]`
+is `-1` when the process metrics cannot be initialized or read, and `.os.mem`
+reports an error if system information is unavailable. The configured memory
+monitor logs a warning and stops if initialization fails or the process cannot
+be found.
+
+From 0.11.6, the non-macOS Python extension builds mimalloc with
+`local_dynamic_tls` so late imports on Linux do not require the loader's spare
+static TLS block. No early-import rule or `GLIBC_TUNABLES` setting is required
+for this allocation path. The CLI keeps its existing allocator configuration.
+Linux wheel releases are audited for mandatory static-TLS relocations; the
+manual `Linux Python Candidate` workflow also runs late-import tests under
+synthetic TLS pressure on native x86_64 and ARM64 runners.

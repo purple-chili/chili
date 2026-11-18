@@ -98,6 +98,13 @@ requires rebuilding subscriber state from retained logs.
 
 In 0.11.5, macOS wheels use Rust's system allocator; other platforms retain
 mimalloc. This addresses the allocator-recursion path reported in mixed macOS
-parallel tests; confirmation with the affected full suite is pending. The CLI
+parallel tests; the affected full suite subsequently passed on 0.11.5. The CLI
 allocator is unchanged. Log paths in subscription replies are Python `str`
 again (0.11.4 returned `bytes`), while the message replay bound remains intact.
+
+From 0.11.6, the extension enables mimalloc's `local_dynamic_tls` feature on
+non-macOS platforms, avoiding glibc static-TLS exhaustion during late imports.
+macOS retains the system allocator. Linux wheel release checks inspect TLS
+relocations, and `Linux Python Candidate` builds native x86_64/ARM64 wheels
+and tests late imports under synthetic static-TLS pressure without a loader
+tunable or consumer import-order workaround.

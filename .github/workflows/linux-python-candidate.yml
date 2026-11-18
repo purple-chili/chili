@@ -1,0 +1,48 @@
+name: Linux Python Candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-24.04
+            target: x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 90
+    env:
+      POLARS_MAX_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Prepare Python 3.14 test environment
+        run: |
+          uv venv --python 3.14
+          uv pip install 'polars==1.39.3' pytest 'pytest-xdist==3.8.0'
+      - name: Build candidate wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          manylinux: '2_28'
+          args: --release --locked --out dist --manifest-path crates/chili-py/Cargo.toml
+      - name: Check wheel TLS
+        run: python3 crates/chili-py/tests/check_wheel_tls.py dist/*.whl
+      - name: Upload candidate wheel
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-${{ matrix.platform.target }}-python-candidate
+          path: dist/*.whl
+          if-no-files-found: error
+      - name: Install candidate
+        run: uv pip install dist/*.whl
+      - name: Test late import before loading the rest of the suite
+        run: uv run --no-sync python -m pytest -q crates/chili-py/tests/test_late_import_tls.py
+      - name: Test native extension with eight workers
+        run: uv run --no-sync python -m pytest -n 8 -q crates/chili-py/tests

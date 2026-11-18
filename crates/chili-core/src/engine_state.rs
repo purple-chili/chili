@@ -4086,13 +4086,12 @@ impl EngineState {
         status.insert("queue_bytes_total".into(), SpicyObj::I64(total_queue_bytes));
 
         // `-1` when the current process cannot be read.
-        let rss_bytes: i64 = match sysinfo::get_current_pid() {
-            Ok(pid) => {
-                let mut sys = sysinfo::System::new();
+        let rss_bytes: i64 = match (sysinfo::get_current_pid(), sysinfo::System::new()) {
+            (Ok(pid), Ok(mut sys)) => {
                 sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
                 sys.process(pid).map(|p| p.memory() as i64).unwrap_or(-1)
             }
-            Err(_) => -1,
+            _ => -1,
         };
         status.insert("process_memory_rss_bytes".into(), SpicyObj::I64(rss_bytes));
 
@@ -4363,7 +4362,13 @@ impl EngineState {
         let memory_limit = self.memory_limit;
         let pid = sysinfo::get_current_pid().expect("Failed to get current pid");
         thread::spawn(move || {
-            let mut sys = sysinfo::System::new();
+            let mut sys = match sysinfo::System::new() {
+                Ok(sys) => sys,
+                Err(err) => {
+                    warn!("Cannot initialize memory monitor: {}", err);
+                    return;
+                }
+            };
             let mut is_over_limit = false;
             loop {
                 sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);

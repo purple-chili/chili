@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.6] - 2026-11-18
+
+### Fixed
+
+- Build the Python extension's mimalloc with dynamic TLS so late imports on
+  Linux do not require glibc's spare static TLS block. This addresses the
+  import-order-dependent failure reported on Linux ARM64. macOS retains the
+  system allocator; the CLI's allocator configuration is unchanged.
+- Audit Linux wheel TLS relocations before release and test late imports under
+  synthetic TLS pressure. Validation against mdata's original ARM64 suite is
+  still required.
+
+
+### Dependencies
+
+- Upgrade Chumsky to 0.14.1, Reedline to 0.53.0, LRU to 0.19.0,
+  parking_lot to 0.13.0, and sysinfo to 0.40.3.
+- Refresh both Cargo lockfiles, including PyO3 0.29.3, Tokio, rustls,
+  serde_json, and compression libraries. Retain Polars 0.55.2 and the
+  workspace's patched polars-core revision.
+- Adapt to sysinfo's fallible system initialization and Reedline's completion,
+  Ctrl-C, and external-printer APIs, preserving nonblocking REPL logging.
+
 ## [0.11.5] - 2026-11-16
 
 ### Fixed

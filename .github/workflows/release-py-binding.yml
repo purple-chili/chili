@@ -38,6 +38,8 @@ jobs:
           args: --release --out dist --manifest-path crates/chili-py/Cargo.toml
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: 2_28
+      - name: Check wheel TLS
+        run: python3 crates/chili-py/tests/check_wheel_tls.py dist/*.whl
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:
@@ -62,6 +64,8 @@ jobs:
           args: --release --out dist --manifest-path crates/chili-py/Cargo.toml
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
+      - name: Check wheel TLS
+        run: python3 crates/chili-py/tests/check_wheel_tls.py dist/*.whl
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:

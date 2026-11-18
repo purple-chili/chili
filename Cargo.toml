@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.11.5"
+version = "0.11.6"
 edition = "2024"
 authors = ["The Chili Authors <purple-chili@hotmail.com>"]
 description = "chili"
@@ -31,7 +31,7 @@ version = "0.55.2"
 version = "0.55.2"
 
 [workspace.dependencies.chumsky]
-version = "0.13.0"
+version = "0.14.1"
 
 [workspace.dependencies.ariadne]
 version = "0.6"

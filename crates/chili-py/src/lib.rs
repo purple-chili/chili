@@ -27,7 +27,8 @@ use std::sync::Arc;
 
 // macOS extensions can coexist with other native allocators in the host.
 // Use the system allocator there to avoid the mimalloc v3 constructor crash.
-// Other platforms retain mimalloc; neither choice replaces Python's allocator.
+// Other platforms retain mimalloc with dynamic TLS for late-loaded extensions.
+// Neither choice replaces Python's allocator.
 #[cfg(target_os = "macos")]
 #[global_allocator]
 static GLOBAL: std::alloc::System = std::alloc::System;

@@ -134,7 +134,7 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
 }
 
 pub fn mem(_args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
-    let sys = sysinfo::System::new_all();
+    let sys = sysinfo::System::new_all().map_err(|e| SpicyError::Err(e.to_string()))?;
     let process =
         sys.process(sysinfo::get_current_pid().map_err(|e| SpicyError::Err(e.to_string()))?);
     if let Some(process) = process {

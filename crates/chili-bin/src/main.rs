@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else if let Some(ref p) = printer {
-        let pipe = Pipe::new(p.clone());
+        let pipe = Pipe::new(p.sender());
         Target::Pipe(Box::new(pipe))
     } else {
         // headless: log to stderr (works without a TTY)
@@ -351,7 +351,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             eprintln!("\x1b[1;91m{:?}\x1b[0m", e);
                         });
                     }
-                    Ok(Signal::CtrlC) => {
+                    Ok(Signal::CtrlC(_)) => {
                         println!("CTRL-C");
                         break;
                     }
