@@ -274,6 +274,10 @@ reports an error if system information is unavailable. The configured memory
 monitor logs a warning and stops if initialization fails or the process cannot
 be found.
 
+`.os.mem` refreshes system RAM and the current process's RSS. It returns `used`
+for that process's RSS, `total` and `avail` for total and free system RAM, and
+`limit` from `CHILI_MEMORY_LIMIT` (default `0`), all in MiB.
+
 From 0.11.6, the non-macOS Python extension builds mimalloc with
 `local_dynamic_tls` so late imports on Linux do not require the loader's spare
 static TLS block. No early-import rule or `GLIBC_TUNABLES` setting is required

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.7] - 2026-11-19
+
+### Fixed
+
+- `.os.mem` refreshes system RAM and the current process's RSS, avoiding the
+  system-wide process and GPU refresh that slowed calls on macOS in 0.11.6.
+
 ## [0.11.6] - 2026-11-18
 
 ### Fixed

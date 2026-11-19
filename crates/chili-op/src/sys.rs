@@ -5,7 +5,7 @@ use polars::{
     frame::DataFrame,
     prelude::{Categories, Column, DataType, TimeUnit},
 };
-use sysinfo::Pid;
+use sysinfo::{MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use std::{env, process::Command, time::SystemTime};
 
@@ -134,15 +134,22 @@ pub fn glob(args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
 }
 
 pub fn mem(_args: &[&SpicyObj]) -> SpicyResult<SpicyObj> {
-    let sys = sysinfo::System::new_all().map_err(|e| SpicyError::Err(e.to_string()))?;
-    let process =
-        sys.process(sysinfo::get_current_pid().map_err(|e| SpicyError::Err(e.to_string()))?);
+    let pid = sysinfo::get_current_pid().map_err(|e| SpicyError::Err(e.to_string()))?;
+    let mut sys = System::new().map_err(|e| SpicyError::Err(e.to_string()))?;
+    // A full refresh also collects process and GPU metrics, including a macOS
+    // I/O Registry scan. This builtin only needs system RAM and our own RSS.
+    sys.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_memory().without_tasks(),
+    );
+    let process = sys.process(pid);
     if let Some(process) = process {
-        let memory_usage = process.memory();
-        let memory_usage_gb = memory_usage as f64 / 1048576.0;
+        let memory_usage_mib = process.memory() as f64 / 1048576.0;
         let mut dict = IndexMap::new();
         let memory_limit = std::env::var("CHILI_MEMORY_LIMIT").unwrap_or("0".to_owned());
-        dict.insert("used".to_owned(), SpicyObj::F64(memory_usage_gb));
+        dict.insert("used".to_owned(), SpicyObj::F64(memory_usage_mib));
         dict.insert(
             "limit".to_owned(),
             SpicyObj::F64(memory_limit.parse::<f64>().unwrap_or(0.0)),
