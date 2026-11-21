@@ -106,20 +106,12 @@ fn test_atomic_overwrite_roundtrips_and_never_empties() {
 
     assert_eq!(read_value(hdb.path(), table), 200);
     assert_eq!(shard_count(hdb.path(), table), 1);
-    let tmp = format!("{}/{}/2026.01.01.tmp_0000", hdb.path(), table);
-    assert!(!PathBuf::from(&tmp).exists(), "temp file must be renamed away");
-    let legacy_tmp = format!("{}/{}/2026.01.01_0000.tmp", hdb.path(), table);
-    assert!(
-        !PathBuf::from(&legacy_tmp).exists(),
-        "legacy glob-matching temp name must not be used"
-    );
-
-    let dir = partition_dir(hdb.path(), table);
-    let entries: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
-    assert!(
-        entries.iter().any(|e| e.file_name().to_string_lossy().starts_with("2026.01.01_")),
-        "partition shard must always be present"
-    );
+    let mut entries: Vec<_> = fs::read_dir(partition_dir(hdb.path(), table))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    entries.sort();
+    assert_eq!(entries, ["2026.01.01_0000", "schema"]);
 }
 
 #[test]

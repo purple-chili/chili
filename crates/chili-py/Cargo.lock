@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "chili-core"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -375,13 +375,14 @@ dependencies = [
 
 [[package]]
 name = "chili-op"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "chili-core",
  "chrono",
  "chrono-tz",
  "glob",
  "indexmap",
+ "libc",
  "log",
  "ndarray",
  "num",
@@ -394,11 +395,12 @@ dependencies = [
  "rand",
  "regex",
  "sysinfo 0.40.3",
+ "tempfile",
 ]
 
 [[package]]
 name = "chili-parser"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -407,7 +409,7 @@ dependencies = [
 
 [[package]]
 name = "chili-py"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "chili-core",
  "chili-op",
@@ -3490,6 +3492,19 @@ name = "target-lexicon"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c447be3a2abfa84b2d91680c56600bd6b2873866de27b36ec911be705e291da"
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "thiserror"
