@@ -396,10 +396,63 @@ pub fn write_partition_native(
     )
 }
 
+fn partition_io_error(action: &str, path: &Path, error: impl std::fmt::Display) -> SpicyError {
+    SpicyError::Err(format!("{action} '{}': {error}", path.display()))
+}
+
+fn partition_tempfile(directory: &Path) -> SpicyResult<tempfile::NamedTempFile> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".chili-partition-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    builder
+        .tempfile_in(directory)
+        .map_err(|e| partition_io_error("create temporary partition file in", directory, e))
+}
+
+fn sync_partition_file(file: &File, path: &Path) -> SpicyResult<()> {
+    // Rust uses F_FULLFSYNC on Apple.
+    file.sync_all()
+        .map_err(|e| partition_io_error("sync", path, e))
+}
+
+#[cfg(unix)]
+fn sync_partition_directory(path: &Path) -> SpicyResult<()> {
+    let result = File::open(path).and_then(|directory| {
+        #[cfg(target_vendor = "apple")]
+        {
+            use std::os::fd::AsRawFd;
+            // Sync directory metadata with fsync; the file supplies the device flush.
+            loop {
+                // SAFETY: directory owns this descriptor for the duration of the call.
+                if unsafe { libc::fsync(directory.as_raw_fd()) } == 0 {
+                    break Ok(());
+                }
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    break Err(error);
+                }
+            }
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        directory.sync_all()
+    });
+    result.map_err(|e| partition_io_error("sync directory", path, e))
+}
+
+#[cfg(not(unix))]
+fn sync_partition_directory(_path: &Path) -> SpicyResult<()> {
+    // Directory fsync is available on the Unix storage path.
+    Ok(())
+}
+
 /// `write_partition_native` with optional parquet codec (`wparc`).
 ///
-/// On overwrite, always write-then-rename (never delete-first). Temp shards use
-/// a `{date}.tmp_0000` name so they do not match the `{date}_*` partition glob.
+/// On overwrite, sync the replacement before renaming it into the partition.
+/// Temporary files are hidden from the partition glob.
 /// `compression`: codec name; `None` uses zstd.
 #[allow(clippy::too_many_arguments)]
 pub fn write_partition_native_full(
@@ -492,7 +545,11 @@ pub fn write_partition_native_full(
 
     let table_path = hdb_path.join(table_name);
     if !table_path.exists() {
-        fs::create_dir(&table_path).map_err(|e| SpicyError::Err(e.to_string()))?;
+        match fs::create_dir(&table_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(partition_io_error("create table directory", &table_path, e)),
+        }
     }
     let par_path = if table_path.is_dir() {
         table_path.join(&par_str)
@@ -504,11 +561,39 @@ pub fn write_partition_native_full(
     };
 
     let schema_path = table_path.join("schema");
-    if !schema_path.exists() {
-        let schema = df.clear();
-        util::write_parquet_to_filepath(schema_path.to_string_lossy().as_ref(), &schema)?;
+    let validate_schema = if schema_path.exists() {
+        true
     } else {
-        let f = File::open(schema_path).map_err(|e| SpicyError::Err(e.to_string()))?;
+        let mut schema = partition_tempfile(&table_path)?;
+        util::write_parquet_to_file(
+            schema.as_file_mut(),
+            &df.clear(),
+            None,
+            ParquetCompression::default(),
+        )?;
+        sync_partition_file(schema.as_file(), schema.path())?;
+        match schema.persist_noclobber(&schema_path) {
+            Ok(file) => {
+                sync_partition_directory(&table_path)?;
+                if let Some(parent) = table_path.parent() {
+                    sync_partition_directory(parent)?;
+                }
+                #[cfg(target_vendor = "apple")]
+                sync_partition_file(&file, &schema_path)?;
+                #[cfg(not(target_vendor = "apple"))]
+                drop(file);
+                false
+            }
+            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => true,
+            Err(e) => return Err(partition_io_error("publish schema", &schema_path, e.error)),
+        }
+    };
+    if validate_schema {
+        let f = File::open(&schema_path).map_err(|e| SpicyError::Err(e.to_string()))?;
+        #[cfg(unix)]
+        if overwrite {
+            sync_partition_file(&f, &schema_path)?;
+        }
         let schema_df = ParquetReader::new(f)
             .finish()
             .map_err(|e| SpicyError::Err(e.to_string()))?;
@@ -550,20 +635,37 @@ pub fn write_partition_native_full(
     // Overwrite: write tmp shard, rename into _0000, then drop other shards.
     // Never delete-first (crash window would leave an empty partition).
     if overwrite {
-        let final_path = format!("{}_0000", par_path.display());
-        // Dot (not underscore) after the date stem so `{date}_*` does not match.
-        let tmp_path = format!("{}.tmp_0000", par_path.display());
-        let size = util::write_parquet_to_filepath_full(
-            &tmp_path,
-            &df,
-            row_group_size,
-            codec.clone(),
-        )?;
-        fs::rename(&tmp_path, &final_path).map_err(|e| SpicyError::Err(e.to_string()))?;
+        let final_path = par_path.with_file_name(format!("{par_str}_0000"));
+        let mut tmp = partition_tempfile(&table_path)?;
+        let size = util::write_parquet_to_file(tmp.as_file_mut(), &df, row_group_size, codec)?;
+        sync_partition_file(tmp.as_file(), tmp.path())?;
+        let published = tmp
+            .persist(&final_path)
+            .map_err(|e| partition_io_error("publish partition", &final_path, e.error))?;
+        sync_partition_directory(&table_path)?;
+        // The table directory itself may have been created by this or an earlier write.
+        if let Some(parent) = table_path.parent() {
+            sync_partition_directory(parent)?;
+        }
+        #[cfg(target_vendor = "apple")]
+        sync_partition_file(&published, &final_path)?;
+        #[cfg(not(target_vendor = "apple"))]
+        drop(published);
+
+        let mut removed_shards = false;
         for path in &existing_sub_parts {
-            if path.to_string_lossy() != final_path {
-                fs::remove_file(path).map_err(|e| SpicyError::Err(e.to_string()))?;
+            if path != &final_path {
+                match fs::remove_file(path) {
+                    Ok(()) => removed_shards = true,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(partition_io_error("remove old shard", path, e)),
+                }
             }
+        }
+        if removed_shards {
+            sync_partition_directory(&table_path)?;
+            #[cfg(target_vendor = "apple")]
+            sync_partition_file(&published, &final_path)?;
         }
         return Ok(SpicyObj::I64(size as i64));
     }

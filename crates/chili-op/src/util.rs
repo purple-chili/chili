@@ -137,10 +137,6 @@ pub(crate) fn list_op_list(
 //     }
 // }
 
-pub(crate) fn write_parquet_to_filepath(filepath: &str, df: &DataFrame) -> SpicyResult<u64> {
-    write_parquet_to_filepath_with_row_group_size(filepath, df, None)
-}
-
 pub(crate) fn parse_parquet_compression(name: Option<&str>) -> SpicyResult<ParquetCompression> {
     match name {
         None => Ok(ParquetCompression::default()),
@@ -159,15 +155,6 @@ pub(crate) fn parse_parquet_compression(name: Option<&str>) -> SpicyResult<Parqu
     }
 }
 
-// Optional row-group size for parquet pruning; `None` uses the polars default.
-pub(crate) fn write_parquet_to_filepath_with_row_group_size(
-    filepath: &str,
-    df: &DataFrame,
-    row_group_size: Option<usize>,
-) -> SpicyResult<u64> {
-    write_parquet_to_filepath_full(filepath, df, row_group_size, ParquetCompression::default())
-}
-
 pub(crate) fn write_parquet_to_filepath_full(
     filepath: &str,
     df: &DataFrame,
@@ -184,7 +171,16 @@ pub(crate) fn write_parquet_to_filepath_full(
         }
     };
 
-    let mut writer = ParquetWriter::new(&mut file).with_compression(compression);
+    write_parquet_to_file(&mut file, df, row_group_size, compression)
+}
+
+pub(crate) fn write_parquet_to_file(
+    file: &mut File,
+    df: &DataFrame,
+    row_group_size: Option<usize>,
+    compression: ParquetCompression,
+) -> SpicyResult<u64> {
+    let mut writer = ParquetWriter::new(file).with_compression(compression);
     if let Some(rgs) = row_group_size {
         writer = writer.with_row_group_size(Some(rgs));
     }

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.8] - 2026-11-21
+
+### Fixed
+
+- Sync replacement partition shards before renaming them into place. On Unix,
+  sync the table directory before and after removing old shards. Sync the
+  initial schema sidecar before publishing it.
+
 ## [0.11.7] - 2026-11-19
 
 ### Fixed

@@ -444,9 +444,8 @@ class ChiliEngine:
                   a ``"YYYY.MM.DD"`` string.
             sort_columns: Optional columns to sort by before writing.
             rechunk: Re-chunk the data into a single contiguous allocation.
-            overwrite: If ``True``, replace an existing partition via write-then-rename
-                (readers never see an empty partition). Temp shards use
-                ``{date}.tmp_0000`` so they do not match the ``{date}_*`` glob.
+            overwrite: If ``True``, sync the replacement shard before renaming it
+                into place. On Unix, also sync the directory entries before returning.
 
         Note:
             The Parquet codec is the polars default (**zstd**) and the
