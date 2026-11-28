@@ -18,7 +18,7 @@ use regex::Regex;
 
 use crate::{
     ConnType, EngineState, Stack,
-    engine_state::{Outbound, ReadWrite, ReplyError},
+    engine_state::{Outbound, ReadWrite, RegisteredHandle, ReplyError},
     serde6, serde9,
 };
 
@@ -692,11 +692,11 @@ fn q_response_frame(body: &[u8]) -> Vec<u8> {
 /// socket; only a handle with no engine-side writer falls back to `own`.
 fn send_reply(
     state: &EngineState,
-    handle: i64,
+    registration: &RegisteredHandle,
     own: &mut dyn ReadWrite,
     msg: Outbound,
 ) -> Result<(), std::io::Error> {
-    match state.write_reply(handle, msg) {
+    match state.write_reply_for(registration.number, Some(registration.conn_id), msg) {
         Ok(()) => Ok(()),
         Err(ReplyError::Io(e)) => Err(e),
         Err(ReplyError::NoWriter(msg)) => match msg {
@@ -960,7 +960,10 @@ pub fn eval_ipc_with_timeout(
     let query = query.clone();
     let src = src.to_owned();
     let user = user.to_owned();
+    let slot = state.reserve_eval_slot(handle);
     std::thread::spawn(move || {
+        // The worker may outlive the reader after a timeout and still use this.h.
+        let _slot = slot;
         let mut stack = Stack::new(None, 0, handle, &user);
         let _ = tx.send(eval_ipc_catch_panic(&state, &mut stack, &query, &src));
     });
@@ -982,14 +985,29 @@ pub fn handle_q_conn(
     user: &str,
     hold: Option<Arc<parking_lot::Mutex<crate::engine_state::HoldState>>>,
 ) {
-    state.fire_on_conn_open_hook(user, handle);
+    if let Some(registration) = state.registered_handle(handle) {
+        handle_registered_q_conn(rw, is_local, registration, state, user, hold);
+    }
+}
+
+pub(crate) fn handle_registered_q_conn(
+    rw: &mut dyn ReadWrite,
+    is_local: bool,
+    registration: RegisteredHandle,
+    state: Arc<EngineState>,
+    user: &str,
+    hold: Option<Arc<parking_lot::Mutex<crate::engine_state::HoldState>>>,
+) {
+    let handle = registration.number;
     // Runs on every exit, including an unwinding panic in the loop below.
-    let _cleanup = ConnCleanup {
+    let cleanup = ConnCleanup {
         state: &state,
         user,
-        handle,
-        conn_id: state.conn_id(handle),
+        registration,
     };
+    if !cleanup.open() {
+        return;
+    }
     let mut header = [0u8; 8];
     loop {
         // little endian, msg type()
@@ -1021,7 +1039,7 @@ pub fn handle_q_conn(
                 if message_type == MessageType::Sync
                     && send_reply(
                         &state,
-                        handle,
+                        &cleanup.registration,
                         rw,
                         Outbound::Raw(q_response_frame(
                             &serde6::serialize(&SpicyObj::Err(msg)).unwrap(),
@@ -1062,7 +1080,12 @@ pub fn handle_q_conn(
                 if message_type == MessageType::Sync {
                     let err_msg = RE_STYLE.replace_all(&err.to_string(), "").to_string();
                     let err = serde6::serialize(&SpicyObj::Err(err_msg)).unwrap();
-                    let _ = send_reply(&state, handle, rw, Outbound::Raw(q_response_frame(&err)));
+                    let _ = send_reply(
+                        &state,
+                        &cleanup.registration,
+                        rw,
+                        Outbound::Raw(q_response_frame(&err)),
+                    );
                     state.drop_pending_subscribers(handle);
                 } else {
                     error!("{}", err);
@@ -1076,15 +1099,19 @@ pub fn handle_q_conn(
             match res {
                 Ok(obj) => match serde6::serialize(&obj) {
                     Ok(v8) => {
-                        let msg =
-                            serde6::q_message(&v8, MessageType::Response as u8, !is_local);
-                        let _ = send_reply(&state, handle, rw, Outbound::Raw(msg));
+                        let msg = serde6::q_message(&v8, MessageType::Response as u8, !is_local);
+                        let _ = send_reply(&state, &cleanup.registration, rw, Outbound::Raw(msg));
                         // Subscribe handshake: go live only after Response is on the wire.
                         state.activate_subscribers(handle);
                     }
                     Err(e) => {
                         let err = serde6::serialize(&SpicyObj::Err(e.to_string())).unwrap();
-                        let _ = send_reply(&state, handle, rw, Outbound::Raw(q_response_frame(&err)));
+                        let _ = send_reply(
+                            &state,
+                            &cleanup.registration,
+                            rw,
+                            Outbound::Raw(q_response_frame(&err)),
+                        );
                         state.drop_pending_subscribers(handle);
                     }
                 },
@@ -1092,7 +1119,12 @@ pub fn handle_q_conn(
                     let err_msg = RE_STYLE.replace_all(&e.to_string(), "").to_string();
                     state.fire_on_bad_msg_hook(handle, &err_msg, None);
                     let err = serde6::serialize(&SpicyObj::Err(err_msg)).unwrap();
-                    let _ = send_reply(&state, handle, rw, Outbound::Raw(q_response_frame(&err)));
+                    let _ = send_reply(
+                        &state,
+                        &cleanup.registration,
+                        rw,
+                        Outbound::Raw(q_response_frame(&err)),
+                    );
                     state.drop_pending_subscribers(handle);
                 }
             }
@@ -1102,7 +1134,6 @@ pub fn handle_q_conn(
             error!("{}", e);
         }
     }
-
 }
 
 /// Connection teardown as a drop guard, so a panic anywhere in a connection
@@ -1111,32 +1142,40 @@ pub fn handle_q_conn(
 struct ConnCleanup<'a> {
     state: &'a EngineState,
     user: &'a str,
-    handle: i64,
-    /// The connection this thread served; see [`crate::engine_state::Handle::conn_id`].
-    conn_id: Option<u64>,
+    registration: RegisteredHandle,
+}
+
+impl ConnCleanup<'_> {
+    fn open(&self) -> bool {
+        let handle = self.registration.number;
+        let conn_id = Some(self.registration.conn_id);
+        if self.state.conn_id(handle) != conn_id {
+            return false;
+        }
+        self.state.fire_on_conn_open_hook(self.user, handle);
+        self.state.conn_id(handle) == conn_id
+    }
 }
 
 impl Drop for ConnCleanup<'_> {
     fn drop(&mut self) {
-        finish_ipc_conn(self.state, self.user, self.handle, self.conn_id);
+        finish_ipc_conn(self.state, self.user, &self.registration);
     }
 }
 
-fn finish_ipc_conn(state: &EngineState, user: &str, handle: i64, conn_id: Option<u64>) {
-    state.fire_on_conn_close_hook(user, handle);
-    // The handle was closed meanwhile and its number may already belong to a
-    // new connection: that connection is not ours to tear down.
-    if state.conn_id(handle) != conn_id {
-        info!(
-            "handle {} no longer belongs to this connection, skipping teardown",
-            handle
-        );
+fn finish_ipc_conn(state: &EngineState, user: &str, registration: &RegisteredHandle) {
+    let handle = registration.number;
+    let conn_id = registration.conn_id;
+    // If `.handle.close` already removed the entry, the reader still holds
+    // the slot and the close hook can safely receive the original number.
+    if state
+        .conn_id(handle)
+        .is_some_and(|current| current != conn_id)
+    {
         return;
     }
-    let _ = state.disconnect_handle(&handle);
-    // Release any handshake buffer if the peer left before activation.
-    state.drop_pending_subscribers(handle);
-    if let Ok(callback) = state.get_callback(&handle)
+    state.fire_on_conn_close_hook(user, handle);
+    if let Ok(Some(callback)) = state.disconnect_handle_for(handle, conn_id)
         && !callback.is_empty()
     {
         info!("calling '{}' function for handle {}", &callback, handle);
@@ -1172,6 +1211,9 @@ fn finish_ipc_conn(state: &EngineState, user: &str, handle: i64, conn_id: Option
                 res.err().unwrap(),
             );
             std::thread::sleep(Duration::from_secs(delay));
+            if state.conn_id(handle) != Some(conn_id) {
+                break;
+            }
             res = call();
             if retry < 6 {
                 retry += 1;
@@ -1188,14 +1230,29 @@ pub fn handle_chili_conn(
     user: &str,
     hold: Option<Arc<parking_lot::Mutex<crate::engine_state::HoldState>>>,
 ) {
-    state.fire_on_conn_open_hook(user, handle);
+    if let Some(registration) = state.registered_handle(handle) {
+        handle_registered_chili_conn(rw, is_local, registration, state, user, hold);
+    }
+}
+
+pub(crate) fn handle_registered_chili_conn(
+    rw: &mut dyn ReadWrite,
+    is_local: bool,
+    registration: RegisteredHandle,
+    state: Arc<EngineState>,
+    user: &str,
+    hold: Option<Arc<parking_lot::Mutex<crate::engine_state::HoldState>>>,
+) {
+    let handle = registration.number;
     // Runs on every exit, including an unwinding panic in the loop below.
-    let _cleanup = ConnCleanup {
+    let cleanup = ConnCleanup {
         state: &state,
         user,
-        handle,
-        conn_id: state.conn_id(handle),
+        registration,
     };
+    if !cleanup.open() {
+        return;
+    }
     let mut header = [0u8; 16];
     loop {
         // little endian, msg type()
@@ -1227,7 +1284,7 @@ pub fn handle_chili_conn(
                 if message_type == MessageType::Sync
                     && send_reply(
                         &state,
-                        handle,
+                        &cleanup.registration,
                         rw,
                         Outbound::Raw(serde9::serialize_err(&msg)),
                     )
@@ -1266,7 +1323,7 @@ pub fn handle_chili_conn(
                 if message_type == MessageType::Sync {
                     let err_msg = RE_STYLE.replace_all(&err.to_string(), "").to_string();
                     let err = serde9::serialize_err(&err_msg);
-                    let _ = send_reply(&state, handle, rw, Outbound::Raw(err));
+                    let _ = send_reply(&state, &cleanup.registration, rw, Outbound::Raw(err));
                     state.drop_pending_subscribers(handle);
                 } else {
                     error!("{}", err);
@@ -1281,7 +1338,7 @@ pub fn handle_chili_conn(
                     Ok(v8) => {
                         let _ = send_reply(
                             &state,
-                            handle,
+                            &cleanup.registration,
                             rw,
                             Outbound::Chili(v8, MessageType::Response),
                         );
@@ -1290,7 +1347,7 @@ pub fn handle_chili_conn(
                     }
                     Err(e) => {
                         let err = serde9::serialize_err(&e.to_string());
-                        let _ = send_reply(&state, handle, rw, Outbound::Raw(err));
+                        let _ = send_reply(&state, &cleanup.registration, rw, Outbound::Raw(err));
                         error!("failed to serialize response: {}", e);
                         state.drop_pending_subscribers(handle);
                     }
@@ -1299,7 +1356,7 @@ pub fn handle_chili_conn(
                     let err_msg = RE_STYLE.replace_all(&e.to_string(), "").to_string();
                     state.fire_on_bad_msg_hook(handle, &err_msg, None);
                     let err = serde9::serialize_err(&err_msg);
-                    let _ = send_reply(&state, handle, rw, Outbound::Raw(err));
+                    let _ = send_reply(&state, &cleanup.registration, rw, Outbound::Raw(err));
                     state.drop_pending_subscribers(handle);
                 }
             }
@@ -1309,7 +1366,6 @@ pub fn handle_chili_conn(
             error!("{}", e);
         }
     }
-
 }
 
 pub fn convert_list_to_df(list: &[SpicyObj], df: &DataFrame) -> Result<DataFrame, SpicyError> {

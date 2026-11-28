@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.9] - 2026-11-28
+
+### Fixed
+
+- Closing a connection in the q or Chili open hook no longer lets its reader
+  disconnect a subsequent client. The handle number stays reserved through
+  reader cleanup and any outstanding IPC evaluation.
+- New handles reuse the lowest available number from 4 through 1023. Finished
+  inbound connections can be recycled, while disconnected outgoing handles
+  retain their number for reconnect. Opening a handle reports an error when all
+  slots are in use.
+
 ## [0.11.8] - 2026-11-21
 
 ### Fixed

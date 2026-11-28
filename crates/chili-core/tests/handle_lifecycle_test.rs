@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chili_core::{EngineState, SpicyObj, utils, utils::send_auth};
+use chili_core::{ConnType, EngineState, Func, IpcType, SpicyObj, utils, utils::send_auth};
 use polars::prelude::*;
 
 fn start_server() -> (Arc<EngineState>, u16) {
@@ -22,10 +22,25 @@ fn start_server() -> (Arc<EngineState>, u16) {
 }
 
 fn connect(port: u16) -> TcpStream {
+    connect_version(port, 9)
+}
+
+fn connect_version(port: u16, version: u8) -> TcpStream {
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    assert_eq!(send_auth(&mut s, "", "", 9).unwrap(), 9);
+    assert_eq!(send_auth(&mut s, "", "", version).unwrap(), version);
     s
+}
+
+fn wait_for(mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !condition() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for connection state"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn incoming(engine: &Arc<EngineState>) -> i64 {
@@ -74,6 +89,186 @@ fn open_log(engine: &EngineState, path: &std::path::Path) -> i64 {
         SpicyObj::I64(h) => h,
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn rejecting_an_open_keeps_the_next_q_and_chili_clients_connected() {
+    for (version, scheme) in [(6, "q"), (9, "chili")] {
+        let (server, port) = start_server();
+        let reject = Func::new_side_effect_built_in_fn(
+            Some(Box::new(|state, _, args| {
+                if state.get_var("refused_handle").is_err() {
+                    let h = args[1].to_i64()?;
+                    state.close_handle(&h)?;
+                    state.set_var("refused_handle", SpicyObj::I64(h))?;
+                    wait_for(|| state.get_var("allow_hook_exit").is_ok());
+                }
+                Ok(SpicyObj::Null)
+            })),
+            2,
+            "reject_first",
+            &["user", "handle"],
+        );
+        let close_hook = Func::new_side_effect_built_in_fn(
+            Some(Box::new(|state, _, args| {
+                state.set_var("closed_handle", args[1].clone())?;
+                Ok(SpicyObj::Null)
+            })),
+            2,
+            "record_close",
+            &["user", "handle"],
+        );
+        server
+            .set_var("reject_first", SpicyObj::Fn(reject))
+            .unwrap();
+        server
+            .set_var("record_close", SpicyObj::Fn(close_hook))
+            .unwrap();
+        server.set_on_conn_open_hook(Some("reject_first".into()));
+        server.set_on_conn_close_hook(Some("record_close".into()));
+
+        let mut refused = connect_version(port, version);
+        assert_eq!(refused.read(&mut [0u8]).unwrap(), 0);
+        wait_for(|| server.get_var("refused_handle").is_ok());
+        let refused_handle = server.get_var("refused_handle").unwrap().to_i64().unwrap();
+        let client = EngineState::initialize();
+        let h = client
+            .open_handle(&format!("{scheme}://127.0.0.1:{port}"), 0)
+            .unwrap()
+            .to_i64()
+            .unwrap();
+        let accepted_handle = incoming(&server);
+        server.set_var("allow_hook_exit", SpicyObj::Null).unwrap();
+        wait_for(|| server.get_var("closed_handle").is_ok());
+        assert_eq!(
+            server.get_var("closed_handle").unwrap().to_i64().unwrap(),
+            refused_handle
+        );
+        assert_ne!(accepted_handle, refused_handle);
+        assert_eq!(
+            client
+                .sync(&h, &SpicyObj::String("42;".into()))
+                .unwrap()
+                .to_i64()
+                .unwrap(),
+            42
+        );
+        server.shutdown();
+    }
+}
+
+#[test]
+fn handle_numbers_reuse_low_slots_through_churn() {
+    let engine = EngineState::initialize();
+    let register = || {
+        engine.set_handle(
+            None,
+            "peer",
+            "chili://peer",
+            true,
+            IpcType::Chili,
+            ConnType::Incoming,
+            0,
+        )
+    };
+    let mut current = register().unwrap().to_i64().unwrap();
+    for _ in 0..1100 {
+        let next = register().unwrap().to_i64().unwrap();
+        assert_eq!((current.min(next), current.max(next)), (4, 5));
+        assert_eq!(engine.tick(next as usize, 1).unwrap().to_i64().unwrap(), 1);
+        engine.disconnect_handle(&current).unwrap();
+        current = next;
+    }
+    assert_eq!(handle_nums(&engine).len(), 2);
+}
+
+#[test]
+fn handle_capacity_returns_an_error_and_recovers_after_close() {
+    let engine = EngineState::initialize();
+    let register = || {
+        engine.set_handle(
+            None,
+            "peer",
+            "chili://peer",
+            true,
+            IpcType::Chili,
+            ConnType::Outgoing,
+            0,
+        )
+    };
+    for expected in 4..1024 {
+        assert_eq!(register().unwrap().to_i64().unwrap(), expected);
+    }
+    assert!(register().is_err());
+    engine.close_handle(&4).unwrap();
+    assert_eq!(register().unwrap().to_i64().unwrap(), 4);
+}
+
+#[test]
+fn disconnected_outgoing_handle_preserves_its_slot_for_reconnect() {
+    let (server, port) = start_server();
+    let client = EngineState::initialize();
+    let h = client
+        .open_handle(&format!("chili://127.0.0.1:{port}"), 0)
+        .unwrap()
+        .to_i64()
+        .unwrap();
+    client
+        .set_callback(&h, "reconnect_callback".into())
+        .unwrap();
+    client.set_tick_count(h as usize, 12).unwrap();
+    client.disconnect_handle(&h).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    assert_ne!(open_log(&client, &dir.path().join("log")), h);
+    assert_eq!(client.open_handle("", h).unwrap().to_i64().unwrap(), h);
+    assert_eq!(client.get_tick_count(h as usize).unwrap(), 12);
+    assert_eq!(client.get_callback(&h).unwrap(), "reconnect_callback");
+    assert_eq!(
+        client
+            .sync(&h, &SpicyObj::String("42;".into()))
+            .unwrap()
+            .to_i64()
+            .unwrap(),
+        42
+    );
+    server.shutdown();
+}
+
+#[test]
+fn timed_out_eval_keeps_the_inbound_slot_reserved_until_it_returns() {
+    let (server, port) = start_server();
+    let pause = Func::new_side_effect_built_in_fn(
+        Some(Box::new(|state, _, _| {
+            state.set_var("eval_started", SpicyObj::Null)?;
+            wait_for(|| state.get_var("allow_eval_exit").is_ok());
+            Ok(SpicyObj::Null)
+        })),
+        1,
+        "pause_eval",
+        &["arg"],
+    );
+    server.set_var("pause_eval", SpicyObj::Fn(pause)).unwrap();
+    server.set_eval_timeout_ms(100);
+    let client = EngineState::initialize();
+    let h = client
+        .open_handle(&format!("chili://127.0.0.1:{port}"), 0)
+        .unwrap()
+        .to_i64()
+        .unwrap();
+    let paused_handle = incoming(&server);
+    let err = client
+        .sync(&h, &SpicyObj::String("pause_eval(1);".into()))
+        .unwrap_err();
+    assert!(err.to_string().contains("timed out"), "{err}");
+    assert!(server.get_var("eval_started").is_ok());
+    wait_for(|| {
+        let df = server.list_handle().unwrap();
+        df.column("conn_type").unwrap().str().unwrap().get(0) == Some("Disconnected")
+    });
+    let _replacement = connect(port);
+    assert_ne!(incoming(&server), paused_handle);
+    server.set_var("allow_eval_exit", SpicyObj::Null).unwrap();
+    server.shutdown();
 }
 
 #[test]
